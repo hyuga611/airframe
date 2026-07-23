@@ -1,0 +1,53 @@
+{
+  "name": "@hyuga/genchi",
+  "version": "0.1.0",
+  "description": "Completion verification gate for AI agents & automation: before anything reports \"done\", re-fetch the real world state with a probe and block the completion claim on empty/mismatch/error. Framework-agnostic, zero-dependency, no LLM.",
+  "type": "module",
+  "main": "src/index.mjs",
+  "types": "src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.mjs"
+    }
+  },
+  "bin": {
+    "genchi": "src/cli.mjs"
+  },
+  "files": [
+    "src",
+    "adapters"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "poc": "node examples/db-insert.mjs",
+    "selfcheck": "node src/cli.mjs verify --probe \"node -e \\\"import('./src/index.mjs').then(m=>process.stdout.write(String(Object.keys(m).length)))\\\"\" --at-least 4"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "llm",
+    "claude",
+    "codex",
+    "completion",
+    "verification",
+    "guardrail",
+    "hallucination",
+    "reported-done",
+    "runtime",
+    "framework-agnostic"
+  ],
+  "license": "MIT",
+  "author": "hyuga611",
+  "homepage": "https://github.com/hyuga611/genchi",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyuga611/genchi.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hyuga611/genchi/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,26 @@
+name: ci
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Unit tests
+        run: node --test
+
+  dogfood:
+    # genchi verifies its own claim by RE-FETCHING reality: re-import the published
+    # module and count its exports. Same durability bet as reflint/skills-lint/carrylint
+    # self-checking — the tool must survive being pointed at itself.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: genchi self-verify (re-fetch our own exports)
+        run: node src/cli.mjs verify --probe "node -e \"import('./src/index.mjs').then(m=>process.stdout.write(String(Object.keys(m).length)))\"" --at-least 4
