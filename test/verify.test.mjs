@@ -110,7 +110,7 @@ test('gate throws GenchiIncomplete on mismatch, carrying the verdict', async () 
       assert.ok(e instanceof GenchiIncomplete);
       assert.equal(e.verdict.ok, false);
       assert.equal(e.verdict.reason, 'mismatch');
-      assert.match(e.message, /完了と報告できません/);
+      assert.match(e.message, /cannot be reported as done/);
       return true;
     }
   );

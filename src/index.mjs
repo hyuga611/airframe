@@ -55,8 +55,8 @@ export class GenchiIncomplete extends Error {
   constructor(verdict) {
     const d = verdict.detail ? `: ${verdict.detail}` : '';
     super(
-      `genchi: "${verdict.action}" は完了と報告できません — ${verdict.reason}${d}\n` +
-      `  再取得した実状態: ${verdict.evidence}`
+      `genchi: "${verdict.action}" cannot be reported as done — ${verdict.reason}${d}\n` +
+      `  re-fetched real state: ${verdict.evidence}`
     );
     this.name = 'GenchiIncomplete';
     /** @type {Verdict} */
@@ -75,8 +75,8 @@ export async function verify(contract) {
   if (!contract || typeof contract.probe !== 'function') {
     // ここが genchi の背骨。行動の戻り値ではなく「実状態を取り直す関数」を要求する。
     throw new TypeError(
-      'genchi: contract.probe（実状態を"再取得"する関数）は必須です。' +
-      '行動そのものの戻り値を証拠として渡すことはできません。'
+      'genchi: contract.probe is required — a function that RE-FETCHES real state. ' +
+      'The return value of the action itself is not acceptable as evidence.'
     );
   }
 
@@ -85,7 +85,7 @@ export async function verify(contract) {
     state = await contract.probe();
   } catch (error) {
     // probe が失敗＝実状態を確かめられなかった。想像で成功にしない。
-    return { ok: false, action, reason: 'probe-error', error, evidence: `probe が失敗: ${errText(error)}` };
+    return { ok: false, action, reason: 'probe-error', error, evidence: `probe failed: ${errText(error)}` };
   }
 
   const describe = (contract.describeState) ? contract.describeState : defaultDescribe;
@@ -107,7 +107,7 @@ export async function verify(contract) {
   try {
     res = await contract.expect(state);
   } catch (error) {
-    return { ok: false, action, reason: 'probe-error', state, error, evidence: `expect が失敗: ${errText(error)}` };
+    return { ok: false, action, reason: 'probe-error', state, error, evidence: `expect failed: ${errText(error)}` };
   }
 
   const ok = res === true || (res && typeof res === 'object' && res.ok === true);
@@ -135,26 +135,26 @@ export async function gate(contract) {
  */
 export const expect = {
   /** 実状態が何か存在する（非empty） */
-  nonEmpty: () => (s) => (!isEmpty(s) ? true : { ok: false, detail: `再取得した実状態が空でした: ${valueText(s)}` }),
+  nonEmpty: () => (s) => (!isEmpty(s) ? true : { ok: false, detail: `re-fetched real state was empty: ${valueText(s)}` }),
   /** 数として n と一致（例：投入件数） */
   count: (n) => (s) => {
     const got = Number(s);
-    return got === n ? true : { ok: false, detail: `件数 ${n} を期待、再取得は ${valueText(s)}` };
+    return got === n ? true : { ok: false, detail: `expected a count of ${n}, re-fetched ${valueText(s)}` };
   },
   /** 数として n 以上 */
   atLeast: (n) => (s) => {
     const got = Number(s);
-    return got >= n ? true : { ok: false, detail: `${n} 以上を期待、再取得は ${valueText(s)}` };
+    return got >= n ? true : { ok: false, detail: `expected at least ${n}, re-fetched ${valueText(s)}` };
   },
   /** 文字列として sub を含む（例：再取得したURLが 200 を返す本文に含む語） */
-  contains: (sub) => (s) => (String(s).includes(sub) ? true : { ok: false, detail: `"${sub}" を含みません: ${valueText(s)}` }),
+  contains: (sub) => (s) => (String(s).includes(sub) ? true : { ok: false, detail: `does not contain "${sub}": ${valueText(s)}` }),
   /** 値が一致（文字列は trim 比較） */
   equals: (v) => (s) => {
     const eq = (typeof s === 'string') ? s.trim() === String(v).trim() : s === v;
-    return eq ? true : { ok: false, detail: `${valueText(v)} を期待、再取得は ${valueText(s)}` };
+    return eq ? true : { ok: false, detail: `expected ${valueText(v)}, re-fetched ${valueText(s)}` };
   },
   /** 正規表現に一致 */
-  matches: (re) => (s) => (re.test(String(s)) ? true : { ok: false, detail: `${re} に一致しません: ${valueText(s)}` }),
+  matches: (re) => (s) => (re.test(String(s)) ? true : { ok: false, detail: `does not match ${re}: ${valueText(s)}` }),
 };
 
 export default { verify, gate, expect, isEmpty, GenchiIncomplete };

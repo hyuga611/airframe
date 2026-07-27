@@ -2,107 +2,111 @@
 
 > Part of a set of zero-dependency CI tools for AI-agent repos — start with **[reflint](https://github.com/hyuga611/reflint)**.
 
+**Nothing gets to report "done" except a re-fetched real result.** A completion verification gate for AI agents and automation — framework-agnostic, zero-dependency, and it runs no LLM.
+
 **「完了しました」を、再取得した実結果でしか名乗らせない。** AIエージェント/自動化のための完了検証ゲート。
 
 [![npm](https://img.shields.io/npm/v/@hyuga/genchi.svg)](https://www.npmjs.com/package/@hyuga/genchi)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
 
 ```bash
 npx @hyuga/genchi verify --probe "psql -tAc 'select count(*) from t where batch=123'" --count 45
 ```
 
-## なぜ
+## Why
 
-AIエージェントに実務を任せていて、いちばん怖いハルシネーションは文章の間違いではない。**「作業をやり遂げた」という事実そのものの捏造**だ。
+When you hand real work to an agent, the scariest hallucination isn't a wrong sentence. It's **the fabrication of having done the work at all.**
 
-> 「45件のデータを投入しました。完了です。」— でも管理画面を開くと、1行も入っていなかった。
+> "Inserted 45 rows. Done." — then you open the admin panel and not a single row landed.
 
-原因は「行動」と「確認」の分離。エージェントはツールの戻り値を見て次の文章を生成するだけで、**行動した後の世界を見に行かずに「完了」を名乗る**。見ていないから失敗にも気づけない。
+The cause is that *acting* and *checking* are the same step. The agent reads a tool's return value, generates the next sentence, and **claims completion without ever looking at the world it just changed.** Having never looked, it can't notice the failure either.
 
-`genchi`（現地現物＝実際に見て確かめる）はこれを構造的に禁じる。**副作用のある操作は、別の probe で実状態を"再取得"し、実在を確かめてからしか完了を名乗れない。**
+`genchi` (現地現物 — *go and see the actual thing*) makes that structurally impossible. **An operation with side effects can only be reported as complete after a separate probe re-fetches real state and confirms it.**
 
-## これはリンタではない（実行時に働く）
+## This is not a linter — it works at runtime
 
-`reflint`（参照の実在）/ `skills-lint`（スキルの衝突）/ `carrylint`（実行時の可搬性）は、いずれも設定ファイルを**静的に検査**する。genchi は違う。**実行時に、行動の後で、世界の状態を取り直して突き合わせる**。守る場所が違う。
+[reflint](https://github.com/hyuga611/reflint) (do references resolve), [skills-lint](https://github.com/hyuga611/skills-lint) (do skills collide), and [carrylint](https://github.com/hyuga611/carrylint) (is it portable) all inspect config files **statically**. genchi doesn't. It runs **at runtime, after the action, and re-reads the state of the world to compare against the claim.**
 
-- guardrails / deepeval / promptfoo … LLMが吐いた**テキスト出力**を検証する
-- **genchi** … 行動後の**世界の状態**を再取得して、報告と実態が一致するか突き合わせる
+- guardrails / deepeval / promptfoo — verify the **text** an LLM produced
+- **genchi** — re-fetches the **state of the world** after the action and checks the report against it
 
-「45件を投入しました」はテキストとしては完璧だ。間違っているのはテキストではなく、行動後の世界の状態の方。だからテキストを何度採点しても捕まらない。
+"Inserted 45 rows" is flawless as text. What's wrong isn't the text — it's the world behind it. That's why no amount of grading the text catches it.
 
-## 使い方（ライブラリ）
+## Use as a library
 
 ```js
 import { gate, verify, expect } from '@hyuga/genchi';
 
-// 副作用：45件を投入する
+// the side effect: insert 45 rows
 await db.insert(rows);
 
-// 完了を名乗る前に、別コマンドで"再取得"して実在を確かめる。
-// probe が行動の戻り値ではなく「取り直す関数」であることが肝。
+// before claiming done, re-fetch real state with a separate call.
+// the point is that probe RE-READS the world — it is not the action's return value.
 await gate({
-  action: '45件を投入',
-  probe: () => db.count({ where: { batch: 123 } }), // ← 実状態を再取得
+  action: 'insert 45 rows',
+  probe: () => db.count({ where: { batch: 123 } }), // ← re-fetches real state
   expect: expect.count(45),
 });
-// ここに到達できたなら、実際に45件ある。到達できなければ GenchiIncomplete で止まる。
+// reaching this line means the 45 rows are really there. Otherwise it threw.
 ```
 
-`gate()` は実状態が通らなければ `GenchiIncomplete` を投げるので、**実態が伴わない限り「完了」に到達できない**。投げずに判定だけ欲しいときは `verify()`：
+`gate()` throws `GenchiIncomplete` unless real state passes, so **"done" is unreachable without the reality to back it**. If you want the verdict without the throw, use `verify()`:
 
 ```js
-const v = await verify({ action: 'アップロード', probe: () => fetchStatus(url), expect: expect.contains('200') });
+const v = await verify({ action: 'upload', probe: () => fetchStatus(url), expect: expect.contains('200') });
 if (!v.ok) {
-  // 空・失敗は想像で埋めない。そのまま報告する。
-  console.error(`未完了 (${v.reason}) — 再取得: ${v.evidence}`);
+  // don't paper over empty or failed results — report them as they are
+  console.error(`incomplete (${v.reason}) — re-fetched: ${v.evidence}`);
 }
 ```
 
-### 設計上の要
+### The design constraint that matters
 
-`verify` / `gate` は **probe（実状態を取り直す関数）しか受け取らない。** 「行動の戻り値」を証拠として渡すAPIは存在しない — つまり「やったつもり」を書けないようにしてある。probe を省くと `TypeError` で落ちる。
+`verify` / `gate` **only accept a probe — a function that re-reads real state.** There is no API for passing the action's own return value as evidence, which means "I think I did it" is unwritable. Omit the probe and it throws `TypeError`.
 
-空・エラー・タイムアウトは握りつぶさない。`probe` が throw すれば `reason: 'probe-error'` として**そのまま**報告する（想像で成功にしない）。再取得した `count` が 0（＝1行も無い）も未完了扱い。
+Empty results, errors, and timeouts are never swallowed. If `probe` throws, it is reported **as-is** with `reason: 'probe-error'` — never imagined into a success. A re-fetched `count` of 0 (nothing landed) is incomplete too.
 
-### 用意された期待（`expect`）
+### Built-in expectations
 
-| | 意味 |
+| | Passes when |
 |---|---|
-| `expect.nonEmpty()` | 実状態が何か存在する（既定） |
-| `expect.count(n)` | 数として `n` と一致（例：投入件数） |
-| `expect.atLeast(n)` | 数として `n` 以上 |
-| `expect.contains(s)` | 文字列 `s` を含む |
-| `expect.equals(v)` | 一致（文字列は trim 比較） |
-| `expect.matches(re)` | 正規表現に一致 |
+| `expect.nonEmpty()` | real state is non-empty (default) |
+| `expect.count(n)` | the count equals `n` (e.g. rows inserted) |
+| `expect.atLeast(n)` | the count is `n` or more |
+| `expect.contains(s)` | the state contains string `s` |
+| `expect.equals(v)` | it equals `v` (strings compared trimmed) |
+| `expect.matches(re)` | it matches the regex |
 
-`expect` は自作もできる（`true` / `{ok:true}` で合格、`{ok:false, detail}` で理由つき不合格）。
+You can write your own: return `true` / `{ok:true}` to pass, `{ok:false, detail}` to fail with a reason.
 
-## 使い方（CLI / シェル）
+## Use from the shell
 
-JS を書かないエージェントやスクリプトでも、"再取得コマンド" を genchi に判定させられる。**生の probe 出力を必ず証拠として出す（捏造しない）。**
+Agents and scripts that don't write JS can still hand a re-fetch command to genchi. **The raw probe output is always emitted as evidence — nothing is invented.**
 
 ```bash
-# 投入した → 数え直して 45 と一致するか
+# inserted rows → count them again and check it equals 45
 genchi verify --probe "psql -tAc 'select count(*) from t where batch=123'" --count 45
 
-# アップした → その URL が 200 を返す本文を含むか
+# uploaded a file → check the URL actually answers 200
 genchi verify --probe "curl -sI https://example.com/out.png" --contains "200"
 
-# exit 0=検証OK / 1=空・不一致 / 3=probe失敗（コマンドが非ゼロ）
+# exit 0=verified / 1=empty or mismatched / 3=probe failed (command exited non-zero)
 ```
 
-期待：`--nonempty`（既定）/ `--count N` / `--at-least N` / `--contains STR` / `--equals STR` / `--matches REGEX` / `--json`。
+Expectations: `--nonempty` (default) / `--count N` / `--at-least N` / `--contains STR` / `--equals STR` / `--matches REGEX` / `--json`.
 
-## Claude Code に組み込む（Stop フック）
+## Wire it into Claude Code (Stop hook)
 
-`genchi guard` は、エージェントが宣言した完了契約（1行1件の JSONL）をまとめて再取得し、未達が1件でもあれば **exit 2 で stop をブロック**する。エージェントが未検証のまま「完了」してターンを終えるのを防ぐ。
+`genchi guard` re-fetches every completion contract an agent declared (one JSON object per line) and **blocks the stop with exit 2** if even one is unmet — so an agent can't end its turn on an unverified "done".
 
 ```jsonl
-{"action":"45件を投入","probe":"psql -tAc 'select count(*) from t where batch=123'","expect":{"type":"count","value":45}}
-{"action":"画像を配置","probe":"curl -sI https://example.com/out.png","expect":{"type":"contains","value":"200"}}
+{"action":"insert 45 rows","probe":"psql -tAc 'select count(*) from t where batch=123'","expect":{"type":"count","value":45}}
+{"action":"publish the image","probe":"curl -sI https://example.com/out.png","expect":{"type":"contains","value":"200"}}
 ```
 
 ```jsonc
-// .claude/settings.json （抜粋）
+// .claude/settings.json (excerpt)
 {
   "hooks": {
     "Stop": [{ "hooks": [{ "type": "command", "command": "node ./node_modules/@hyuga/genchi/adapters/claude-code/genchi-stop-hook.mjs" }] }]
@@ -110,28 +114,27 @@ genchi verify --probe "curl -sI https://example.com/out.png" --contains "200"
 }
 ```
 
-詳細は [`adapters/claude-code/`](adapters/claude-code/) を参照。
+See [`adapters/claude-code/`](adapters/claude-code/) for details.
 
-## 完了契約（プロンプトだけでも効く）
+## The completion contract (works as prompt text alone)
 
-ライブラリを入れる前に、この一段落をエージェントのルール（`CLAUDE.md` / `AGENTS.md` / system prompt）に置くだけでも、偽の完了報告は目に見えて減る：
+Before installing anything, dropping this paragraph into your agent's rules (`CLAUDE.md` / `AGENTS.md` / system prompt) visibly reduces false completion reports:
 
 ```markdown
-## 完了契約
-副作用のある操作（作成・更新・削除・アップロード・投入）は、別コマンドで実在・状態を
-再取得し、生の結果を提示してからでないと「完了」と報告してはならない。空出力・エラー・
-タイムアウトは想像でID・パス・件数を補完せず「空／失敗」とそのまま報告する。
+## Completion contract
+An operation with side effects (create, update, delete, upload, insert) may not be
+reported as complete until a separate command has re-fetched the resulting state and
+the raw result has been shown. Empty output, errors, and timeouts are reported as
+"empty" or "failed" as-is — never filled in with an imagined id, path, or count.
 ```
 
-genchi は、この契約を**人の善意ではなく仕組みで**担保する版だ。
+genchi is the version of that contract enforced **by machinery instead of good intentions**.
 
-## 設計方針
+## Design principles
 
-- 依存ゼロ・フレームワーク非依存・実行時に LLM もAPIキーも使わない
-- 証拠を捏造しない（`evidence` は常に再取得した実状態を写す）
-- probe を必須にして「行動の戻り値で完了を名乗る」ことを構造的に不可能にする
-
-## ライセンス
+- Zero dependencies, framework-agnostic, and no LLM or API key at runtime
+- Never fabricate evidence — `evidence` always mirrors the state actually re-fetched
+- Require a probe, making "claim done from the action's return value" structurally impossible
 
 ## Related tools
 
@@ -147,5 +150,7 @@ Zero-dependency CI linters for repos where AI agents do the work. Each one fails
 | [tokenlint](https://github.com/hyuga611/tokenlint) | Hardcoded colors that bypass your design tokens |
 | [reflint for VS Code](https://github.com/hyuga611/reflint-vscode) | The same reflint checks, inline in the editor as you save |
 | [orogami](https://github.com/hyuga611/orogami) | Not a linter — natural Japanese/CJK line breaking for OGP images (BudouX + font subsetting) |
+
+## License
 
 MIT © hyuga611

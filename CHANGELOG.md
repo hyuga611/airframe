@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0
+
+All user-facing output is now English. The README pitched the tool in English while
+every runtime message, CLI help string, and thrown-error message came out in Japanese —
+so anyone who actually installed it hit output they couldn't read.
+
+- English messages across `verify` / `gate` / `expect`, the CLI, and `GenchiIncomplete`.
+  If you were matching on the Japanese text of an error message, that match must be
+  updated (`完了と報告できません` → `cannot be reported as done`). Verdict fields —
+  `ok`, `reason`, `detail`, `evidence` — are unchanged.
+- README rewritten English-first, with the Japanese tagline kept.
+
 ## 0.1.0
 
 Initial release. Completion verification gate for AI agents & automation.

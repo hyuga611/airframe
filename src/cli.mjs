@@ -79,7 +79,7 @@ function expectFromSpec(spec) {
 async function cmdVerify(p) {
   const cmd = p.flags.probe;
   if (!cmd || cmd === true) {
-    process.stderr.write('genchi verify: --probe "<実状態を再取得するコマンド>" が必要です\n');
+    process.stderr.write('genchi verify: --probe "<command that re-fetches real state>" is required\n');
     process.exit(64);
   }
   const { fn, label } = pickExpect(p.flags);
@@ -90,11 +90,11 @@ async function cmdVerify(p) {
     const { error, ...rest } = v;
     process.stdout.write(JSON.stringify(error ? { ...rest, error: String(error.message || error) } : rest) + '\n');
   } else if (v.ok) {
-    process.stdout.write(`✓ 検証OK [${label}] — 再取得: ${v.evidence}\n`);
+    process.stdout.write(`✓ verified [${label}] — re-fetched: ${v.evidence}\n`);
   } else if (v.reason === 'probe-error') {
-    process.stderr.write(`✗ probe失敗 — ${v.evidence}\n（実状態を確認できないため「完了」は名乗れません）\n`);
+    process.stderr.write(`✗ probe failed — ${v.evidence}\n  Real state could not be read, so this cannot be reported as done.\n`);
   } else {
-    process.stderr.write(`✗ ${v.reason} [${label}]${v.detail ? ' — ' + v.detail : ''}\n  再取得: ${v.evidence}\n`);
+    process.stderr.write(`✗ ${v.reason} [${label}]${v.detail ? ' — ' + v.detail : ''}\n  re-fetched: ${v.evidence}\n`);
   }
 
   if (v.ok) process.exit(0);
@@ -103,12 +103,12 @@ async function cmdVerify(p) {
 
 async function cmdGuard(p) {
   const file = p._[0];
-  if (!file) { process.stderr.write('genchi guard <contracts.jsonl> が必要です\n'); process.exit(64); }
+  if (!file) { process.stderr.write('genchi guard <contracts.jsonl> is required\n'); process.exit(64); }
   let lines;
   try {
     lines = readFileSync(file, 'utf8').split('\n').map((l) => l.trim()).filter(Boolean);
   } catch (e) {
-    process.stderr.write(`genchi guard: ${file} を読めません: ${e.message}\n`);
+    process.stderr.write(`genchi guard: cannot read ${file}: ${e.message}\n`);
     process.exit(64);
   }
   const failures = [];
@@ -120,27 +120,28 @@ async function cmdGuard(p) {
     if (!v.ok) failures.push(v);
   }
   if (failures.length === 0) {
-    process.stderr.write(`✓ genchi guard: ${lines.length} 件すべて実状態で確認できました\n`);
+    process.stderr.write(`✓ genchi guard: all ${lines.length} contract${lines.length === 1 ? '' : 's'} confirmed against real state\n`);
     process.exit(0);
   }
-  process.stderr.write(`✗ genchi guard: ${failures.length}/${lines.length} 件が未達（完了をブロック）\n`);
+  process.stderr.write(`✗ genchi guard: ${failures.length}/${lines.length} contracts unmet — blocking completion\n`);
   for (const f of failures) {
-    process.stderr.write(`  - "${f.action}" — ${f.reason}${f.detail ? ': ' + f.detail : ''}\n    再取得: ${f.evidence ?? ''}\n`);
+    process.stderr.write(`  - "${f.action}" — ${f.reason}${f.detail ? ': ' + f.detail : ''}\n    re-fetched: ${f.evidence ?? ''}\n`);
   }
   process.exit(2); // Claude Code hook: exit 2 で stop をブロック
 }
 
-const HELP = `genchi ${VERSION} — 完了検証ゲート（現地現物）
+const HELP = `genchi ${VERSION} — completion verification gate
 
-  genchi verify --probe "<実状態を再取得するコマンド>" [期待]
+  genchi verify --probe "<command that re-fetches real state>" [expectation]
     --nonempty | --count N | --at-least N | --contains STR | --equals STR | --matches REGEX
     --json
-    exit 0=OK / 1=空・不一致 / 3=probe失敗
+    exit 0=ok / 1=empty or mismatched / 3=probe failed
 
   genchi guard <contracts.jsonl>
-    1行1契約 {action, probe, expect:{type,value}} を全部再取得。未達で exit 2。
+    One contract per line: {action, probe, expect:{type,value}}. Re-fetches every
+    one of them; exits 2 if any is unmet.
 
-  「完了しました」は、再取得した実結果でしか名乗らせない。
+  Nothing gets to report "done" except a re-fetched real result.
 `;
 
 async function main() {
@@ -151,7 +152,7 @@ async function main() {
   const p = parse(argv.slice(1));
   if (sub === 'verify') return cmdVerify(p);
   if (sub === 'guard') return cmdGuard(p);
-  process.stderr.write(`genchi: 不明なサブコマンド "${sub}"\n\n${HELP}`);
+  process.stderr.write(`genchi: unknown subcommand "${sub}"\n\n${HELP}`);
   process.exit(64);
 }
 
