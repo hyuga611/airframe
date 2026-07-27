@@ -1,5 +1,7 @@
 # genchi 🕵️
 
+![genchi re-fetches real state: 0 rows against an expected 45, then verified at 45](docs/hero.svg)
+
 > Part of a set of zero-dependency CI tools for AI-agent repos — start with **[reflint](https://github.com/hyuga611/reflint)**.
 
 **Nothing gets to report "done" except a re-fetched real result.** A completion verification gate for AI agents and automation — framework-agnostic, zero-dependency, and it runs no LLM.
