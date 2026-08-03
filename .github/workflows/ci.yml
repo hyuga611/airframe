@@ -21,4 +21,6 @@ jobs:
         with:
           node-version: 20
       - name: tenken self-check
-        run: npx tenken AGENTS.md
+        # The package is scoped; `tenken` is only the bin name, so bare `npx tenken`
+        # looks up a package that does not exist and 404s.
+        run: npx @hyuga/tenken AGENTS.md
