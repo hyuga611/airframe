@@ -1,0 +1,44 @@
+{
+  "name": "narai",
+  "version": "0.2.0",
+  "description": "Tells your coding agent when you edited what it wrote, so it stops silently reverting your fixes. Two Claude Code hooks, no daemon, no network. The accumulated edits distill into rules.",
+  "type": "module",
+  "main": "src/narai.mjs",
+  "exports": {
+    ".": "./src/narai.mjs",
+    "./learn": "./src/learn.mjs"
+  },
+  "bin": {
+    "narai": "src/narai.mjs"
+  },
+  "files": [
+    "src",
+    "skills"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "claude-code",
+    "hooks",
+    "ai",
+    "agent",
+    "agents.md",
+    "coding-agent",
+    "feedback-loop",
+    "developer-tools"
+  ],
+  "license": "MIT",
+  "author": "hyuga611",
+  "homepage": "https://github.com/hyuga611/narai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyuga611/narai.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hyuga611/narai/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
