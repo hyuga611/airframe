@@ -14,15 +14,22 @@ throws out the rules whose evidence does not hold up.
 ## The loop
 
 ```bash
+narai score                       # how the last set of rules actually did
 narai corpus                      # what has been recorded
 # ...write rules.json...
 narai validate rules.json         # exits 1 if a rule cannot be backed up
 narai validate rules.json --save  # only once it exits 0
 ```
 
-Run `narai corpus` first, every time. Do not read the correction files directly — the
-corpus lays them out in a fixed shape, and the ids it prints are the ids `validate`
-will check against.
+Run `narai score` first and **open your report with how the previous set did** — which rules
+have had a correction of their kind arrive since, and which have not. If nothing has ever been
+proposed it says so in one line; move on. A distillation that never looks at the last one is
+just a fresh guess every time.
+
+Then run `narai corpus`, every time. Do not read the correction files directly — the corpus
+lays them out in a fixed shape, and the ids it prints are the ids `validate` will check against.
+It also lists **calls the user blocked**; those ids are citable like any other, but read them
+narrowly, since a block can be about one path or one moment rather than a standing rule.
 
 If it prints `nothing recorded yet`, stop and say so. Do not invent a starting set.
 
@@ -31,6 +38,11 @@ If it prints `nothing recorded yet`, stop and say so. Do not invent a starting s
 **Backed by at least two corrections, cited by id.** One correction is an incident. Two
 is the beginning of a habit. `narai validate` enforces this — a rule citing one real id,
 or an id that does not exist, is dropped and the command exits 1.
+
+What is counted is **occasions, not records**. Say "drop the emoji" once and three files get
+rewritten in the same turn; that is one thing the user told you. `validate` counts distinct
+turns, so citing all three of those clears nothing. Look for the same correction happening
+on separate occasions, not for three files from one sentence.
 
 **Something an agent can act on.** Not "be careful with headings" but "do not put emoji
 in headings". Next time the situation comes up, the sentence has to settle it.
@@ -82,8 +94,14 @@ left on disk**, and never pasted into AGENTS.md.
 prediction: apply this, and corrections of this kind stop. That is checkable later, which
 is the only reason to write it down.
 
+It also prints how many of the saved rules can be scored at all. A rule is scorable only when
+its corrections share a repeated literal line; most style habits do not, and those report
+`unscorable` forever. That is expected, not a failure — do not reword a rule to make it
+scorable, and never invent a shared line.
+
 ## After it passes
 
-Show the rules and say where they came from — how many corrections, over what span.
-Then let the user decide whether they go in AGENTS.md. Do not edit AGENTS.md yourself
-unless asked; a rule derived from someone's habits is still theirs to accept.
+Show the rules and say where they came from — how many corrections, over what span, and how
+many are scorable. Saved rules are handed to the agent at the start of every session, so they
+take effect without being pasted anywhere; putting them in AGENTS.md is still the user's call,
+and still theirs alone. Do not edit AGENTS.md yourself unless asked.

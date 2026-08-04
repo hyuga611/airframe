@@ -54,8 +54,12 @@ Hooks only. No daemon, no watcher, no LLM in the hot path.
 | `PermissionDenied` | a call was blocked | records what was refused (program name only, never arguments) |
 | `PostToolUseFailure` | a call failed | records the shape of the failure |
 | `SubagentStart` | a subagent spawns | hands it what has been learned, so it doesn't repeat what you already corrected |
+| `SessionStart` | a session begins | hands the same thing to the main agent — the one that actually writes your files |
 
-A hash comparison is microseconds, so this costs nothing per edit.
+The comparison itself is microseconds. Measured end to end it is about **18 ms per write**, and
+essentially all of that is one `git check-ignore` subprocess — the check that keeps git-ignored
+files from being stored. `NARAI_HASH_ONLY=1` skips it (no bodies are kept at all, so there is
+nothing to decide) and brings the hook back under a microsecond.
 
 It works on **any file the agent writes** — source, Markdown, HTML, CSV, config. The problem
 isn't specific to code, and neither is this.
@@ -66,7 +70,8 @@ isn't specific to code, and neither is this.
 npm i -g narai
 ```
 
-Then add both hooks to your Claude Code `settings.json`:
+Then add the hooks to your Claude Code `settings.json`. The first two are the product; the
+rest are what makes it learn rather than only warn:
 
 ```json
 {
@@ -74,12 +79,20 @@ Then add both hooks to your Claude Code `settings.json`:
     "PostToolUse": [{ "matcher": "Write|Edit", "hooks": [
       { "type": "command", "command": "npx narai hook post", "timeout": 10 }]}],
     "PreToolUse":  [{ "matcher": "Write|Edit", "hooks": [
-      { "type": "command", "command": "npx narai hook pre",  "timeout": 10 }]}]
+      { "type": "command", "command": "npx narai hook pre",  "timeout": 10 }]}],
+    "SessionStart": [{ "hooks": [
+      { "type": "command", "command": "npx narai hook session", "timeout": 10 }]}],
+    "SubagentStart": [{ "hooks": [
+      { "type": "command", "command": "npx narai hook subagent", "timeout": 10 }]}],
+    "PermissionDenied": [{ "hooks": [
+      { "type": "command", "command": "npx narai hook denied", "timeout": 10 }]}],
+    "PostToolUseFailure": [{ "hooks": [
+      { "type": "command", "command": "npx narai hook failed", "timeout": 10 }]}]
   }
 }
 ```
 
-Both hooks always exit 0. If `narai` breaks, your editing session does not.
+Every hook always exits 0. If `narai` breaks, your editing session does not.
 
 ## What it keeps, and where
 
@@ -106,6 +119,47 @@ they aren't:
 Those files are **still watched**: the hash is recorded, so an edit is still detected. You just
 get "the contents were not kept, read the file before writing over it" instead of a diff. Set
 `NARAI_HASH_ONLY=1` to get that behaviour for every file.
+
+### Two things narai keeps are not files
+
+Those rules judge a path, which covers a file *named* for a credential and nothing else. But
+narai also stores **the sentence you typed** (taken from the transcript, so a rule can cite the
+reason in your own words) and **the text of a failed call**. Paste a key into the chat and no
+path rule ever sees it.
+
+So both go through a second check that matches the *shape* of a credential in free text —
+`sk-…`, `ghp_…`, `AKIA…`, `Bearer …`, `password=`, `パスワード:`, `api_key=`, a private-key
+header, a URL with `user:pass@`. When one matches, **the whole sentence is dropped** and the
+record says why:
+
+```json
+{ "askedFor": null, "askedForWithheld": "secret-like", "removed": ["..."], "added": ["..."] }
+```
+
+The diff survives either way, so the correction is still usable evidence — just weaker. This
+will sometimes drop a sentence that merely *discusses* a password, and that is the right way
+to be wrong. `narai doctor` counts how often it has happened; a run of them means credentials
+are being typed into the chat. `NARAI_NO_PROMPTS=1` drops every sentence, secret or not.
+
+A file that holds a secret but isn't *named* like one — `config.js`, `docker-compose.yml` —
+is still stored in full. Pattern matching has holes by construction; treat the store as
+sensitive as the code it watches.
+
+## Keeping it from growing forever
+
+```bash
+narai prune              # what could go
+narai prune --apply      # drop it
+narai prune --days 90 --apply
+```
+
+A stored body exists for exactly one purpose: to diff against the **next** write of that same
+file. A body whose file has been deleted can never be used again, and one untouched for a month
+probably won't be. `prune` drops those bodies and **keeps the hash**, so nothing stops being
+detected — the next write to that path just reads the file first instead of showing a diff.
+
+Nothing runs on a schedule and nothing deletes on its own. It is a command, it defaults to a
+dry run, and `narai doctor` reports the total so you can see when it is worth running.
 
 ## Seeing what it has learned
 
@@ -147,6 +201,68 @@ so nothing can ever catch it being wrong.
 
 That check is the reason `validate` exists as a command. An agent asked to cite its evidence
 will usually comply, and the times it does not are exactly the times the rule was invented.
+
+Once saved, the rules are handed to the agent at the start of every session — the same thing
+`SubagentStart` already did for subagents, extended to the one that actually writes your files.
+You can still paste them into `AGENTS.md`; you no longer have to for them to have any effect.
+
+**The one thing narai says without being asked.** Distilling needs a model, and a model may
+not run inside a hook, so something has to raise the subject — otherwise the corrections pile
+up and nothing ever reads them. Once at least ten are waiting, the pile has grown since last
+time, and a week has passed, one line appears at session start:
+
+```
+narai: 14 correction(s) recorded, not yet distilled. The narai-learn skill turns them into rules.
+```
+
+It is addressed to the agent, which can act on it, rather than to you, who would have to
+remember. Those three gates are the whole design: an ambient line that repeats is an ambient
+line you turn off.
+
+## Checking it is still working
+
+```bash
+narai doctor
+```
+
+narai is a set of couplings to fields another program decides to send. When one stops
+arriving nothing breaks — the hook still runs, still exits 0, still writes a record. It
+writes a record with a hole in it, and the tool quietly gets worse at its job.
+
+So `doctor` reports what has actually been observed, never what is expected:
+
+```
+Fields the hooks depend on, as actually delivered:
+  artifacts carry prompt_id          65/68   partial
+  instructed ones carry askedFor     11/11
+  failures carry an error            0/34   DEAD — a failure signal records that something
+                                             failed and nothing about what [harness]
+```
+
+That last line is the point. Nothing in the source looks wrong; the field name was simply
+never the right one, and no amount of reading the code would say so. It can only be counted.
+`doctor` writes nothing and reads everything, so it costs nothing to run on a hunch.
+
+## Did the rules actually do anything
+
+```bash
+narai score
+```
+
+Every saved rule goes into a ledger as a prediction: *apply this and corrections of this kind
+stop*. `score` checks it against the corrections that have arrived since.
+
+A rule is only scorable when the corrections behind it share an actual repeated line — that
+line becomes the marker to watch for. When they share nothing literal, which is common and
+true of most style habits, the rule reports **unscorable**: it still applies, it just cannot
+be graded. The alternative is fuzzy matching, which fires on unrelated edits and turns the
+ledger into noise.
+
+**No hit rate is printed, deliberately.** A rule with no recurrence may be working, or the
+situation may never have come up — nothing in the data separates those. And since narai now
+injects these same rules at session start, it is treating the behaviour it is measuring, so
+any ratio would be pinned toward a perfect score by its own hand. You get the rows and the
+dates. A scoreboard whose mistakes flatter it is a sales pitch.
 
 ## What it is not
 

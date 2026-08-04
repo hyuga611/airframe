@@ -27,8 +27,11 @@ const ARTIFACTS = () => join(STORE, 'artifacts');
 const CORRECTIONS = () => join(STORE, 'corrections');
 const SIGNALS = () => join(STORE, 'signals');
 const RULES = () => join(STORE, 'rules.json');
+const SAID = () => join(STORE, 'said.json');
 
 const MAX_BYTES = 512 * 1024; // above this, keep the hash but not the contents
+const MAX_LINES = 40;         // how many changed lines a correction keeps
+const MAX_LINE = 400;         // and how much of each one
 const EDIT_TOOLS = /^(Write|Edit|MultiEdit|NotebookEdit)$/;
 
 // Paths whose contents are never stored. It costs the diff, which is a far better trade
@@ -39,14 +42,66 @@ export const NEVER_STORE = [
   /(^|[/\\])\.netrc$/i,
   /(^|[/\\])id_(rsa|dsa|ecdsa|ed25519)/i,
   /\.(pem|key|p12|pfx|keystore|jks)$/i,
-  /(secret|credential|password|token|apikey|api_key)/i,
 ];
+
+/**
+ * A path segment that *is* named for a credential, rather than merely containing the letters.
+ *
+ * This used to be a bare substring test over the whole path, which excluded far more than it
+ * meant to: `tokenlint/`, `tokenizer.js`, `TokenList.tsx`, `secretary/`. A directory caught by
+ * it took everything underneath with it, so narai went silent across a whole repository and
+ * said nothing about why — the failure looks exactly like the tool working and finding nothing.
+ *
+ * Testing each segment with a boundary keeps `secrets.yml`, `API_KEY.txt` and `config/secrets/`
+ * while letting a word that merely starts the same through. The trade is real and deliberate:
+ * a file called `mytokenstore.json` is now stored where it was not before. A name that is the
+ * word is a signal; a name that contains the letters is a coincidence.
+ */
+export const CREDENTIAL_NAME =
+  /(^|[^a-z0-9])(secrets?|credentials?|passwords?|passphrases?|tokens?|apikey|api[_-]?key|auth[_-]?token|private[_-]?key)([^a-z0-9]|$)/i;
+
+/** Is any segment of this path named for a credential? */
+export function namedForCredential(file) {
+  return String(file).split(/[/\\]+/).some((seg) => seg && CREDENTIAL_NAME.test(seg));
+}
+
+/**
+ * Text that must not reach the disk, wherever it came from.
+ *
+ * `NEVER_STORE` judges a path, which covers a file named for a credential and nothing else.
+ * Two things narai keeps are not files: the sentence you typed (`askedFor`, taken from the
+ * transcript) and the text of a failed call. Paste a key into the chat and the path rules
+ * never see it. These patterns match the *shape* of a credential in free text, so they apply
+ * to both.
+ *
+ * Matching the shape means false positives — a sentence that merely discusses a password can
+ * be dropped. That is the right way to be wrong: the diff survives either way, and the worst
+ * case is one weaker piece of evidence rather than a live secret sitting in a JSON file.
+ */
+export const SECRET_TEXT = [
+  /\b(sk|sk-ant|sk-proj)-[A-Za-z0-9_-]{16,}/,
+  /\bgh[pousr]_[A-Za-z0-9]{16,}/,
+  /\bAKIA[0-9A-Z]{12,}/,
+  /\bBearer\s+[A-Za-z0-9._-]{12,}/i,
+  /\b(password|passwd|pwd)\s*[:=]\s*\S{4,}/i,
+  /(パスワード|合言葉)\s*[:=は＝]\s*\S{4,}/,
+  /\b(api[_-]?key|apikey|access[_-]?token|auth[_-]?token|secret[_-]?key|client[_-]?secret)\s*[:=]\s*\S{8,}/i,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /https?:\/\/[^/\s:]+:[^@\s]+@/,
+];
+
+/** Does this free text look like it carries a credential? When in doubt, yes. */
+export function looksSecret(text) {
+  if (typeof text !== 'string' || !text) return false;
+  return SECRET_TEXT.some((re) => re.test(text));
+}
 
 /** May this file's contents be kept? When in doubt, no. */
 export function mayStoreBody(file) {
   if (process.env.NARAI_HASH_ONLY === '1') return false;
   const p = resolve(file);
   if (NEVER_STORE.some((re) => re.test(p))) return false;
+  if (namedForCredential(p)) return false;
   return !isGitIgnored(p);
 }
 
@@ -139,6 +194,20 @@ export function lineDiff(before, after) {
   return { removed, added };
 }
 
+/**
+ * Cut a diff down to what a correction is allowed to keep.
+ *
+ * Every path that *displays* a line has capped its length for a long time — 160 characters in
+ * `formatDiff`, 200 in the corpus — while the path that *stores* one capped only how many.
+ * One edit to a minified bundle is a single line of half a megabyte, and corrections are never
+ * pruned, so it stayed forever. Nothing downstream ever reads past this, so nothing is lost
+ * that was being used, and markers stay comparable because past and future lines are cut the
+ * same way.
+ */
+export function storableLines(lines) {
+  return lines.slice(0, MAX_LINES).map((l) => l.slice(0, MAX_LINE));
+}
+
 export function formatDiff({ removed, added }, limit = 12) {
   const out = [];
   for (const l of removed.slice(0, limit)) out.push('- ' + l.trim().slice(0, 160));
@@ -150,6 +219,15 @@ export function formatDiff({ removed, added }, limit = 12) {
 
 // ---------------- recording ----------------
 
+/**
+ * Write a correction down.
+ *
+ * `promptId` is on the entry because the two-correction gate counts observations, and one
+ * sentence can produce several corrections — say "drop the emoji" and three files get
+ * rewritten in the same turn. Those are one observation, not three, and nothing else in the
+ * record can tell them apart. It has to be captured here: a field the hook did not write is
+ * gone, and every correction recorded before this existed is permanently anonymous.
+ */
 export function recordCorrection(entry) {
   ensure(CORRECTIONS());
   const f = join(CORRECTIONS(), nowIso().replace(/[:.]/g, '-') + '-' + keyOf(entry.file).slice(0, 8) + '.json');
@@ -237,14 +315,15 @@ function cmdLearn(cmd, args) {
   // process.exit() on a pending import would kill the command mid-flight.
   return import('./learn.mjs').then(({ buildCorpus, validate, propose }) => {
     const corrections = listCorrections();
+    const signals = listSignals();
 
     if (cmd === 'corpus') {
-      if (corrections.length === 0) {
+      if (corrections.length === 0 && signals.length === 0) {
         console.log('narai: nothing recorded yet. Use the agent for a while first.');
         return 0;
       }
       console.log(`# ${corrections.length} correction(s)\n`);
-      console.log(buildCorpus(corrections));
+      console.log(buildCorpus(corrections, { signals }));
       return 0;
     }
 
@@ -261,7 +340,7 @@ function cmdLearn(cmd, args) {
       return 2;
     }
 
-    const { rules, skipped, dropped } = validate(obj, corrections);
+    const { rules, skipped, dropped } = validate(obj, corrections, signals);
     for (const d of dropped) {
       console.error(`  dropped: ${d.reason} (cited ${d.cited}, ${d.real} real) — ${d.rule}`);
     }
@@ -273,10 +352,80 @@ function cmdLearn(cmd, args) {
     }
 
     if (args.includes('--save')) {
-      if (!existsSync(STORE)) mkdirSync(STORE, { recursive: true });
+      ensure(STORE);
       writeFileSync(RULES(), JSON.stringify({ rules, skipped }, null, 2), 'utf8');
-      propose(rules, nowIso());
+      const l = propose(rules, nowIso(), corrections);
+      const fresh = l.proposals.slice(-rules.length);
+      const scorable = fresh.filter((p) => p.scorable).length;
       console.log(`narai: saved to ${RULES()} and recorded in the ledger`);
+      console.log(`  ${scorable} of ${rules.length} can be scored later; the rest share no repeated line to watch for`);
+      // The pile has been distilled, so the nudge starts over from here.
+      try {
+        if (existsSync(SAID())) writeFileSync(SAID(), JSON.stringify({}), 'utf8');
+      } catch { /* the nudge is not worth failing a save over */ }
+    }
+    return 0;
+  }).catch((e) => {
+    console.error(`narai: ${e.message}`);
+    return 1;
+  });
+}
+
+/**
+ * `narai score`  — how the rules that were written have actually done.
+ * `narai accept` / `narai reject` — whether a proposal was adopted.
+ *
+ * All three write ledger.json, and nothing else does. Keeping the only writer on the
+ * command side means no hook can ever lose a write to it, or be delayed by one.
+ */
+function cmdLedger(cmd, args) {
+  return import('./learn.mjs').then(({ score, setAccepted }) => {
+    if (cmd === 'accept' || cmd === 'reject') {
+      const id = args.find((a) => !a.startsWith('--'));
+      if (!id) {
+        console.error(`narai ${cmd} <proposal-id>   (see narai score)`);
+        return 2;
+      }
+      const p = setAccepted(id, cmd === 'accept');
+      if (!p) {
+        console.error(`narai: no proposal matching ${id}`);
+        return 1;
+      }
+      console.log(`narai: ${cmd}ed — ${p.rule}`);
+      return 0;
+    }
+
+    const s = score(listCorrections());
+    if (!s.proposed) {
+      console.log('narai: no rules have been proposed yet, so there is nothing to score.');
+      console.log('Run the narai-learn skill first — it writes rules and records them here.');
+      return 0;
+    }
+
+    console.log(`narai: ${s.proposed} proposal(s) — ${s.scorable} scorable, ${s.unscorable} unscorable`);
+    console.log(`${s.recurrences} correction(s) of a kind a rule was meant to stop have arrived since.\n`);
+
+    for (const r of s.rows) {
+      const state = r.accepted === true ? 'accepted' : r.accepted === false ? 'rejected' : 'undecided';
+      console.log(`${r.id}  [${state}]  ${r.rule}`);
+      if (!r.scorable) {
+        console.log('    unscorable — the corrections behind it share no repeated line, so a');
+        console.log('    recurrence cannot be recognised. It still applies; it just cannot be graded.');
+        continue;
+      }
+      console.log(`    watching for: ${r.marker}`);
+      if (!r.recurrences.length) {
+        console.log(`    no recurrence since ${r.proposedAt.slice(0, 10)}`);
+      } else {
+        for (const h of r.recurrences) console.log(`    recurred ${h.at.slice(0, 10)}  ${h.id}`);
+      }
+    }
+
+    console.log('\nNo hit rate is printed, on purpose. A rule with no recurrence may be working,');
+    console.log('or the situation may simply not have come up — nothing here can tell those apart.');
+    if (existsSync(RULES())) {
+      console.log('These rules are also injected at session start, so narai is treating the very');
+      console.log('behaviour it is measuring. Read the rows, not a score.');
     }
     return 0;
   }).catch((e) => {
@@ -319,15 +468,22 @@ export function hookPost(payload) {
   ) {
     const d = lineDiff(prev.text, cur.text);
     if (d.removed.length || d.added.length) {
+      // What the user said is the best evidence there is, and it is also the one thing here
+      // that arrives as free text they typed. If it looks like it carries a credential the
+      // whole sentence is dropped — a rule written from a weaker signal beats a key on disk.
+      const said = lastUserMessage(payload.transcript_path);
+      const saidIsSecret = looksSecret(said);
       recordCorrection({
         kind: 'instructed', // the user said something; the agent did the editing
         file: resolve(file),
         writtenAt: prev.writtenAt,
         detectedAt: nowIso(),
         session: payload.session_id || null,
-        askedFor: lastUserMessage(payload.transcript_path),
-        removed: d.removed.slice(0, 40),
-        added: d.added.slice(0, 40),
+        promptId: payload.prompt_id || null,
+        askedFor: saidIsSecret ? null : said,
+        askedForWithheld: saidIsSecret ? 'secret-like' : undefined,
+        removed: storableLines(d.removed),
+        added: storableLines(d.added),
         removedCount: d.removed.length,
         addedCount: d.added.length,
       });
@@ -397,6 +553,22 @@ export function lastUserMessage(transcriptPath, limit = 500) {
 }
 
 /**
+ * Why there is nothing to diff against.
+ *
+ * Four different reasons end up here and they are not interchangeable. Telling someone their
+ * file looks like it holds secrets when the real reason is that `narai prune` dropped the copy
+ * is a false alarm about their own repository — and it was what this said until a pruned record
+ * was actually put through it. `cur.text` is checked first because a file that has grown past
+ * the size limit since it was stored says nothing about how it was stored.
+ */
+function whyNoDiff(rec, cur) {
+  if (cur.text == null) return 'the file is now too large to read';
+  if (rec.withheld === 'size') return 'the file was too large to keep';
+  if (String(rec.withheld).startsWith('pruned')) return 'the stored copy was dropped by `narai prune`';
+  return 'this path may hold secrets, so its contents are never stored';
+}
+
+/**
  * PreToolUse: before rewriting, check whether a human got there first.
  * If so, hand the diff back as context. It does not block (by default).
  */
@@ -427,10 +599,9 @@ export function hookPre(payload) {
   ];
 
   let body;
-  if (rec.text == null) {
-    const why = rec.withheld === 'size' ? 'the file is too large to keep' : 'this path may hold secrets, so its contents are never stored';
+  if (rec.text == null || cur.text == null) {
     body = [
-      `The previous contents were not kept (${why}), so there is no diff to show.`,
+      `There is no diff to show — ${whyNoDiff(rec, cur)}.`,
       'Read the file as it stands now before you write over it.',
     ];
   } else {
@@ -454,8 +625,9 @@ export function hookPre(payload) {
       writtenAt: rec.writtenAt,
       detectedAt: nowIso(),
       session: payload.session_id || null,
-      removed: d.removed.slice(0, 40),
-      added: d.added.slice(0, 40),
+      promptId: payload.prompt_id || null,
+      removed: storableLines(d.removed),
+      added: storableLines(d.added),
       removedCount: d.removed.length,
       addedCount: d.added.length,
     });
@@ -473,16 +645,29 @@ export function hookPre(payload) {
  * Neither hook can return context (they are not built that way), so these only record.
  */
 export function recordSignal(kind, payload) {
+  const err = kind === 'failure' ? errorTextOf(payload) : { text: null, withheld: undefined };
+  const rsn = kind === 'denial' ? reasonOf(payload) : { text: null, withheld: undefined };
   const entry = {
     kind,
     at: nowIso(),
     session: payload.session_id || null,
+    // Signals can be cited as evidence, and the two-correction gate counts turns rather than
+    // records. Without this, several refusals inside one turn would look like several occasions.
+    promptId: payload.prompt_id || null,
     cwd: payload.cwd || null,
     tool: payload.tool_name || null,
     agentType: payload.agent_type || null,
     // Never keep tool_input whole — arguments carry secrets. Keep only enough to see the shape.
     summary: summarizeToolInput(payload.tool_name, payload.tool_input),
-    error: kind === 'failure' ? String(payload.tool_error || '').slice(0, 400) : null,
+    error: err.text,
+    errorWithheld: err.withheld,
+    reason: rsn.text,
+    reasonWithheld: rsn.withheld,
+    // Which fields the payload actually arrived with. Names only; the values are where the
+    // secrets are. This is here because `tool_error` was read for 34 failures and was empty
+    // every single time — the field name was assumed and never checked. Recording the shape
+    // means the next gap gets dated from the record instead of guessed at.
+    payloadKeys: Object.keys(payload || {}).sort(),
   };
   ensure(SIGNALS());
   writeFileSync(
@@ -515,6 +700,60 @@ export function summarizeToolInput(tool, input) {
   return null;
 }
 
+/**
+ * The text of a failure, from whichever field actually carried it.
+ *
+ * `tool_error` was the only name looked at, and it came back empty on every one of the 34
+ * failures recorded — so the name was never right. Rather than guess at a replacement, try
+ * the few that mean the same thing and return null when none of them holds anything. null
+ * and '' are kept distinct on purpose: one says "nothing arrived", the other said "a field
+ * arrived and was blank", and only the first is true here.
+ *
+ * Deliberately narrow. A tool's whole response is not an error message, and putting it on
+ * disk would be keeping output nobody vetted.
+ *
+ * Even so, `stderr` is exactly where a failing command echoes the URL it was given, token and
+ * all — so whatever is found here goes through the same free-text check as the sentence the
+ * user typed. Returns `{ text, withheld }`: `withheld` says a candidate was found and dropped,
+ * which is a different fact from nothing having arrived, and `doctor` reports them apart.
+ */
+export function freeText(v, limit = 400) {
+  const s = typeof v === 'string' && v.trim() ? v.trim().replace(/\s+/g, ' ').slice(0, limit) : null;
+  if (!s) return { text: null, withheld: undefined };
+  return looksSecret(s) ? { text: null, withheld: 'secret-like' } : { text: s, withheld: undefined };
+}
+
+export function errorTextOf(payload) {
+  for (const k of ['tool_error', 'error', 'stderr', 'errorMessage', 'error_message']) {
+    const v = payload?.[k];
+    const direct = freeText(v);
+    if (direct.text || direct.withheld) return direct;
+    if (v && typeof v === 'object') {
+      for (const nk of ['message', 'error', 'stderr']) {
+        const nested = freeText(v[nk]);
+        if (nested.text || nested.withheld) return nested;
+      }
+    }
+  }
+  return { text: null, withheld: undefined };
+}
+
+/**
+ * Why a call was blocked, in the harness's words.
+ *
+ * `reason` is on every denial payload observed so far, and narai was throwing it away — it
+ * recorded *that* something was refused and kept only the program name. The refusal is the
+ * least ambiguous "do not do that" this tool ever sees, and the reason is the only part that
+ * says which of the many possible objections it was. Read as free text, so it goes through the
+ * same credential check as everything else here: a reason can quote the command it stopped.
+ *
+ * Only `reason` is read, deliberately. Guessing at a second field name is what left
+ * `tool_error` empty for 34 failures; `payloadKeys` is how another one gets found.
+ */
+export function reasonOf(payload) {
+  return freeText(payload?.reason);
+}
+
 export function listSignals() {
   if (!existsSync(SIGNALS())) return [];
   return readdirSync(SIGNALS())
@@ -523,6 +762,27 @@ export function listSignals() {
     .map((f) => {
       try {
         return { id: f.replace(/\.json$/, ''), ...JSON.parse(readFileSync(join(SIGNALS(), f), 'utf8')) };
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+/** Where the per-file records live. `narai prune` needs the filenames, not just the contents. */
+export function artifactsDir() {
+  return ARTIFACTS();
+}
+
+/** The per-file records the hooks keep. Read by `narai doctor`; nothing else needs them. */
+export function listArtifacts() {
+  if (!existsSync(ARTIFACTS())) return [];
+  return readdirSync(ARTIFACTS())
+    .filter((f) => f.endsWith('.json'))
+    .sort()
+    .map((f) => {
+      try {
+        return JSON.parse(readFileSync(join(ARTIFACTS(), f), 'utf8'));
       } catch {
         return null;
       }
@@ -545,14 +805,17 @@ export function loadRules() {
  * does not reach it on its own, so hand it over here. Say nothing when there is nothing
  * worth saying — an empty warning is just wasted context.
  */
+/** The learned rules, as lines to hand to an agent. Empty when there are none. */
+function ruleLines(rules) {
+  if (!rules.length) return [];
+  const out = ['narai — how this user works, learned from their own corrections:'];
+  for (const r of rules.slice(0, 12)) out.push(`- ${r.rule}${r.scope && r.scope !== '*' ? `  (${r.scope})` : ''}`);
+  return out;
+}
+
 export function hookSubagent() {
   const rules = loadRules();
-  const lines = [];
-
-  if (rules.length) {
-    lines.push('narai — how this user works, learned from their own corrections:');
-    for (const r of rules.slice(0, 12)) lines.push(`- ${r.rule}${r.scope && r.scope !== '*' ? `  (${r.scope})` : ''}`);
-  }
+  const lines = ruleLines(rules);
 
   const corr = listCorrections();
   if (!rules.length && corr.length >= 3) {
@@ -568,6 +831,86 @@ export function hookSubagent() {
     }
   }
 
+  return lines.length ? lines.join('\n') : null;
+}
+
+// ---------------- the main session ----------------
+
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+function loadSaid() {
+  if (!existsSync(SAID())) return {};
+  try {
+    return JSON.parse(readFileSync(SAID(), 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function saveSaid(s) {
+  ensure(STORE);
+  writeFileSync(SAID(), JSON.stringify(s, null, 2), 'utf8');
+}
+
+/** Corrections no rule has cited yet. With no rules at all, that is all of them. */
+export function undistilled(rules, corrections) {
+  const cited = new Set();
+  for (const r of rules) for (const e of r.evidence || []) cited.add(e);
+  return corrections.filter((c) => !cited.has(c.id));
+}
+
+/**
+ * The one line narai is allowed to say without being asked.
+ *
+ * Distilling needs a model, and a model may not run in a hook, so something has to raise
+ * the subject. It is addressed to the agent that just started — which can act on it — and
+ * not to a person who has to remember a command. Five weeks of corrections on this machine
+ * produced no rules at all, which is what happens when the step only runs if someone thinks
+ * to ask for it.
+ *
+ * Three gates, because an ambient line that repeats is an ambient line that gets turned off:
+ * enough material to be worth the interruption, more of it than last time it spoke, and a
+ * week since. Silence is the default state and every gate returns to it.
+ */
+export function distillNudge(rules, corrections, now, { min = 10 } = {}) {
+  const n = undistilled(rules, corrections).length;
+  if (n < min) return null;
+
+  const said = loadSaid();
+  if (typeof said.count === 'number' && n <= said.count) return null; // nothing new to say
+  if (said.at && Date.parse(now) - Date.parse(said.at) < WEEK_MS) return null;
+
+  try {
+    saveSaid({ at: now, count: n });
+  } catch {
+    // If it cannot record that it spoke, it must not speak. The alternative is a line that
+    // reappears every single session, which is precisely how an ambient tool gets uninstalled.
+    return null;
+  }
+  return `narai: ${n} correction(s) recorded, not yet distilled. The narai-learn skill turns them into rules.`;
+}
+
+/**
+ * SessionStart: hand the main session what has been learned.
+ *
+ * hookSubagent has always done this for subagents, so the agent that actually writes the
+ * files was the only one not being told. Closing that meant one readFileSync and no new
+ * capture — the whole gap was that nothing called loadRules() on the way in.
+ *
+ * This injects context, it does not apply anything: the rules arrive as something the agent
+ * may weigh, the same way the diff from hookPre does. `validate --save` is the consent —
+ * a human ran the skill and kept the result.
+ */
+export function hookSession(now = nowIso()) {
+  const rules = loadRules();
+  const lines = ruleLines(rules);
+  try {
+    const nudge = distillNudge(rules, listCorrections(), now);
+    if (nudge) lines.push(nudge);
+  } catch {
+    // The rules are the point and the nudge is a convenience. Reading every correction file
+    // to work out whether to speak must never be able to cost the session its rules.
+  }
   return lines.length ? lines.join('\n') : null;
 }
 
@@ -623,6 +966,7 @@ export function main(argv) {
       else if (sub === 'denied') recordSignal('denial', payload);
       else if (sub === 'failed') recordSignal('failure', payload);
       else if (sub === 'subagent') emit('SubagentStart', hookSubagent());
+      else if (sub === 'session') emit('SessionStart', hookSession());
     } catch {
       // a hook must never interrupt the user's work
     }
@@ -633,9 +977,42 @@ export function main(argv) {
 
   if (cmd === 'export') return cmdExport(argv.slice(1));
 
-  // corpus / validate load learn.mjs, which the hooks never touch. Kept behind a dynamic
-  // import so the hot path stays two files: this one and nothing else.
+  // corpus / validate / score load learn.mjs, and doctor loads doctor.mjs — none of which
+  // the hooks ever touch. Kept behind dynamic imports so the hot path stays one file.
   if (cmd === 'corpus' || cmd === 'validate') return cmdLearn(cmd, argv.slice(1));
+
+  if (cmd === 'score' || cmd === 'accept' || cmd === 'reject') return cmdLedger(cmd, argv.slice(1));
+
+  if (cmd === 'doctor') {
+    return import('./doctor.mjs')
+      .then(({ doctor }) => {
+        console.log(doctor());
+        return 0;
+      })
+      .catch((e) => {
+        console.error(`narai: ${e.message}`);
+        return 1;
+      });
+  }
+
+  if (cmd === 'prune') {
+    const args = argv.slice(1);
+    const di = args.indexOf('--days');
+    const days = di >= 0 ? Number.parseInt(args[di + 1], 10) : 30;
+    if (!Number.isFinite(days) || days < 0) {
+      console.error('narai prune [--days N] [--apply]');
+      return 2;
+    }
+    return import('./prune.mjs')
+      .then(({ prune, report }) => {
+        console.log(report(prune({ days, apply: args.includes('--apply') }), { days }));
+        return 0;
+      })
+      .catch((e) => {
+        console.error(`narai: ${e.message}`);
+        return 1;
+      });
+  }
 
   if (cmd === 'where') {
     console.log(STORE);
@@ -645,6 +1022,11 @@ export function main(argv) {
   console.log(`narai — tells the agent when you edited what it wrote
 
   narai log [n]     show the hand-edits it has recorded (default 20)
+  narai doctor      what the store actually contains, and which couplings have gone quiet
+  narai prune [--days N] [--apply]
+                    drop stored file bodies whose file is gone or untouched for N days
+                    (default 30). The hash stays, so edits are still detected. Dry run
+                    unless --apply.
   narai export      write a bundle to hand over: changed lines only, no paths, no file bodies
                       --as <name>   label the bundle (default: a hash of the hostname)
                       --out <file>  where to write it
@@ -652,18 +1034,31 @@ export function main(argv) {
   narai validate <rules.json> [--save]
                     check a rules file against the corrections on disk. A rule citing
                     fewer than two real ones is dropped and the command exits 1.
+  narai score       how the rules that were written have actually done since
+  narai accept <id> | narai reject <id>
+                    record whether a proposal was adopted (ids come from narai score)
   narai where       print the store location
 
   Turning corrections into rules is the narai-learn skill's job — no API key involved.
 
-  Install as hooks, in your Claude Code settings.json:
+  Install as hooks, in your Claude Code settings.json. The first two are the product; the
+  rest are what makes it learn rather than only warn:
 
-    "PostToolUse": [{ "matcher": "Write|Edit", "hooks": [
+    "PostToolUse":       [{ "matcher": "Write|Edit", "hooks": [
       { "type": "command", "command": "npx narai hook post", "timeout": 10 }]}],
-    "PreToolUse":  [{ "matcher": "Write|Edit", "hooks": [
-      { "type": "command", "command": "npx narai hook pre",  "timeout": 10 }]}]
+    "PreToolUse":        [{ "matcher": "Write|Edit", "hooks": [
+      { "type": "command", "command": "npx narai hook pre",  "timeout": 10 }]}],
+    "SessionStart":      [{ "hooks": [
+      { "type": "command", "command": "npx narai hook session", "timeout": 10 }]}],
+    "SubagentStart":     [{ "hooks": [
+      { "type": "command", "command": "npx narai hook subagent", "timeout": 10 }]}],
+    "PermissionDenied":  [{ "hooks": [
+      { "type": "command", "command": "npx narai hook denied", "timeout": 10 }]}],
+    "PostToolUseFailure":[{ "hooks": [
+      { "type": "command", "command": "npx narai hook failed", "timeout": 10 }]}]
 
   Set NARAI_HASH_ONLY=1 to never store file contents.
+  Set NARAI_NO_PROMPTS=1 to keep the diffs but not what you said.
 `);
   return 0;
 }

@@ -1,5 +1,122 @@
 # Changelog
 
+## 0.3.0
+
+The feedback loop was designed in 0.2.0 and never connected. Five weeks of use on the author's
+own machine produced 15 corrections, 47 signals, 67 artifacts — and zero rules. This release
+connects the return path.
+
+- **Rules now reach the main session.** `SubagentStart` had been handing the learned rules to
+  subagents since 0.1.0, so the only agent not being told was the one that actually writes your
+  files. Added `narai hook session` (`SessionStart`), which is one `readFileSync` and the same
+  silence rule: nothing to say, say nothing. Distilled rules previously had no effect at all
+  unless a human pasted them into `AGENTS.md` by hand.
+- **Added the one line narai says without being asked.** Distilling needs a model and a model
+  may not run in a hook, so nothing was ever raising the subject. At session start, when ten or
+  more corrections are undistilled, the pile has grown since last time, and a week has passed,
+  one line points at the narai-learn skill. Addressed to the agent, which can act on it, not to
+  a person who has to remember. State in `said.json`, reset when rules are saved.
+- **Added `narai score`, `narai accept <id>`, `narai reject <id>`.** `propose()` recorded every
+  rule as a falsifiable prediction and nothing ever scored it: `accepted` and `correctionsSince`
+  were written once and only ever read, so `score()` returned `applied: 0` forever — and had no
+  CLI branch to be called from at all. Recurrences are now folded from the corrections on disk;
+  the ledger is written only by these commands, never by a hook.
+- **A rule's marker is derived in code, not written by the model.** `markerFor()` takes the
+  intersection of the normalised removed lines across the cited corrections. Requiring a
+  non-empty intersection proves the line actually recurred before it is trusted to recognise a
+  recurrence. Rules whose evidence shares nothing literal are kept, injected, and reported
+  `unscorable` — the grader does not get to write its own answer key.
+- **`score` no longer returns a rate.** Zero recurrences cannot be distinguished from "the
+  situation never arose", and now that narai injects the rules it is measuring, any ratio is
+  pinned toward 1.00 by its own hand. Rows and dates only.
+- **Added `narai doctor`.** A pure read over the store reporting what the hooks have actually
+  captured, field by field, and naming any coupling that has never once delivered. Every
+  vendor-side breakage in narai presents identically — the tool simply gets quieter — so
+  counting is the only way to see one.
+- **Fixed: failure signals recorded nothing about the failure.** `recordSignal` read
+  `payload.tool_error`, which is not a field the harness sends; all 34 failures on the author's
+  machine had an empty `error` and the source looked correct throughout. `errorTextOf()` now
+  tries the names that mean the same thing and returns `null` rather than `''` when none holds
+  anything — "nothing arrived" and "a blank field arrived" are different facts. Signals also
+  record `payloadKeys`, the names the payload actually carried, so the next such gap is dated
+  from the record instead of guessed at.
+- **Corrections now record `promptId`.** One sentence can rewrite three files in one turn; that
+  is one observation, not three, and citing all three cleared a gate meant to require two
+  separate occasions. `validate` now counts distinct turns. Corrections written before this
+  release carry no `promptId` and are each counted separately — there is no evidence they
+  shared a turn, and inventing that link would drop real rules.
+- **Denials are readable evidence.** `PermissionDenied` signals were recorded since 0.1.0 and
+  read by nothing. `narai corpus` now lists them grouped by command shape with citable ids, and
+  `validate` resolves evidence ids against signals as well as corrections. Failure signals stay
+  out until `doctor` reports an error text actually arriving.
+- **`narai corpus` shows the parent folder, not just the basename.** On a machine holding many
+  projects, two clients' `index.html` read as one file corrected twice, and the two-correction
+  gate passed on evidence that was never one habit. No new capture — the path was already in
+  the record, and `narai export` still strips it.
+- The help text and README registered two of the six hooks narai uses. Both now list all six.
+
+### Two holes closed before any of that ships
+
+- **A credential typed into the chat is no longer written to disk.** `NEVER_STORE` judges a
+  path, so it covers a file *named* for a secret and nothing else — but narai also keeps the
+  sentence you typed, taken from the transcript. Say "deploy it, the password is …" and it went
+  straight into `askedFor` in plain text, and no path rule was ever going to see it. Added
+  `looksSecret()`, matching the shape of a credential in free text (`sk-…`, `ghp_…`, `AKIA…`,
+  `Bearer …`, `password=`, `パスワード:`, `api_key=`, a private-key header, `user:pass@` in a
+  URL). A match drops the whole sentence and records `askedForWithheld: "secret-like"`; the
+  diff is kept either way, so the correction is still evidence. It will sometimes drop a
+  sentence that only discusses a password — the diff survives and a live key does not, which
+  is the right way to be wrong.
+- **Failure text goes through the same check.** `stderr` is exactly where a failing command
+  echoes back the URL it was handed, token and all. `errorTextOf()` now returns
+  `{ text, withheld }` so "nothing arrived" stays distinguishable from "something arrived and
+  was dropped", and `narai doctor` reports the two separately.
+- **Added `narai prune [--days N] [--apply]`.** `artifacts/` held the full text of every
+  distinct file the agent had ever written, keyed by path hash, and nothing had ever deleted
+  one — delete the file, rename it, finish the project, the body stayed forever in a
+  user-global directory. A body exists only to diff against the *next* write of that same path,
+  so one whose file is gone can never be used again. `prune` drops those bodies and **keeps the
+  hash**: detection is unchanged, the next write just reads the file first instead of showing a
+  diff, which is a path the code already had. Dry run by default. Nothing is scheduled and
+  nothing deletes on its own.
+- `narai doctor` now reports the total size of stored bodies, how many belong to files that no
+  longer exist, and how much text has been withheld as credential-shaped.
+
+### Fixed, found by reading the whole thing back
+
+- **`hookPre` threw a `TypeError` once a stored file grew past 512 KB.** `hookPost` guarded on
+  `cur.tooBig`; `hookPre` did not, so `lineDiff(text, null)` crashed. The hook swallows it and
+  exits 0, so nothing visibly broke — the correction was simply lost and no warning appeared.
+  A file getting large made narai go quiet, and a quiet narai is indistinguishable from one
+  that found nothing.
+- **A path rule meant for credentials was silencing whole repositories.** The check was a bare
+  substring test over the full path, so `tokenlint/`, `tokenizer.js`, `TokenList.tsx` and
+  `secretary/` were all treated as secret-bearing — and a matching *directory* took everything
+  under it. Now each path segment is tested with a word boundary: `secrets.yml`, `API_KEY.txt`
+  and `config/secrets/` are still excluded, a name that merely starts the same is not. This
+  deliberately relaxes a safety rule; `mytokenstore.json` is stored where it was not before.
+  A name that *is* the word is a signal, a name that contains the letters is a coincidence, and
+  going silent across a repository without saying why is the worse failure.
+- **Stored diff lines had no length limit.** Every display path capped a line at 160 or 200
+  characters while the storage path capped only how many lines. One edit to a minified bundle —
+  a single line of half a megabyte — was written whole, and corrections are never pruned. Now
+  cut to 400 characters at the point of writing, which is past anything downstream reads.
+- **`prune` made narai lie about why it had no diff.** A pruned record reported "this path may
+  hold secrets, so its contents are never stored" — a false alarm about the user's own
+  repository. The four reasons (too large then, too large now, pruned, policy) are now distinct.
+- **A failure to record the distill nudge no longer costs the session its rules.** `said.json`
+  being unwritable threw out of `hookSession` before the rules were emitted. It now stays silent
+  — speaking without being able to record it means repeating every session — and the injection
+  proceeds regardless.
+- **Denials keep their `reason` and their turn.** `reason` is on every denial payload observed
+  and was being thrown away, leaving only the program name; it says *which* objection it was,
+  which the command shape cannot. Read as free text, so it goes through the same credential
+  check. Signals also record `promptId` now, so several refusals inside one turn count as one
+  observation, the same as corrections.
+- The README claimed the hooks cost "microseconds" per edit. Measured, it is about 18 ms, nearly
+  all of it the `git check-ignore` subprocess. The number is now in the README instead of the
+  claim.
+
 ## 0.2.0
 
 - **Removed the API call.** `learn` used to hand the corrections to a model through an SDK
