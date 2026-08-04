@@ -98,6 +98,26 @@ test('NARAI_HASH_ONLY turns off body storage entirely', () => {
   }
 });
 
+test('NARAI_HASH_ONLY のときは、秘密を疑ったせいだと言わない', () => {
+  // この設定は「この環境では一切本文を持たない」という運用判断であって、
+  // そのファイルが怪しいという話ではない。全ファイルで誤った警告を出すことになる。
+  const dir = work();
+  process.env.NARAI_HASH_ONLY = '1';
+  try {
+    const f = join(dir, 'ordinary.md');
+    writeFileSync(f, 'nothing sensitive at all\n');
+    hookPost(payload(f));
+    writeFileSync(f, 'changed by a human\n');
+    const msg = hookPre(payload(f));
+    assert.ok(msg, '本文が無くても変更は検出する');
+    assert.match(msg, /NARAI_HASH_ONLY/);
+    assert.doesNotMatch(msg, /may hold secrets/);
+  } finally {
+    delete process.env.NARAI_HASH_ONLY;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ---------------- 差分 ----------------
 
 test('lineDiff reports what went and what came', () => {

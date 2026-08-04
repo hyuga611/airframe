@@ -511,7 +511,7 @@ export function hookPost(payload) {
     file: resolve(file),
     hash: cur.hash,
     text: keepBody ? cur.text : null,
-    withheld: keepBody ? null : cur.tooBig ? 'size' : 'policy',
+    withheld: keepBody ? null : cur.tooBig ? 'size' : process.env.NARAI_HASH_ONLY === '1' ? 'hash-only' : 'policy',
     size: cur.size,
     writtenAt: nowIso(),
     session: payload.session_id || null,
@@ -579,6 +579,7 @@ export function lastUserMessage(transcriptPath, limit = 500) {
 function whyNoDiff(rec, cur) {
   if (cur.text == null) return 'the file is now too large to read';
   if (rec.withheld === 'size') return 'the file was too large to keep';
+  if (rec.withheld === 'hash-only') return 'NARAI_HASH_ONLY is set, so no contents are kept anywhere';
   if (String(rec.withheld).startsWith('pruned')) return 'the stored copy was dropped by `narai prune`';
   return 'this path may hold secrets, so its contents are never stored';
 }
