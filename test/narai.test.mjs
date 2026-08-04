@@ -24,6 +24,8 @@ function work() {
   return mkdtempSync(join(tmpdir(), 'narai-work-'));
 }
 const payload = (file, tool = 'Write') => ({ tool_name: tool, session_id: 's', tool_input: { file_path: file } });
+// 同一ミリ秒に複数の信号が着地しうるので、末尾ではなく目印で引く。
+const signalWhere = (pred) => listSignals().filter(pred).at(-1);
 
 // ---------------- 保存方針 ----------------
 
@@ -674,8 +676,8 @@ test('errorTextOf はどの名前で来ても拾い、来ていなければ null
 });
 
 test('信号にはペイロードの鍵の名前だけを残す（値は残さない）', () => {
-  recordSignal('failure', { tool_name: 'Bash', session_id: 's', tool_input: { command: 'make test' }, secret_field: 'hunter2' });
-  const s = listSignals().at(-1);
+  recordSignal('failure', { tool_name: 'Bash', session_id: 'keys-only', tool_input: { command: 'make test' }, secret_field: 'hunter2' });
+  const s = signalWhere((x) => x.session === 'keys-only');
   assert.ok(s.payloadKeys.includes('secret_field'), '名前は残す');
   assert.doesNotMatch(JSON.stringify(s), /hunter2/, '値は残さない');
 });
@@ -801,8 +803,8 @@ test('失敗メッセージが資格情報を含むときは伏せる', () => {
   assert.equal(errorTextOf({ stderr: 'curl failed: https://u:hunter2@api.example.com/v1' }).text, null);
   assert.equal(errorTextOf({ stderr: 'curl failed: https://u:hunter2@api.example.com/v1' }).withheld, 'secret-like');
 
-  recordSignal('failure', { tool_name: 'Bash', session_id: 's', stderr: 'auth failed with api_key = abcdef123456789' });
-  const s = listSignals().at(-1);
+  recordSignal('failure', { tool_name: 'Bash', session_id: 'err-secret', stderr: 'auth failed with api_key = abcdef123456789' });
+  const s = signalWhere((x) => x.session === 'err-secret');
   assert.equal(s.error, null);
   assert.equal(s.errorWithheld, 'secret-like');
   assert.doesNotMatch(JSON.stringify(s), /abcdef123456789/);
@@ -816,9 +818,19 @@ test('却下は理由とターンも記録する', () => {
     tool_input: { command: 'rm -rf /important' },
     reason: 'destructive command outside the working directory',
   });
-  const s = listSignals().at(-1);
+  const s = signalWhere((x) => x.promptId === 'P7');
   assert.equal(s.reason, 'destructive command outside the working directory');
   assert.equal(s.promptId, 'P7', '同じターンの複数の却下を1観測として数えるために要る');
+});
+
+test('同一ミリ秒に並んだ信号が、上書きで消えない', () => {
+  // ファイル名が <ISO時刻>-<kind>.json だった頃は、同種が同じミリ秒に2件出ると
+  // 片方が黙って消えた。Linux CI でだけ露見した実バグ。
+  const before = listSignals().length;
+  for (let i = 0; i < 8; i++) {
+    recordSignal('denial', { tool_name: 'Bash', session_id: 'burst', tool_input: { command: 'rm' } });
+  }
+  assert.equal(listSignals().length, before + 8, '8件書いたら8件残る');
 });
 
 test('理由が資格情報を含むなら伏せる', () => {
@@ -826,16 +838,16 @@ test('理由が資格情報を含むなら伏せる', () => {
   assert.equal(reasonOf({ reason: 'blocked: curl https://u:hunter2@api.example.com' }).withheld, 'secret-like');
   assert.equal(reasonOf({}).text, null);
 
-  recordSignal('denial', { tool_name: 'Bash', session_id: 's', tool_input: { command: 'curl' }, reason: 'api_key = abcdef123456789 is not allowed' });
-  const s = listSignals().at(-1);
+  recordSignal('denial', { tool_name: 'Bash', session_id: 'reason-secret', tool_input: { command: 'curl' }, reason: 'api_key = abcdef123456789 is not allowed' });
+  const s = signalWhere((x) => x.session === 'reason-secret');
   assert.equal(s.reason, null);
   assert.equal(s.reasonWithheld, 'secret-like');
   assert.doesNotMatch(JSON.stringify(s), /abcdef123456789/);
 });
 
 test('失敗には理由フィールドを付けない（却下だけの概念）', () => {
-  recordSignal('failure', { tool_name: 'Bash', session_id: 's', tool_input: { command: 'make' }, reason: 'should be ignored here' });
-  assert.equal(listSignals().at(-1).reason, null);
+  recordSignal('failure', { tool_name: 'Bash', session_id: 'fail-no-reason', tool_input: { command: 'make' }, reason: 'should be ignored here' });
+  assert.equal(signalWhere((x) => x.session === 'fail-no-reason').reason, null);
 });
 
 test('corpus は却下の理由も出す', () => {

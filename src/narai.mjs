@@ -18,7 +18,7 @@ import {
 } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, resolve, basename, dirname } from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { homedir, hostname } from 'node:os';
 import { pathToFileURL } from 'node:url';
 
@@ -126,6 +126,21 @@ const sha = (s) => createHash('sha256').update(s).digest('hex');
 const keyOf = (p) => sha(resolve(p).toLowerCase()).slice(0, 32);
 const nowIso = () => new Date().toISOString();
 
+/**
+ * A filename stem that sorts by time and cannot collide.
+ *
+ * The timestamp is milliseconds, and two records can land inside one — an agent writing three
+ * files from a single instruction, a denial and a failure arriving together, two subagents in
+ * separate processes. Same name meant one silently overwrote the other, which is a lost
+ * correction that nothing would ever report. Found on Linux CI, where everything is fast enough
+ * to actually hit; on Windows the clock and the disk hid it.
+ *
+ * The random tail only breaks ties. The timestamp stays the prefix, so ordering by filename
+ * still means ordering by time, and existing ids keep working — they are only ever compared
+ * for equality.
+ */
+const stamp = () => `${nowIso().replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}`;
+
 function ensure(dir) {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
@@ -230,7 +245,7 @@ export function formatDiff({ removed, added }, limit = 12) {
  */
 export function recordCorrection(entry) {
   ensure(CORRECTIONS());
-  const f = join(CORRECTIONS(), nowIso().replace(/[:.]/g, '-') + '-' + keyOf(entry.file).slice(0, 8) + '.json');
+  const f = join(CORRECTIONS(), `${stamp()}-${keyOf(entry.file).slice(0, 8)}.json`);
   writeFileSync(f, JSON.stringify(entry, null, 2), 'utf8');
   return f;
 }
@@ -670,11 +685,7 @@ export function recordSignal(kind, payload) {
     payloadKeys: Object.keys(payload || {}).sort(),
   };
   ensure(SIGNALS());
-  writeFileSync(
-    join(SIGNALS(), entry.at.replace(/[:.]/g, '-') + '-' + kind + '.json'),
-    JSON.stringify(entry, null, 2),
-    'utf8',
-  );
+  writeFileSync(join(SIGNALS(), `${stamp()}-${kind}.json`), JSON.stringify(entry, null, 2), 'utf8');
   return entry;
 }
 

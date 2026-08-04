@@ -116,6 +116,13 @@ connects the return path.
 - The README claimed the hooks cost "microseconds" per edit. Measured, it is about 18 ms, nearly
   all of it the `git check-ignore` subprocess. The number is now in the README instead of the
   claim.
+- **Records written inside the same millisecond overwrote each other.** Filenames were the ISO
+  timestamp plus the kind, so two signals of one kind — or two corrections to one file — landed
+  on the same name and one was silently lost. An agent rewriting three files from a single
+  instruction is enough to hit it. A short random tail now breaks ties; the timestamp is still
+  the prefix, so ordering by filename is still ordering by time, and existing ids are unchanged
+  because they are only ever compared for equality. Found by Linux CI, which is fast enough to
+  actually collide — on Windows the clock and the disk had been hiding it.
 
 ## 0.2.0
 
