@@ -42,6 +42,8 @@ measurement won and the test records what was observed, on which version.
 | P6 | Resolve the primary key from the catalog. Composite keys supported. No key, no plan | A column named `id` is not a promise of uniqueness |
 | P7 | `SET` columns must exist |
 | P8 | `SET` columns must not be write-denied, and the refusal states why | Some columns belong to a purpose-built operation with its own validation |
+| P9 | The target table must not be aliased | The engine reuses the condition text to build its own `SELECT COUNT(*) FROM t WHERE …`, in which an alias declared by the caller's statement does not exist. The server then answers with an error about a table the operator never wrote, from a tool whose job is to explain things |
+| P10 | The condition ends where the clause after it begins | `DELETE … WHERE id = 1 RETURNING id` is legal, and carrying the `RETURNING` into the count query is a syntax error in a statement the operator wrote correctly |
 
 ## 3. Planning — the dry run
 
@@ -154,6 +156,7 @@ of guaranteeing they catch two.
 | `UNSUPPORTED_STATEMENT`, `MIXED` | Not a read or a write we handle, or a read that also writes (`WITH … AS (DELETE … RETURNING)`) |
 | `MULTI_TABLE` | `UPDATE a, b SET …` or `DELETE a FROM a JOIN b` |
 | `ORDER_OR_LIMIT` | `ORDER BY` or `LIMIT` on a write |
+| `ALIASED_TARGET` | The target table is aliased. Write the table name in the condition |
 | `VOLATILE` | `now()`, `rand()`, `nextval()` — the rows shown would not be the rows changed |
 | `TABLE_NOT_ALLOWED` | Not in the allowlist |
 | `ENGINE_TABLE` | This library's own plan or audit table. Refused in every configuration |

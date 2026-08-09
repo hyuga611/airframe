@@ -1,5 +1,12 @@
 import { lex, stripComments, splitStatements, SqlLexError, type Dialect, type Token } from './lexer.js';
-import { isMultiTableWrite, hasJoin, hasTopLevelOrderBy, hasTopLevelLimit, volatileCalls } from './analyze.js';
+import {
+  isMultiTableWrite,
+  hasJoin,
+  hasTopLevelOrderBy,
+  hasTopLevelLimit,
+  volatileCalls,
+  targetAlias,
+} from './analyze.js';
 import { Refusal } from './refusal.js';
 
 export type { Dialect };
@@ -18,6 +25,7 @@ export type RejectCode =
   | 'MULTI_TABLE'
   | 'ORDER_OR_LIMIT'
   | 'VOLATILE'
+  | 'ALIASED_TARGET'
   | 'MIXED';
 
 /** A statement we refuse to reason about. Refusing is always safe; guessing is not. */
@@ -207,6 +215,16 @@ export function normalize(input: string, opts: NormalizeOptions): NormalizeResul
           'so the rows shown to you would not be guaranteed to be the rows changed.',
       );
     }
+    const alias = targetAlias(tokens);
+    if (alias !== undefined) {
+      throw new Rejected(
+        'ALIASED_TARGET',
+        `The target table is aliased as \`${alias}\`. Write the table name in the condition instead ` +
+          `(\`WHERE ${alias}.x = 1\` becomes \`WHERE x = 1\`): the engine measures the rows with a query it ` +
+          'builds from your condition, and an alias declared in your statement does not exist in that one.',
+      );
+    }
+
     const volatiles = volatileCalls(tokens);
     if (volatiles.length > 0) {
       throw new Rejected(

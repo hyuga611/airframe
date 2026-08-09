@@ -59,6 +59,11 @@ produced a plan describing something other than what would happen:
   differ.
 - Nested dry runs removed entirely, rather than guarded. Measured: on MySQL a
   rolled-back statement keeps its row locks until the caller's transaction ends.
+- An aliased target (`UPDATE orders o SET … WHERE o.id = 1`) is refused with the
+  edit to make, instead of reaching the server and returning `missing FROM-clause
+  entry for table "o"` — an error about a table the operator never wrote.
+- `RETURNING` is no longer carried into the count query the engine builds from
+  the condition, where it was a syntax error in a statement written correctly.
 
 ### False reports fixed
 

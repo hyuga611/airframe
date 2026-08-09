@@ -87,6 +87,54 @@ export function isMultiTableWrite(tokens: readonly Token[]): boolean {
 }
 
 /**
+ * The alias given to the target table, if the author gave it one.
+ *
+ * `UPDATE orders o SET ... WHERE o.id = 1` is ordinary SQL and an assistant will
+ * write it. The engine builds its own `SELECT COUNT(*) FROM orders WHERE o.id = 1`
+ * from the same condition text, which the server answers with `missing FROM-clause
+ * entry for table "o"` — an error about a table the operator never mentioned,
+ * arriving from a tool that was supposed to be explaining things to them.
+ *
+ * Supporting the alias would mean carrying it through the count, the snapshot and
+ * the post-apply read; getting that wrong anywhere means measuring one row set
+ * and writing another. Refusing costs the author one edit and says so.
+ */
+export function targetAlias(tokens: readonly Token[]): string | undefined {
+  const toks = significant(tokens);
+  const first = toks[0];
+  if (first === undefined || first.kind !== 'ident') return undefined;
+  const lead = lower(first.value);
+
+  let i: number;
+  let stop: Set<string>;
+  if (lead === 'update') {
+    i = 1;
+    stop = new Set(['set']);
+  } else if (lead === 'delete') {
+    const second = toks[1];
+    if (second === undefined || second.kind !== 'ident' || lower(second.value) !== 'from') return undefined;
+    i = 2;
+    stop = new Set(['where', 'using', 'returning']);
+  } else {
+    return undefined;
+  }
+
+  // Step over the (possibly schema-qualified) table name.
+  if (toks[i]?.kind !== 'ident' && toks[i]?.kind !== 'quotedIdent') return undefined;
+  i++;
+  while (toks[i]?.kind === 'punct' && toks[i]?.value === '.') i += 2;
+
+  let next = toks[i];
+  if (next?.kind === 'ident' && lower(next.value) === 'as') {
+    next = toks[i + 1];
+  }
+  if (next === undefined) return undefined;
+  if (next.kind !== 'ident' && next.kind !== 'quotedIdent') return undefined;
+  if (next.kind === 'ident' && stop.has(lower(next.value))) return undefined;
+  return next.value;
+}
+
+/**
  * Functions whose value changes between evaluations.
  *
  * The engine reads the target rows, executes, reads them again, and later applies

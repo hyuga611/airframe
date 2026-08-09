@@ -8,6 +8,12 @@ const CLAUSE_END = new Set([
   'intersect', 'on', 'using', 'set', 'returning', 'window', 'for', 'into',
 ]);
 
+/**
+ * Keywords that end a WHERE clause. `ORDER`/`LIMIT` are refused on a write before
+ * this is ever called; `RETURNING` is not, and is legal on Postgres.
+ */
+const WHERE_END = new Set(['returning', 'order', 'limit', 'offset', 'fetch', 'for']);
+
 /** Keywords after which the next qualified name is a table. */
 const TABLE_LEAD = new Set(['from', 'join', 'update']);
 
@@ -146,7 +152,21 @@ export function whereClause(tokens: readonly Token[]): string | undefined {
       continue;
     }
     if (depth === 0 && t.kind === 'ident' && lower(t.value) === 'where') {
-      const rest = tokens.slice(tokens.indexOf(t) + 1);
+      // Stop at a clause that follows the condition rather than belonging to it.
+      // `DELETE FROM t WHERE id = 1 RETURNING id` is a perfectly good statement,
+      // but the engine reuses this text to ask `SELECT COUNT(*) FROM t WHERE …`,
+      // and a RETURNING carried into that produces a syntax error about a word
+      // the operator wrote in a place where it was legal.
+      const rest: Token[] = [];
+      let d = 0;
+      for (const x of tokens.slice(tokens.indexOf(t) + 1)) {
+        if (x.kind === 'punct') {
+          if (x.value === '(') d++;
+          else if (x.value === ')') d--;
+        }
+        if (d === 0 && x.kind === 'ident' && WHERE_END.has(lower(x.value))) break;
+        rest.push(x);
+      }
       const text = rest.map((x) => x.raw).join('').trim();
       return text === '' ? undefined : text;
     }
