@@ -1,0 +1,93 @@
+{
+  "name": "@hyuga/llm-safe-sql",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Let an LLM propose UPDATE/DELETE, then actually run it, measure the real before/after diff, and always roll back — so the human approves measured facts, not the model's claim.",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    },
+    "./mysql": {
+      "types": "./dist/src/adapters/mysql.d.ts",
+      "default": "./dist/src/adapters/mysql.js"
+    },
+    "./postgres": {
+      "types": "./dist/src/adapters/postgres.d.ts",
+      "default": "./dist/src/adapters/postgres.js"
+    },
+    "./mcp": {
+      "types": "./dist/src/mcp/server.d.ts",
+      "default": "./dist/src/mcp/server.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "llm-safe-sql": "dist/src/cli.js",
+    "llm-safe-sql-mcp": "dist/src/mcp/bin.js"
+  },
+  "files": [
+    "dist/src",
+    "src",
+    "SPEC.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.json && node --test \"dist/test/*.test.js\"",
+    "test:integration": "tsc -p tsconfig.json && node --test \"dist/test/integration/*.test.js\"",
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down -v",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "author": "hyuga611",
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "sql",
+    "llm",
+    "mcp",
+    "human-in-the-loop",
+    "dry-run",
+    "rollback",
+    "mysql",
+    "postgresql",
+    "ai-safety",
+    "database"
+  ],
+  "homepage": "https://github.com/hyuga611/llm-safe-sql#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyuga611/llm-safe-sql.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hyuga611/llm-safe-sql/issues"
+  },
+  "peerDependencies": {
+    "mysql2": ">=3.9.0",
+    "pg": ">=8.11.0"
+  },
+  "peerDependenciesMeta": {
+    "mysql2": {
+      "optional": true
+    },
+    "pg": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@types/pg": "^8.21.0",
+    "mysql2": "^3.23.2",
+    "pg": "^8.22.0",
+    "typescript": "^5.7.2"
+  }
+}

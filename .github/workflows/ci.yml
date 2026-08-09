@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A pull request that only ever ran the unit tests would prove almost nothing
+# here: the claims this library makes are claims about transaction semantics, and
+# those are only true of a real server. So the integration suite runs on every
+# push against the same two images the docker-compose file uses.
+jobs:
+  test:
+    name: node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20.x', '22.x', '24.x']
+
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: llmsafesql
+          MYSQL_DATABASE: llmsafesql
+        ports:
+          - 13306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pllmsafesql"
+          --health-interval=3s
+          --health-timeout=5s
+          --health-retries=30
+
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: llmsafesql
+          POSTGRES_DB: llmsafesql
+        ports:
+          - 15432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d llmsafesql"
+          --health-interval=3s
+          --health-timeout=5s
+          --health-retries=30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      # These also pin the dialect facts in SPEC.md marked 🔬. If a future server
+      # version changes one of them, this is where we find out — which is the
+      # point of measuring rather than citing the documentation.
+      - name: Integration tests (MySQL 8.4 + PostgreSQL 16)
+        run: npm run test:integration
+
+  package:
+    name: package contents
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+      # The published tarball is a security surface of its own: a config file or
+      # a stray dump committed by accident would be republished to everyone.
+      - name: Show what would be published
+        run: npm pack --dry-run
+
+      - name: Fail if a local config or dump slipped into the package
+        run: |
+          npm pack --dry-run --json > /tmp/pack.json
+          if grep -Eq '"path": *"(.*\.config\.json|.*\.sql|.*\.env)"' /tmp/pack.json; then
+            echo 'A configuration file, SQL dump or env file is in the package.'
+            exit 1
+          fi
+
+      # Installed from the tarball, not from the working directory: a directory
+      # install is symlinked, so it would resolve mysql2 out of the repo's own
+      # node_modules and pass while the published package was broken.
+      - name: The package root must import with only one driver installed
+        run: |
+          TARBALL=$(npm pack --silent)
+          mkdir -p /tmp/consumer && cd /tmp/consumer
+          npm init -y >/dev/null
+          npm install "$GITHUB_WORKSPACE/$TARBALL" pg >/dev/null
+          test ! -d node_modules/mysql2 || (echo 'mysql2 should not be installed here' && exit 1)
+          node --input-type=module -e "
+            import('@hyuga/llm-safe-sql')
+              .then((m) => console.log('root import works without mysql2:', Object.keys(m).length, 'exports'))
+              .catch((e) => { console.error(e); process.exit(1); });
+          "
