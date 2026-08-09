@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- The test scripts no longer rely on the runner expanding a glob, which Node 20
+  does not do. The failure looked like a broken build (`Could not find
+  'dist/test/*.test.js'`) rather than like a runner older than the syntax, and it
+  only appeared in CI. Passing a directory instead is not a fix either — the
+  runner recurses, so the unit run would pull in the integration suite and fail
+  on any machine without a database.
+
 ## [0.1.0] — 2026-08-09
 
 First public release. The idea and the engine come from a system that has been
