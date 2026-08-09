@@ -4,10 +4,21 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [0.1.1] — 2026-08-09
 
 ### Fixed
 
+- **Timestamps kept their full precision.** Both drivers parsed a timestamp into a
+  JS `Date`, which holds milliseconds, while `DATETIME(6)` and `timestamp(6)` hold
+  microseconds — so the digits that differed were exactly the digits being dropped.
+  Measured on both engines: a change confined to microseconds compared equal. On
+  its own that failed closed (the plan was refused as `NO_CHANGE`, which is wrong
+  but harmless); alongside any other edit it produced a plan with the timestamp
+  change simply absent from the card. That is the same shape as the JSON-column
+  defect fixed in 0.1.0. Dates and times are now read as text on both adapters.
+- The same change makes MySQL's zero date arrive as `0000-00-00` instead of
+  `1899-11-30` — a value the database does not contain, previously displayed to
+  somebody being asked to approve a change to it.
 - The test scripts no longer rely on the runner expanding a glob, which Node 20
   does not do. The failure looked like a broken build (`Could not find
   'dist/test/*.test.js'`) rather than like a runner older than the syntax, and it
@@ -99,4 +110,5 @@ produced a plan describing something other than what would happen:
 - No runtime dependencies. Drivers are optional peers; the MCP server implements
   the wire protocol directly.
 
+[0.1.1]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.1.1
 [0.1.0]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.1.0

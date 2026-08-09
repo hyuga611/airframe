@@ -43,6 +43,13 @@ export class MysqlAdapter implements Adapter {
       supportBigNumbers: true,
       bigNumberStrings: true,
       decimalNumbers: false,
+      // Dates as text, for the same reason as BIGINT above. A JS Date holds
+      // milliseconds; DATETIME(6) holds microseconds. Parsing to a Date discards
+      // the last three digits, so a change confined to them is invisible in the
+      // diff and rides along under whatever else the statement touches. It also
+      // makes MySQL's zero date arrive as 1899-11-30, which is a value the
+      // database does not contain being shown to somebody for approval.
+      dateStrings: true,
     });
     return new MysqlAdapter(conn);
   }

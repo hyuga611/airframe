@@ -61,6 +61,7 @@ measurement won and the test records what was observed, on which version.
 | D10 | If nothing actually changed, refuse | The rows already hold those values |
 | D11 | For `DELETE`, snapshot **every** column including the empty ones; omit them from display only | Dropping a NULL column from the snapshot also drops it from the pre-apply comparison, so a value written in between is deleted unseen. Deletion is irreversible |
 | D12 | Compare masked columns by hash, never by skipping them | Otherwise the masking configuration silently weakens the comparison |
+| D14 🔬 | Read every value in a form that preserves it: BIGINT and DECIMAL as text, dates and times as text | The diff is only as good as what the driver hands back. A double cannot hold a 64-bit id, and a JS `Date` holds milliseconds while `DATETIME(6)` and `timestamp(6)` hold microseconds — so the digits that differ are exactly the digits that get dropped. Measured on both engines: a change confined to microseconds compared equal, which failed closed on its own (`NO_CHANGE`) but disappeared from the card entirely when it accompanied any other edit. It also made MySQL's zero date arrive as `1899-11-30`, a value the database does not contain, displayed to somebody for approval |
 | D13 | A table with no declared business consequence cannot be written | Without it the confirmation is a list of column names and values, which a non-specialist cannot judge. The sentence that protects them is the one saying what changing this table *means* |
 
 ## 4. Applying
@@ -121,6 +122,8 @@ tell us.
 | Row locks after `ROLLBACK TO SAVEPOINT`, savepoint set first | Released | Released |
 | Row locks after `ROLLBACK TO SAVEPOINT`, **caller wrote first** | **Retained** until the outer transaction ends | Released |
 | Columns the database maintains | Declarative (`ON UPDATE`), so knowable — unless a trigger exists | Never declarative; conventionally a trigger, so knowable only when no trigger exists |
+| Sub-millisecond timestamps by default | `DATETIME(6)` parsed to a `Date`: microseconds lost | `timestamp(6)` parsed to a `Date`: microseconds lost |
+| Zero dates | `0000-00-00` is storable under a legacy `sql_mode`, and parsed to `1899-11-30` | not representable |
 
 Two consequences worth stating plainly:
 

@@ -12,6 +12,32 @@ export interface PostgresConfig {
   database: string;
 }
 
+/**
+ * Date and time OIDs, which this adapter takes as text rather than as `Date`.
+ *
+ * `timestamp(6)` holds microseconds and a JS `Date` holds milliseconds, so the
+ * default parser silently drops the last three digits — and a change confined to
+ * them then never appears in the diff. The parser is overridden per client rather
+ * than through `pg.types.setTypeParser`, which is global to the module and would
+ * change how every other query in the host application reads its timestamps.
+ */
+const TEXTUAL_OIDS = new Set([
+  1082, // date
+  1083, // time
+  1114, // timestamp
+  1184, // timestamptz
+  1266, // timetz
+]);
+
+const asText = (v: string): string => v;
+
+const TYPES = {
+  getTypeParser(oid: number, format?: unknown): unknown {
+    if (TEXTUAL_OIDS.has(oid)) return asText;
+    return (pg.types.getTypeParser as (o: number, f?: unknown) => unknown)(oid, format);
+  },
+};
+
 export class PostgresAdapter implements Adapter {
   readonly dialect = 'postgres' as const;
   private readonly client: pg.Client;
@@ -23,7 +49,7 @@ export class PostgresAdapter implements Adapter {
   }
 
   static async connect(cfg: PostgresConfig): Promise<PostgresAdapter> {
-    const client = new pg.Client(cfg);
+    const client = new pg.Client({ ...cfg, types: TYPES as never });
     await client.connect();
     return new PostgresAdapter(client);
   }

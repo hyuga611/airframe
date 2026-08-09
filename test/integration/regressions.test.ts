@@ -18,9 +18,10 @@ const MYSQL = { host: '127.0.0.1', port: 13306, user: 'root', password: 'llmsafe
 const PG = { host: '127.0.0.1', port: 15432, user: 'postgres', password: 'llmsafesql', database: 'llmsafesql' };
 
 const policy = new Policy({
-  allow: ['items', 'parents', 'children', 'myitems', 'bigids'],
+  allow: ['items', 'parents', 'children', 'myitems', 'bigids', 'precise'],
   impact: {
     items: 'test', parents: 'test', children: 'test', myitems: 'test', bigids: 'test',
+    precise: 'test',
   },
 });
 
@@ -55,6 +56,11 @@ beforeEach(async () => {
     `CREATE TABLE children (id INT PRIMARY KEY, parent_id INT NOT NULL, v INT NOT NULL,
        CONSTRAINT fk_child FOREIGN KEY (parent_id) REFERENCES parents(id) ON DELETE CASCADE) ENGINE=InnoDB`,
   );
+  await my.query('DROP TABLE IF EXISTS precise');
+  await my.query(
+    `CREATE TABLE precise (id INT PRIMARY KEY, ts DATETIME(6) NOT NULL, note VARCHAR(20) NULL) ENGINE=InnoDB`,
+  );
+  await my.query("INSERT INTO precise VALUES (1,'2026-01-02 03:04:05.123456','x')");
   await my.query('INSERT INTO parents VALUES (1,10),(2,20)');
   await my.query('INSERT INTO children VALUES (100,1,1),(101,1,2)');
 
@@ -76,6 +82,10 @@ beforeEach(async () => {
   await my.query('INSERT INTO bigids VALUES (1, 9007199254740993)');
 
   // Postgres fixtures
+  await pgA.query('DROP TABLE IF EXISTS precise');
+  await pgA.query('CREATE TABLE precise (id INT PRIMARY KEY, ts TIMESTAMP(6) NOT NULL, note TEXT)');
+  await pgA.query("INSERT INTO precise VALUES (1,'2026-01-02 03:04:05.123456','x')");
+
   await pgA.query('DROP TABLE IF EXISTS children');
   await pgA.query('DROP TABLE IF EXISTS parents');
   await pgA.query('CREATE TABLE parents (id INT PRIMARY KEY, v INT NOT NULL)');
@@ -278,4 +288,59 @@ test('a table named like a keyword is not mistaken for a clause', async () => {
   const plan = await e.plan('UPDATE `order` SET qty = 99 WHERE id = 1');
   assert.deepEqual(plan.rows[0]?.changed, ['qty']);
   await my.query('DROP TABLE IF EXISTS `order`');
+});
+
+/**
+ * Sub-millisecond timestamps.
+ *
+ * Both drivers parse a timestamp into a JS `Date`, which holds milliseconds,
+ * while `DATETIME(6)` and `timestamp(6)` hold microseconds. The last three digits
+ * were therefore dropped on the way in, and a change confined to them compared
+ * equal.
+ *
+ * On its own that failed closed — the plan was refused as NO_CHANGE, which is
+ * wrong but harmless. The damage was the ride-along case below: alongside any
+ * other edit, a plan was produced and the timestamp change was simply absent from
+ * the card. That is the same shape as the JSON-column defect that started this
+ * file, and it is why both adapters now take dates as text.
+ */
+test('a change of microseconds only is visible, not rounded away', async () => {
+  const cases = [
+    ['mysql', myE, my, 'CAST(ts AS CHAR)'],
+    ['postgres', pgE, pgA, 'ts::text'],
+  ] as const;
+  for (const [label, e, q, asText] of cases) {
+    const plan = await e.plan("UPDATE precise SET ts = '2026-01-02 03:04:05.123789' WHERE id = 1");
+    assert.deepEqual(plan.columnsTouched, ['ts'], label);
+    assert.match(String(plan.rows[0]?.before['ts']), /\.123456/, label);
+    assert.match(String(plan.rows[0]?.after['ts']), /\.123789/, label);
+    const now = await q.query<{ t: string }>(`SELECT ${asText} AS t FROM precise WHERE id = 1`);
+    assert.match(String(now[0]?.t), /\.123456/, `${label}: the trial must have been rolled back`);
+  }
+});
+
+test('a microsecond change does not ride along under another column', async () => {
+  for (const [label, e] of [['mysql', myE], ['postgres', pgE]] as const) {
+    const plan = await e.plan(
+      "UPDATE precise SET note = 'edited', ts = '2026-01-02 03:04:05.123789' WHERE id = 1",
+    );
+    assert.deepEqual([...plan.columnsTouched].sort(), ['note', 'ts'], `${label}: both changes must be shown`);
+  }
+});
+
+/**
+ * MySQL's zero date.
+ *
+ * With a legacy `sql_mode`, `0000-00-00` is a storable value. The driver used to
+ * hand it back as `1899-11-30` — a date the database does not contain, displayed
+ * to somebody being asked to approve a change to it.
+ */
+test('mysql: a zero date is shown as what is stored, not as 1899-11-30', async () => {
+  await my.query("SET SESSION sql_mode = ''");
+  await my.query('DROP TABLE IF EXISTS zerodate');
+  await my.query('CREATE TABLE zerodate (id INT PRIMARY KEY, d DATE NULL) ENGINE=InnoDB');
+  await my.query("INSERT INTO zerodate VALUES (1,'0000-00-00')");
+  const rows = await my.query<{ d: unknown }>('SELECT d FROM zerodate WHERE id = 1');
+  assert.equal(String(rows[0]?.d), '0000-00-00');
+  await my.query('DROP TABLE IF EXISTS zerodate');
 });

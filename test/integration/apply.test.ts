@@ -363,7 +363,11 @@ for (const label of ['mysql', 'postgres']) {
     const rec = await c.store.get(id);
     const before = rec?.plan.rows[0]?.before ?? {};
     assert.ok(Buffer.isBuffer(before['payload']), 'a BLOB must come back as a Buffer');
-    assert.ok(before['seen_at'] instanceof Date, 'a timestamp must come back as a Date');
+    // Text, not a Date: a JS Date holds milliseconds and these columns hold
+    // microseconds, so parsing would drop the last three digits and a change
+    // confined to them would never reach the confirmation card.
+    assert.equal(typeof before['seen_at'], 'string', 'a timestamp must keep its full precision');
+    assert.match(String(before['seen_at']), /2026-02-03 04:05:06\.789/);
 
     const res = await c.applier.apply(id, 'alice');
     assert.equal(res.rowsAffected, 1);
