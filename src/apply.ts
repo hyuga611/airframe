@@ -17,6 +17,7 @@ import { keyOf, keyPredicate, qname } from './keys.js';
 import { normalize } from './normalize.js';
 import type { Policy } from './policy.js';
 import { Refusal } from './refusal.js';
+import { showValue } from './show.js';
 import { lower, tableRefs, whereClause } from './statement.js';
 import {
   nowIso,
@@ -369,7 +370,7 @@ export class Applier {
             throw new ApplyRefused(
               'ROW_CHANGED',
               `Row ${describeKey(pr.key)} no longer holds the value you approved: \`${c}\` was ` +
-                `${display(pr.before[c])} when the plan was made and is ${display(live[c])} now. ` +
+                `${showValue(pr.before[c])} when the plan was made and is ${showValue(live[c])} now. ` +
                 'Nothing was applied — make a new plan against the current values.',
             );
           }
@@ -420,8 +421,8 @@ export class Applier {
             if (!same(got[c], pr.after[c])) {
               throw new ApplyRefused(
                 'RESULT_MISMATCH',
-                `Row ${describeKey(pr.key)} ended up with \`${c}\` = ${display(got[c])}, but the approved plan ` +
-                  `said ${display(pr.after[c])}. Everything has been rolled back.`,
+                `Row ${describeKey(pr.key)} ended up with \`${c}\` = ${showValue(got[c])}, but the approved plan ` +
+                  `said ${showValue(pr.after[c])}. Everything has been rolled back.`,
               );
             }
           }
@@ -567,19 +568,8 @@ function coveredOf(pr: PlanRow): readonly string[] {
 
 function describeKey(key: Row): string {
   return Object.entries(key)
-    .map(([k, v]) => `${k}=${display(v)}`)
+    .map(([k, v]) => `${k}=${showValue(v)}`)
     .join(', ');
 }
 
 /** Short, unambiguous rendering for an error message a human has to act on. */
-function display(v: unknown): string {
-  if (v === null || v === undefined) return 'NULL';
-  if (typeof v === 'string') return v.length > 60 ? `'${v.slice(0, 57)}…'` : `'${v}'`;
-  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(v)) return `<${v.length} bytes>`;
-  if (v instanceof Date) return v.toISOString();
-  if (typeof v === 'object') {
-    const s = JSON.stringify(v);
-    return s.length > 60 ? `${s.slice(0, 57)}…` : s;
-  }
-  return String(v);
-}

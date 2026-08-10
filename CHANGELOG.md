@@ -4,6 +4,74 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] — 2026-08-10
+
+The card is the only thing a person actually reads, and it had no tests of its
+own. This is what was under that.
+
+**A stored value could reorder the line it appeared on.** `inline()` removed
+control characters, on the stated grounds that a value which can draw outside its
+own line is not a display bug. It did not remove U+202E RIGHT-TO-LEFT OVERRIDE,
+which reverses everything after it in any renderer implementing the bidirectional
+algorithm — every browser and chat client the card reaches through MCP, and most
+terminals. A value holding one inverts the arrow, so the diff reads as running
+the other way. Measured on 0.4.3:
+
+```text
+      note: '<U+202E>dnetterp' -> 'harmless'
+```
+
+**A stored value could be invisible.** U+200B, U+FEFF, U+00AD and the tag block at
+U+E0000 all passed through and all render as nothing, so `'viewer'` and
+`'viewer' + U+200B` were the same picture — a real change to a role column,
+displayed as no change at all, on the line the reader is there to check.
+
+**`apply.ts` had a second renderer.** `card.ts` opens by saying there is exactly
+one, because two will drift and the drift is found by someone deciding on the
+basis of the wrong one. The refusals that quote values back — `ROW_CHANGED`,
+`RESULT_MISMATCH` — used a private copy that escaped nothing at all and cut
+strings at 60 characters with no digest, so two long values differing after the
+cut were reported identically in the message whose whole job was to say which
+value had moved.
+
+### Fixed
+
+- **Escaping now covers what renders as nothing or reorders what follows it**:
+  control characters as before, plus Unicode `Cf`, plus
+  `Default_Ignorable_Code_Point`, plus U+2028 and U+2029. The last property is
+  the standard's own answer to "draws nothing", and it catches what a category
+  check misses — U+3164 HANGUL FILLER is a letter and U+E0041 is a tag, and both
+  are invisible.
+- **One renderer, as the file claimed.** Value rendering moved to `show.ts`;
+  `card.ts` and `apply.ts` both use it. Refusal messages now escape, truncate at
+  the same length as the card, and carry the same digest when they truncate.
+  `NULL` in those messages is now `(empty)`, which is what the card has always
+  said.
+
+### Added
+
+- **A check on the pair the card is about to print.** Escaping cannot be
+  exhaustive: U+2800 BRAILLE PATTERN BLANK draws nothing and is a symbol, and
+  Cyrillic `а` beside Latin `a` is two characters and one picture. So the card no
+  longer relies on having enumerated them. When two values it is about to show
+  would read as the same text, it prints a digest of each and says why. Compares
+  the rendered pair under NFKC, which is a backstop and not a confusables table —
+  said plainly in the code rather than implied to be complete.
+- **`showValue`**, exported, so a caller building another surface renders values
+  the way the approver's card does.
+- **`test/card.test.ts` and `test/show.test.ts`** — the card had no tests at all
+  before this release. 301 tests now, from 285.
+
+### What to check in your own data
+
+Nothing was written incorrectly by this defect: it is a display fault, not a
+write fault, and every guard around the apply behaved as documented. What may
+have happened is an approval given on the strength of a line that read wrongly.
+If you store values that came from outside your own forms — supplier names,
+imported product titles, anything a customer typed — and you approved changes to
+them on 0.4.3 or earlier, the plan rows are still in the audit table and can be
+re-read with this version's renderer.
+
 ## [0.4.3] — 2026-08-10
 
 The comparison that decides whether a value moved forgave a difference in type,
@@ -765,6 +833,7 @@ produced a plan describing something other than what would happen:
 - No runtime dependencies. Drivers are optional peers; the MCP server implements
   the wire protocol directly.
 
+[0.4.4]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.4
 [0.4.3]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.3
 [0.4.2]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.2
 [0.4.1]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.1
