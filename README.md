@@ -156,9 +156,10 @@ npx llm-safe-sql migrate                  # creates the plan + audit tables
 npx llm-safe-sql check                    # verifies the environment, per table
 ```
 
-`migrate` first, and not the other way round: `check` does not currently notice
-that the plan and audit tables are missing — it will report every table as ready
-and exit 0, and the omission surfaces on your first `plan` instead.
+`migrate` first, and if you forget, `check` says so and exits non-zero. It did
+not until 0.4.2: it verified that the store *connection* worked and never that
+the store *existed*, so it reported every table as ready and the omission
+surfaced on the first `plan`, as a driver error.
 
 **[`examples/`](examples/) has this filled in and run.** Four database accounts
 with the exact grants, for MySQL and PostgreSQL, plus a config file for each —

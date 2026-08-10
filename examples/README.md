@@ -65,19 +65,19 @@ audit tables, and you cannot grant on a table that does not exist yet. It needs
 `CREATE`, which is why it stays an administrator's job and none of the four
 accounts is given it.
 
-**`check` will not catch it if you skip step 1.** Measured on MySQL 8.4 and
-SQLite: with the plan and audit tables missing, `check` still reports every table
-as `ready` and exits 0, and the mistake only surfaces on the first `plan`, as a
-stack trace rather than a refusal:
+**If you skip step 1, `check` says so** and exits non-zero:
 
 ```
-Error: Table 'shop.llm_safe_sql_plans' doesn't exist
-    at MysqlAdapter.execute (…)
-    at SqlPlanStore.put (…)
+  ! The table `llm_safe_sql_plans` does not exist on the store connection, so
+    there is nowhere to record a plan or the fact that a human approved it.
+    Run `llm-safe-sql migrate` as a user with CREATE, once, before anything else.
 ```
 
-So run `migrate` even if `check` looks clean. This is a gap in `check` rather
-than something you are expected to remember, and it is tracked as one.
+It did not until 0.4.2. Writing this directory is what found it: `check` verified
+that the store *connection* worked and never that the store *existed*, so it
+reported every table as `ready`, exited 0, and left the mistake to surface on the
+first `plan` as a driver stack trace — after the dry run had already executed and
+rolled back. On 0.4.1 and earlier, run `migrate` even if `check` looks clean.
 
 ## The two things people get wrong
 

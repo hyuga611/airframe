@@ -200,6 +200,21 @@ async function run(args: Args): Promise<number> {
         // so an environment that cannot keep it is the environment where the
         // audit trail quietly is not one.
         await s.store.adapter.selfCheck();
+
+        // And does the store *exist*, not merely connect? Until 0.4.2 this
+        // command verified four connections and never the two tables the whole
+        // approval record lives in, so a deployment that had not run `migrate`
+        // was told every table was ready and exited 0 — and found out on its
+        // first plan, from the driver, after the dry run had already run. It is
+        // collected rather than thrown so the operator still gets the full
+        // picture below, and reported at the end, where it changes the exit code.
+        let storeProblem: string | undefined;
+        try {
+          await s.store.selfCheck();
+        } catch (e) {
+          storeProblem = e instanceof Refusal ? e.message : String(e);
+        }
+
         out(`Connections are usable (${cfg.dialect}).`);
         out('  the session is not shared with another caller');
         out('  a rollback really undoes a write');
@@ -303,6 +318,12 @@ async function run(args: Args): Promise<number> {
             notes.push(`cascades into ${cascades.map((c) => c.table).join(', ')} — writes will be refused`);
           }
           out(`  ${table}: ${notes.length === 0 ? 'ready' : notes.join('; ')}`);
+        }
+
+        if (storeProblem !== undefined) {
+          out('');
+          out(`  ! ${storeProblem}`);
+          return 1;
         }
         return 0;
       });

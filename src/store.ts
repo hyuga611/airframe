@@ -237,6 +237,26 @@ export function planStoreDdl(
   ];
 }
 
+/**
+ * The tables `migrate` creates are not there.
+ *
+ * Its own category because it is the one failure that is certain to happen to
+ * somebody on their first day, and because the alternative is what it replaced:
+ * a driver's `Table 'shop.llm_safe_sql_plans' doesn't exist` arriving as an
+ * unhandled error, after the dry run has already executed and rolled back, with
+ * a stack trace pointing at this file instead of at the command they forgot.
+ */
+export class StoreNotMigrated extends Refusal {
+  constructor(table: string) {
+    super(
+      'STORE_NOT_MIGRATED',
+      `The table \`${table}\` does not exist on the store connection, so there is nowhere to record ` +
+        'a plan or the fact that a human approved it. Run `llm-safe-sql migrate` as a user with CREATE, ' +
+        'once, before anything else.',
+    );
+  }
+}
+
 export class SqlPlanStore implements PlanStore {
   readonly adapter: Adapter;
   readonly planTable: string;
@@ -246,6 +266,44 @@ export class SqlPlanStore implements PlanStore {
     this.adapter = opts.adapter;
     this.planTable = opts.planTable ?? 'llm_safe_sql_plans';
     this.auditTable = opts.auditTable ?? 'llm_safe_sql_audit';
+  }
+
+  /**
+   * Do the two tables exist, on this connection, right now?
+   *
+   * `introspect` rather than `SELECT 1 ... WHERE 1 = 0`, and the difference is
+   * not academic: the store account this library recommends holds INSERT on the
+   * audit table and nothing else, so a select probe reports the table missing
+   * when it is present and the credential is exactly as narrow as it should be.
+   * Introspection answers from the catalogue, which a writer can read.
+   *
+   * Called by `check`, which until now verified that the store *connection*
+   * worked and never that the store *existed* — so a deployment that had not run
+   * `migrate` was told every table was ready, and found out on its first plan.
+   */
+  async selfCheck(): Promise<void> {
+    for (const table of [this.planTable, this.auditTable]) {
+      try {
+        await this.adapter.introspect(table);
+      } catch {
+        throw new StoreNotMigrated(table);
+      }
+    }
+  }
+
+  /**
+   * Turn a driver error from one of the statements below into the refusal it
+   * probably is. Only ever runs on the failure path, so the happy path pays
+   * nothing for it — and if the table is there after all, the original error is
+   * the honest answer and is rethrown untouched.
+   */
+  private async blame(e: unknown, table: string): Promise<never> {
+    try {
+      await this.adapter.introspect(table);
+    } catch {
+      throw new StoreNotMigrated(table);
+    }
+    throw e;
   }
 
   private get dialect(): Dialect {
@@ -268,21 +326,25 @@ export class SqlPlanStore implements PlanStore {
   }
 
   async put(record: StoredPlan): Promise<void> {
-    await this.adapter.execute(
-      `INSERT INTO ${this.q(this.planTable)}
+    try {
+      await this.adapter.execute(
+        `INSERT INTO ${this.q(this.planTable)}
          (id, status, digest, body, created_by, approved_by, created_at, updated_at)
        VALUES (${this.p(1)}, ${this.p(2)}, ${this.p(3)}, ${this.p(4)}, ${this.p(5)}, ${this.p(6)}, ${this.p(7)}, ${this.p(8)})`,
-      [
-        record.id,
-        record.status,
-        record.digest,
-        encodePlan(record.plan),
-        record.createdBy,
-        record.approvedBy,
-        record.createdAt,
-        record.updatedAt,
-      ],
-    );
+        [
+          record.id,
+          record.status,
+          record.digest,
+          encodePlan(record.plan),
+          record.createdBy,
+          record.approvedBy,
+          record.createdAt,
+          record.updatedAt,
+        ],
+      );
+    } catch (e) {
+      await this.blame(e, this.planTable);
+    }
   }
 
   async get(id: string): Promise<StoredPlan | undefined> {
@@ -312,11 +374,15 @@ export class SqlPlanStore implements PlanStore {
   }
 
   async audit(entry: AuditEntry): Promise<void> {
-    await this.adapter.execute(
-      `INSERT INTO ${this.q(this.auditTable)} (plan_id, phase, actor, detail, logged_at)
+    try {
+      await this.adapter.execute(
+        `INSERT INTO ${this.q(this.auditTable)} (plan_id, phase, actor, detail, logged_at)
        VALUES (${this.p(1)}, ${this.p(2)}, ${this.p(3)}, ${this.p(4)}, ${this.p(5)})`,
-      [entry.planId, entry.phase, entry.actor, entry.detail, entry.at],
-    );
+        [entry.planId, entry.phase, entry.actor, entry.detail, entry.at],
+      );
+    } catch (e) {
+      await this.blame(e, this.auditTable);
+    }
   }
 
   async list(opts: { status?: PlanStatus; limit?: number } = {}): Promise<StoredPlan[]> {

@@ -17,7 +17,8 @@ import { join } from 'node:path';
 import { SqliteAdapter, AdapterUnusable } from '../src/adapters/sqlite.js';
 import { Engine, PlanRefused } from '../src/engine.js';
 import { Applier } from '../src/apply.js';
-import { SqlPlanStore } from '../src/store.js';
+import { SqlPlanStore, recordPlan } from '../src/store.js';
+import { Refusal } from '../src/refusal.js';
 import { Policy } from '../src/policy.js';
 import { parseConfig, ConfigError } from '../src/config.js';
 import type { Row } from '../src/adapter.js';
@@ -621,5 +622,81 @@ describe('sqlite', { skip }, () => {
     } finally {
       await ro.close();
     }
+  });
+
+  test('a store whose tables were never created refuses, instead of failing as a driver error', async () => {
+    // The likeliest mistake anyone makes on their first day is forgetting
+    // `migrate`, and until 0.4.2 it was invisible until the first plan, where it
+    // arrived as `Error: no such table: llm_safe_sql_plans` with a stack trace
+    // pointing into this library. `check` was worse: it reported every table as
+    // ready and exited 0, having verified that the store *connection* worked and
+    // never that the store existed.
+    const bare = join(dir, 'bare.db');
+    const conn = await SqliteAdapter.connect({ file: bare });
+    try {
+      await conn.execute('CREATE TABLE orders (id INTEGER PRIMARY KEY, qty INT NOT NULL)');
+      await conn.execute('INSERT INTO orders VALUES (1, 5)');
+      const unmigrated = new SqlPlanStore({ adapter: conn });
+
+      await assert.rejects(
+        () => unmigrated.selfCheck(),
+        (e: Error) => {
+          assert.ok(e instanceof Refusal, `expected a Refusal, got ${e.constructor.name}`);
+          assert.equal((e as Refusal).code, 'STORE_NOT_MIGRATED');
+          assert.match(e.message, /llm_safe_sql_plans/);
+          assert.match(e.message, /migrate/);
+          return true;
+        },
+      );
+
+      // And the same answer, not a driver error, on the path that actually
+      // stores a plan -- which is where the dry run has already been executed
+      // and rolled back, so this is the second thing that has gone right.
+      const e2 = new Engine({ adapter: conn, policy });
+      const plan = await e2.plan('UPDATE orders SET qty = 6 WHERE id = 1');
+      await assert.rejects(
+        () => recordPlan(unmigrated, plan, 'someone'),
+        (e: Error) => {
+          assert.ok(e instanceof Refusal, `expected a Refusal, got ${e.constructor.name}`);
+          assert.equal((e as Refusal).code, 'STORE_NOT_MIGRATED');
+          return true;
+        },
+      );
+
+      // After migrate, silence.
+      await unmigrated.migrate();
+      await unmigrated.selfCheck();
+      await recordPlan(unmigrated, plan, 'someone');
+    } finally {
+      await conn.close().catch(() => {});
+    }
+  });
+
+  test('the store self-check reads the catalogue, so an audit table it may only write still passes', async () => {
+    // Not academic: the store account this library recommends holds INSERT on
+    // the audit table and nothing else, so probing with `SELECT 1 ... WHERE
+    // 1 = 0` would report the table missing exactly when the credential is as
+    // narrow as it is supposed to be. SQLite has no per-table grants, so the
+    // shape is pinned here by proving the probe never issues a SELECT against
+    // the audit table at all; the privileged case is covered on MySQL.
+    const seen: string[] = [];
+    const spy = new Proxy(bookkeeping, {
+      get(target, prop, recv) {
+        if (prop === 'query' || prop === 'execute') {
+          return (sql: string, params?: readonly unknown[]) => {
+            seen.push(sql);
+            return (target[prop as 'query'] as (s: string, p?: readonly unknown[]) => Promise<never>).call(
+              target,
+              sql,
+              params,
+            );
+          };
+        }
+        return Reflect.get(target, prop, recv) as unknown;
+      },
+    });
+    await new SqlPlanStore({ adapter: spy }).selfCheck();
+    const auditSelects = seen.filter((s) => /select/i.test(s) && /llm_safe_sql_audit/i.test(s));
+    assert.deepEqual(auditSelects, [], `self-check read the audit table: ${auditSelects.join(' | ')}`);
   });
 });

@@ -4,6 +4,63 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] — 2026-08-10
+
+Worked examples, and the defect that writing them exposed.
+
+`check` verified that four connections were usable and never that the two tables
+the entire approval record lives in existed. A deployment that had not run
+`migrate` was therefore told every table was `ready`, given exit code 0, and left
+to discover the omission on its first `plan` — as an unhandled driver error, with
+a stack trace pointing into this library, after the dry run had already executed
+and rolled back.
+
+That is the likeliest mistake anyone makes on their first day, and it was
+invisible to the command whose entire job is to verify the environment.
+
+### Fixed
+
+- **`check` now verifies that the plan and audit tables exist**, reports the
+  omission in the same list as everything else it found, and exits non-zero. It
+  asks the catalogue rather than issuing a `SELECT`: the store account this
+  library recommends holds `INSERT` on the audit table and nothing else, so a
+  select probe would report the table missing exactly when the credential is as
+  narrow as it should be.
+- **A missing store table is now a `Refusal`**, code `STORE_NOT_MIGRATED`, on
+  every path that touches it, instead of a driver error escaping as an unhandled
+  rejection. The check runs only after a statement has already failed, so nothing
+  is paid for it when the tables are there.
+
+### Added
+
+- **`examples/`** — `roles.sql` and a filled configuration for MySQL and
+  PostgreSQL, four database accounts each, plus the SQLite read-only-handle
+  variant. Included in the npm tarball as well as the repository.
+
+  Every file was run against MySQL 8.4 and PostgreSQL 16 before being committed,
+  and the server corrected two privilege lists that looked reasonable on paper:
+
+  - `GRANT ... ON db.*` cannot be narrowed afterwards — `REVOKE ... ON
+    db.llm_safe_sql_plans` fails with `ERROR 1147` on MySQL 8.4. A database-wide
+    grant therefore hands the plan and apply accounts write access to the plan
+    and audit tables with no way to withdraw it, so a dry run could forge its own
+    approval record. The examples name tables instead, mirroring the allowlist.
+  - plan, apply and store each need `CREATE TEMPORARY TABLES`, which `check` uses
+    to prove a rollback really undoes a write without touching your data; MySQL
+    grants it per database only. The read account does not need it and is not
+    given it, because its self-check stops before the write probe.
+
+- The README's quick start ran `check` before `migrate`. Reversed, and the
+  `examples/` directory is linked from it.
+
+### Note
+
+Comment keys (`"//"`) in a configuration file are scanned for environment
+references like every other string, so a comment that spells out the
+dollar-brace syntax literally stops the tool from loading. This is unchanged
+behaviour, now documented — it is how the first draft of the MySQL example
+failed.
+
 ## [0.4.1] — 2026-08-09
 
 An audit of the commit path — `apply.ts`, `store.ts`, `serialize.ts`, `card.ts`,
