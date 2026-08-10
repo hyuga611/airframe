@@ -119,8 +119,8 @@ cat > llm-safe-sql.config.json <<'JSON'
 }
 JSON
 
-npx llm-safe-sql check
 npx llm-safe-sql migrate
+npx llm-safe-sql check
 npx llm-safe-sql plan "UPDATE orders SET status='shipped' WHERE status='packed'"
 ```
 
@@ -446,8 +446,8 @@ cat > llm-safe-sql.config.json <<'JSON'
 }
 JSON
 
-npx llm-safe-sql check
 npx llm-safe-sql migrate
+npx llm-safe-sql check
 npx llm-safe-sql plan "UPDATE orders SET status='shipped' WHERE status='packed'"
 ```
 
@@ -477,8 +477,8 @@ npx llm-safe-sql init > llm-safe-sql.config.json
 # 設定ファイルに「触れてよいテーブル」と「そのテーブルを変えると業務上どうなるか」を書く
 export LLM_SAFE_SQL_PASSWORD=…
 
-npx llm-safe-sql check      # 環境とテーブルごとの可否を検査
 npx llm-safe-sql migrate    # plan / audit テーブルを作成
+npx llm-safe-sql check      # 環境とテーブルごとの可否を検査
 
 npx llm-safe-sql plan "UPDATE orders SET status='shipped' WHERE id=42"
 npx llm-safe-sql approve <id> --as you@example.com

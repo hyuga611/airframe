@@ -118,8 +118,8 @@ jobs:
           }
           JSON
 
-          npx llm-safe-sql check
           npx llm-safe-sql migrate
+          npx llm-safe-sql check
           npx llm-safe-sql plan "UPDATE orders SET status='shipped' WHERE status='packed'"
 
       # The claim is not that the command exits 0 — it is that the database is
