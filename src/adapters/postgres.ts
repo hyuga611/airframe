@@ -331,6 +331,20 @@ export class PostgresAdapter implements Adapter {
    * savepoints a role holding UPDATE but not DELETE probes as read-only, which is
    * the one answer that must never be wrong. Measured on PostgreSQL 16.
    */
+  /**
+   * `current_user` is the role privileges are decided by, and the server address
+   * and port come from the server rather than from the client's connection
+   * string, so two spellings of one host collapse to one identity here.
+   */
+  async identity(): Promise<string> {
+    const rows = await this.query<Row>(
+      "SELECT current_user AS u, current_database() AS d, current_schema() AS s, " +
+        "coalesce(inet_server_addr()::text, 'local') AS a, coalesce(inet_server_port()::text, 'local') AS p",
+    );
+    const r = rows[0] ?? {};
+    return `${String(r['u'])}@${String(r['a'])}:${String(r['p'])}/${String(r['d'])} schema=${String(r['s'])}`;
+  }
+
   async probeWritable(tables: readonly string[]): Promise<WriteAbility> {
     // Never inside a caller's transaction: the rollback below would discard
     // their work. Nothing was established, so say exactly that.

@@ -121,6 +121,27 @@ export interface Adapter {
   probeWritable(tables: readonly string[]): Promise<WriteAbility>;
 
   /**
+   * Who this connection actually is, as the server itself reports it.
+   *
+   * `check` tells an operator whether the credential that commits is the same one
+   * the model can reach. Until 0.4.6 it answered by comparing strings out of the
+   * config file, which is a different question: `localhost` and `127.0.0.1` are
+   * two spellings of one PostgreSQL role, and two spellings were reported as two
+   * credentials. The separation the whole library is built around was printed as
+   * present, measured against nothing.
+   *
+   * So this asks. It must identify the account and the server instance, not the
+   * address used to reach them — two clients that resolve to one role must return
+   * one string, and two genuinely different roles must never collide.
+   *
+   * Optional, because `Adapter` is implementable from outside this package and a
+   * required method would break every implementation that exists. Where it is
+   * absent, `check` says which of its claims it could not establish, in the same
+   * way {@link probeWritable} reports `unknown` rather than staying silent.
+   */
+  identity?(): Promise<string>;
+
+  /**
    * Bound this session in time, for the dry run *and* for the real apply.
    *
    * The reference implementation set its timeout with a MySQL optimizer hint,

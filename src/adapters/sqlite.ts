@@ -465,6 +465,17 @@ export class SqliteAdapter implements Adapter {
    * No savepoints, unlike Postgres: SQLite leaves a transaction usable after a
    * statement is refused.
    */
+  /**
+   * SQLite has no accounts, so the identity is the file — as SQLite resolved it,
+   * not as it was written. `./app.db` and an absolute path to the same file are
+   * one database, and comparing the two strings would call them two.
+   */
+  async identity(): Promise<string> {
+    const rows = await this.query<Row>('PRAGMA database_list');
+    const main = rows.find((r) => String(r['name']) === 'main') ?? rows[0] ?? {};
+    return `file:${String(main['file'] ?? '(in memory)')}`;
+  }
+
   async probeWritable(tables: readonly string[]): Promise<WriteAbility> {
     if (this.inTransaction()) return 'unknown';
     const attempt = async (sql: string): Promise<boolean> => {

@@ -116,3 +116,43 @@ test('rows printed by `read` carry no raw invisible characters', { skip: HAS_SQL
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('check compares who the connections are, not how they were spelled', { skip: HAS_SQLITE ? undefined : 'no node:sqlite' }, async () => {
+  // One SQLite file, named two ways: an apply connection that is not a separate
+  // database at all. Comparing the config strings called these two credentials
+  // and printed the separation this library is built around as present. Measured
+  // on 0.4.5 against PostgreSQL, where `localhost` and `127.0.0.1` are two
+  // spellings of one role and both connections answered current_user = postgres.
+  const { DatabaseSync } = await import('node:sqlite');
+  const dir = await mkdtemp(join(tmpdir(), 'llm-safe-sql-sep-'));
+  try {
+    const file = join(dir, 'app.db');
+    const db = new DatabaseSync(file);
+    db.exec('CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL)');
+    db.close();
+
+    // Two strings, one database. `connectionIdentity` compares them as text and
+    // calls them two credentials; the file itself has one identity and SQLite
+    // knows it.
+    assert.notEqual(file, `${dir}/./app.db`, 'the two spellings must differ as text, or this proves nothing');
+
+    const cfgPath = join(dir, 'cfg.json');
+    await writeFile(
+      cfgPath,
+      JSON.stringify({
+        dialect: 'sqlite',
+        connection: { file },
+        applyConnection: { file: `${dir}/./app.db` },
+        policy: { allow: ['notes'], impact: { notes: 'test table' } },
+      }),
+      'utf8',
+    );
+
+    await cli('migrate', '--config', cfgPath);
+    const r = await cli('check', '--config', cfgPath);
+    assert.match(r.out, /apply uses the SAME credential as plan/, r.out);
+    assert.doesNotMatch(r.out, /four different accounts/, 'and it must not claim the opposite');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

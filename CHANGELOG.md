@@ -4,6 +4,68 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.6] — 2026-08-10
+
+`check` says whether the credential that commits is the same one the model can
+reach. It answered by comparing strings out of the config file.
+
+`localhost` and `127.0.0.1` are two spellings of one PostgreSQL role. Configured
+that way, `check` listed plan and apply as two rows, raised no warning, and left
+the operator with the impression that the separation this library is built around
+was in place. Both connections, asked directly, answer `current_user = postgres`
+on one server:
+
+```text
+0.4.5   plan   postgres@127.0.0.1:15432/llmsafesql
+        apply  postgres@localhost:15432/llmsafesql
+        (no warning)
+
+0.4.6   plan   postgres@172.18.0.2:5432/llmsafesql schema=public
+        apply  postgres@172.18.0.2:5432/llmsafesql schema=public
+        ! apply uses the SAME credential as plan.
+```
+
+The file's own comment said as much — "distinct is a fact about the config file"
+— and that is the problem, not the defence. Four live connections were open at
+that moment, each able to say who it was.
+
+### Fixed
+
+- **`check` compares the identities the servers report**, for all four roles, and
+  prints those rather than the connection strings, so the list and the warnings
+  under it answer the same question.
+- **A verdict written after its own output** — the line stating whether the
+  comparison was measured or read from a file was pushed onto the list after the
+  list had been printed, so it never appeared at all. Found by running the
+  command rather than by reading it.
+
+### Added
+
+- **`Adapter.identity()`**, optional. PostgreSQL reports `current_user` with the
+  address and port the *server* knows itself by; MySQL reports `CURRENT_USER()`,
+  the grantee row it matched rather than the name that was sent, with
+  `@@server_uuid`; SQLite has no accounts, so the identity is the file as SQLite
+  resolved it — `app.db` and `./app.db` are one database and were two strings.
+  Optional because `Adapter` is implementable from outside this package. Where it
+  is missing, `check` now says which of its claims it could not establish instead
+  of stating them anyway.
+- `+ the four roles are four different accounts — each connection was asked, not
+  inferred from the file.` A separate line from the read-only probe, because they
+  establish different things.
+
+### A note on the test
+
+The first version of the regression test for this passed with the fix reverted.
+It built its two spellings with `path.join`, which normalises `.` and `..` away,
+so both reached the config file as the same string and the old code warned for the
+wrong reason. The ablation caught it — reverting the fix has to fail the test, and
+it did not. It is recorded here because it is the third time in two days that a
+green check turned out to be holding nothing, and the only reason any of the three
+were noticed is that reverting the fix is part of the routine rather than an
+afterthought.
+
+311 tests, from 309.
+
 ## [0.4.5] — 2026-08-10
 
 0.4.4 stopped a stored value from rewriting the confirmation card. It left the
@@ -885,6 +947,7 @@ produced a plan describing something other than what would happen:
 - No runtime dependencies. Drivers are optional peers; the MCP server implements
   the wire protocol directly.
 
+[0.4.6]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.6
 [0.4.5]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.5
 [0.4.4]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.4
 [0.4.3]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.3

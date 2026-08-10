@@ -449,6 +449,25 @@ describe('sqlite', { skip }, () => {
     assert.deepEqual(await bookkeeping.query<Row>('SELECT * FROM orders ORDER BY id'), before);
   });
 
+test('identity is the file the database resolved, not the path that was typed', async () => {
+    // `check` decides whether the credential that commits is the one the model can
+    // reach. Until 0.4.6 it decided by comparing strings out of the config file,
+    // and two spellings of one database are two strings. Here there are no
+    // accounts to tell apart, so the file is the identity — and it has to be the
+    // file, not the spelling.
+    const dotted = join(dir, '.', 'app.db');
+    const viaParent = join(dir, 'nowhere', '..', 'app.db');
+    const a = await SqliteAdapter.connect({ file: dotted });
+    const b = await SqliteAdapter.connect({ file: viaParent });
+    try {
+      assert.equal(await a.identity(), await b.identity(), 'one file, spelled two ways, is one database');
+      assert.match(await a.identity(), /app\.db$/);
+    } finally {
+      await a.close();
+      await b.close();
+    }
+  });
+
   test('probeWritable says "unknown" when there was nothing it could ask about', async () => {
     // Not "read-only". A table it cannot read establishes nothing, and reporting
     // nothing as a boundary is the failure this method was rewritten to remove.

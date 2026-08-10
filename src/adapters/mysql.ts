@@ -361,6 +361,19 @@ export class MysqlAdapter implements Adapter {
    * nothing, so there is nothing to undo, and the rollback is there in case a
    * future MySQL disagrees with that.
    */
+  /**
+   * `CURRENT_USER()` is the grantee row privileges are read from — not the name
+   * that was sent, the one MySQL matched — and `@@server_uuid` identifies the
+   * instance, so two hostnames reaching one server do not read as two servers.
+   */
+  async identity(): Promise<string> {
+    const rows = await this.query<Row>(
+      'SELECT CURRENT_USER() AS u, DATABASE() AS d, @@server_uuid AS s',
+    );
+    const r = rows[0] ?? {};
+    return `${String(r['u'])}/${String(r['d'])} on ${String(r['s'])}`;
+  }
+
   async probeWritable(tables: readonly string[]): Promise<WriteAbility> {
     // Never inside a caller's transaction: the rollback below would discard
     // their work. Nothing was established, so say exactly that.

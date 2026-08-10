@@ -262,27 +262,55 @@ async function run(args: Args): Promise<number> {
         // library works; this is about whether it matters if it doesn't.
         out('');
         out('Where the guards actually sit');
-        const roles: { name: string; conn: ConnectionConfig; note: string }[] = [
-          { name: 'read ', conn: cfg.readConnection ?? cfg.connection, note: 'the model reads through this' },
-          { name: 'plan ', conn: cfg.connection, note: 'writes for real, always rolls back' },
-          { name: 'apply', conn: cfg.applyConnection ?? cfg.connection, note: 'this one commits' },
-          { name: 'store', conn: cfg.storeConnection ?? cfg.connection, note: 'plans and audit records' },
+        const ask = async (a: { identity?: () => Promise<string> }): Promise<string | undefined> => {
+          if (a.identity === undefined) return undefined;
+          return a.identity().catch(() => undefined);
+        };
+        const seen = {
+          plan: await ask(s.engine.adapter),
+          apply: await ask(s.applier.adapter),
+          store: await ask(s.store.adapter),
+          read: await ask(s.engine.readAdapter),
+        };
+        const asked = Object.values(seen).every((v) => v !== undefined);
+
+        // Printed as the server reports them, so that this list and the warnings
+        // under it are answering the same question. Showing the config strings
+        // here while comparing measured ones below would put two different-looking
+        // rows above a warning that they are the same account.
+        const roles: { name: string; conn: ConnectionConfig; seen: string | undefined; note: string }[] = [
+          { name: 'read ', conn: cfg.readConnection ?? cfg.connection, seen: seen.read, note: 'the model reads through this' },
+          { name: 'plan ', conn: cfg.connection, seen: seen.plan, note: 'writes for real, always rolls back' },
+          { name: 'apply', conn: cfg.applyConnection ?? cfg.connection, seen: seen.apply, note: 'this one commits' },
+          { name: 'store', conn: cfg.storeConnection ?? cfg.connection, seen: seen.store, note: 'plans and audit records' },
         ];
-        for (const r of roles) out(`  ${r.name}  ${connectionIdentity(r.conn)}  — ${r.note}`);
+        for (const r of roles) out(`  ${r.name}  ${r.seen ?? connectionIdentity(r.conn)}  — ${r.note}`);
 
         const idOf = (c: ConnectionConfig): string => connectionIdentity(c);
-        const plan = idOf(cfg.connection);
+
+        // Who each of these turned out to be, asked of the server holding the
+        // connection rather than read out of the file that opened it. The two are
+        // different questions and the difference was reachable: `localhost` and
+        // `127.0.0.1` are two spellings of one PostgreSQL role, and this command
+        // reported two spellings as two credentials — printing the separation the
+        // whole library is built around as present, having measured nothing.
+        // Measured on 0.4.5, with both connections answering `current_user =
+        // postgres` on one server.
+        const plan = seen.plan ?? idOf(cfg.connection);
+        const applyId = seen.apply ?? idOf(cfg.applyConnection ?? cfg.connection);
+        const storeId = seen.store ?? idOf(cfg.storeConnection ?? cfg.connection);
+        const readId = seen.read ?? idOf(cfg.readConnection ?? cfg.connection);
         const warn: string[] = [];
         /** Facts established by asking the database, not by reading the config. */
         const proved: string[] = [];
-        if (idOf(cfg.applyConnection ?? cfg.connection) === plan) {
+        if (applyId === plan) {
           warn.push(
             'apply uses the SAME credential as plan. The separation between proposing and committing then ' +
               'rests entirely on this library being correct. Point applyConnection at a different database ' +
               'user and it survives a bug in here.',
           );
         }
-        if (idOf(cfg.readConnection ?? cfg.connection) === plan) {
+        if (readId === plan) {
           warn.push(
             'read uses the SAME credential as plan, so reads run on a connection that can write. The ' +
               'allowlist is then the only thing standing between a read tool and a write — and it runs in ' +
@@ -312,13 +340,12 @@ async function run(args: Args): Promise<number> {
             proved.push('read is a credential the database itself refuses writes from — probed on your own tables.');
           }
         }
-        const store = idOf(cfg.storeConnection ?? cfg.connection);
-        if (store === idOf(cfg.applyConnection ?? cfg.connection)) {
+        if (storeId === applyId) {
           warn.push(
             'store uses the same credential as apply, so whatever can commit a change can also edit the ' +
               'record of it having been approved.',
           );
-        } else if (store === plan) {
+        } else if (storeId === plan) {
           // Checked separately, because it used not to be checked at all: with
           // `storeConnection` left at the default and a distinct
           // `applyConnection`, the test above passes and this command printed
@@ -329,15 +356,25 @@ async function run(args: Args): Promise<number> {
               'stored plan it will later be checked against.',
           );
         }
+        // Whether the three comparisons above are facts about the server or facts
+        // about a text file. Decided here, with the others, and printed with them:
+        // written after the lists had already gone to the terminal, it said nothing
+        // at all — which is its own small version of the bug it is reporting.
+        if (asked && warn.length === 0) {
+          proved.push('the four roles are four different accounts — each connection was asked, not inferred from the file.');
+        } else if (!asked) {
+          warn.push(
+            'whether these are really different accounts could not be established from the server on this ' +
+              'dialect, so they were compared as written in the config file. Two spellings of one host are ' +
+              'two strings and one account.',
+          );
+        }
+
         for (const p of proved) out(`  + ${p}`);
         for (const w of warn) {
           out('');
           out(`  ! ${w}`);
         }
-        // "Distinct credential" is all this line ever meant, and it is worth
-        // saying no more than that: distinct is a fact about the config file,
-        // while the lines above are facts about what the database will refuse.
-        if (warn.length === 0) out('  every role is a distinct credential.');
         out('');
         for (const table of cfg.policy.allow) {
           const shape = await s.engine.adapter.introspect(table);
