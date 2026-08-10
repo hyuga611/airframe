@@ -35,7 +35,10 @@ invisible to the command whose entire job is to verify the environment.
 
 - **`examples/`** — `roles.sql` and a filled configuration for MySQL and
   PostgreSQL, four database accounts each, plus the SQLite read-only-handle
-  variant. Included in the npm tarball as well as the repository.
+  variant. In the repository only: the release workflow refuses a tarball
+  containing any `*.config.json` or `*.sql`, and that guard is worth more
+  absolute than these files are worth shipping. It caught them on the first
+  attempt, which is the correct outcome.
 
   Every file was run against MySQL 8.4 and PostgreSQL 16 before being committed,
   and the server corrected two privilege lists that looked reasonable on paper:

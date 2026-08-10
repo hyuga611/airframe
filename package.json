@@ -36,8 +36,7 @@
     "dist/src",
     "src",
     "SPEC.md",
-    "CHANGELOG.md",
-    "examples"
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
