@@ -125,6 +125,57 @@ export interface Config {
   readonly autoColumns?: Readonly<Record<string, readonly string[]>>;
 }
 
+/**
+ * A key this library does not recognise is a mistake, and refusing it is the only
+ * way the author finds out.
+ *
+ * This reasoning was already written down for the connection object. It was not
+ * applied to `policy`, which is where the security controls live, and the
+ * consequence was measured: `denyIdentifers` — one letter short of
+ * `denyIdentifiers` — parsed, loaded and ran, and an UPDATE to `password_hash`
+ * was planned and displayed as an ordinary change. The denylist was simply not
+ * there, and no line of output said so.
+ *
+ * A key beginning with `//` is a comment. The template and the worked examples
+ * are written that way, JSON having no comments of its own.
+ */
+function rejectUnknown(o: Record<string, unknown>, known: readonly string[], path: string): void {
+  const unknown = Object.keys(o).filter((k) => !k.startsWith('//') && !known.includes(k));
+  if (unknown.length === 0) return;
+  const near = (k: string): string => {
+    const hit = known.find((v) => v.toLowerCase() === k.toLowerCase() || close(v, k));
+    return hit === undefined ? '' : ` (did you mean "${hit}"?)`;
+  };
+  const list = unknown.map((k) => `"${k}"${near(k)}`).join(', ');
+  throw new ConfigError(
+    `${path} has ${list}, which this library does not know. ` +
+      `Valid keys are: ${known.join(', ')}. ` +
+      'A misspelled key would otherwise be ignored silently, and a control nobody notices is missing is ' +
+      'worse than one nobody configured.',
+  );
+}
+
+/** Within one edit of each other: a dropped letter, a swap, a typed extra. */
+function close(a: string, b: string): boolean {
+  if (Math.abs(a.length - b.length) > 1) return false;
+  const [x, y] = a.length >= b.length ? [a.toLowerCase(), b.toLowerCase()] : [b.toLowerCase(), a.toLowerCase()];
+  let i = 0;
+  let j = 0;
+  let slips = 0;
+  while (i < x.length && j < y.length) {
+    if (x[i] === y[j]) {
+      i += 1;
+      j += 1;
+      continue;
+    }
+    slips += 1;
+    if (slips > 1) return false;
+    i += 1;
+    if (x.length === y.length) j += 1;
+  }
+  return slips + (x.length - i) + (y.length - j) <= 1;
+}
+
 /** Fill `${VAR}` from the environment, everywhere, and say which one is missing. */
 function expand(value: unknown, path: string, env: NodeJS.ProcessEnv): unknown {
   if (typeof value === 'string') {
@@ -192,14 +243,7 @@ function connectionOf(raw: unknown, path: string, dialect: Dialect): ConnectionC
   // objects that no longer had one. An unknown key is refused rather than
   // ignored, for the same reason: a typo in a security-relevant setting must not
   // read as "not configured".
-  const known = new Set(['host', 'port', 'user', 'password', 'database', 'schema']);
-  const unknown = Object.keys(o).filter((k) => !known.has(k));
-  if (unknown.length > 0) {
-    throw new ConfigError(
-      `${path} has ${unknown.map((k) => `"${k}"`).join(', ')}, which ${unknown.length === 1 ? 'is not a setting' : 'are not settings'} ` +
-        `this library knows. Valid keys are: ${[...known].join(', ')}. A misspelled key would otherwise be ignored silently.`,
-    );
-  }
+  rejectUnknown(o, ['host', 'port', 'user', 'password', 'database', 'schema'], path);
   if (o['schema'] !== undefined && (typeof o['schema'] !== 'string' || o['schema'] === '')) {
     throw new ConfigError(`${path}.schema must be a schema name.`);
   }
@@ -213,8 +257,40 @@ function connectionOf(raw: unknown, path: string, dialect: Dialect): ConnectionC
   };
 }
 
+/**
+ * Limits, checked rather than cast.
+ *
+ * `cfg['limits'] as LimitsConfig` believed whatever was in the file. A row cap
+ * written as a string compares against a row count by coercion, and a cap of
+ * `"20"` or `0` is not the cap anyone thought they had set.
+ */
+function limitsOf(raw: unknown): LimitsConfig {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new ConfigError('config.limits must be an object of caps, e.g. {"maxUpdateRows": 200}.');
+  }
+  const o = raw as Record<string, unknown>;
+  const known = ['maxUpdateRows', 'maxDeleteRows', 'maxReadRows', 'statementMs', 'lockMs'] as const;
+  rejectUnknown(o, known, 'config.limits');
+  const out: Record<string, number> = {};
+  for (const k of known) {
+    if (o[k] === undefined) continue;
+    const n = o[k];
+    if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 1) {
+      throw new ConfigError(`config.limits.${k} must be a whole number, 1 or more. Got ${JSON.stringify(n)}.`);
+    }
+    out[k] = n;
+  }
+  return out as LimitsConfig;
+}
+
 export function parseConfig(raw: unknown, env: NodeJS.ProcessEnv = process.env): Config {
   const cfg = expand(raw, 'config', env) as Record<string, unknown>;
+
+  rejectUnknown(
+    cfg,
+    ['dialect', 'connection', 'readConnection', 'applyConnection', 'storeConnection', 'policy', 'limits', 'autoColumns'],
+    'config',
+  );
 
   const dialect = cfg['dialect'];
   if (dialect !== 'mysql' && dialect !== 'postgres' && dialect !== 'sqlite') {
@@ -224,6 +300,7 @@ export function parseConfig(raw: unknown, env: NodeJS.ProcessEnv = process.env):
   const connection = connectionOf(cfg['connection'], 'config.connection', dialect);
 
   const p = (cfg['policy'] ?? {}) as Record<string, unknown>;
+  rejectUnknown(p, ['allow', 'impact', 'denyIdentifiers', 'denyWriteColumns', 'planTable', 'auditTable'], 'config.policy');
   const allow = p['allow'];
   if (!Array.isArray(allow) || allow.length === 0 || allow.some((x) => typeof x !== 'string')) {
     throw new ConfigError(
@@ -265,7 +342,7 @@ export function parseConfig(raw: unknown, env: NodeJS.ProcessEnv = process.env):
       ? {}
       : { readConnection: connectionOf(cfg['readConnection'], 'config.readConnection', dialect) }),
     policy,
-    ...(cfg['limits'] === undefined ? {} : { limits: cfg['limits'] as LimitsConfig }),
+    ...(cfg['limits'] === undefined ? {} : { limits: limitsOf(cfg['limits']) }),
     ...(cfg['autoColumns'] === undefined
       ? {}
       : { autoColumns: cfg['autoColumns'] as Record<string, string[]> }),

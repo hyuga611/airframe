@@ -4,6 +4,60 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.7] — 2026-08-10
+
+A one-letter typo switched off a security control, and nothing said so.
+
+`config.policy` accepted any key at all. `denyIdentifers` — one letter short of
+`denyIdentifiers` — parsed, loaded and ran. Measured on 0.4.6:
+
+```text
+spelled right   Refused (DENIED_IDENTIFIER): `password_hash` cannot be used here:
+                it is a stored credential.
+
+one letter out  1 row would change, across 1 column: password_hash
+```
+
+The plan was produced, the card offered the password hash as an ordinary change,
+and no line of output mentioned that the denylist was not loaded. The same
+applied to `denyWriteColumns`, and at the top level to `applyConnection` — where
+a misspelling silently falls back to the planning credential, which is the
+separation this library exists for.
+
+The reasoning was already written in this file, for the connection object: *"A
+misspelled key would otherwise be ignored silently."* It had not been applied to
+the object holding the controls.
+
+### Fixed
+
+- **An unrecognised key is refused**, at the top level, in `policy` and in
+  `limits`, with the valid keys listed and the near-miss named:
+
+  ```text
+  config.policy has "denyIdentifers" (did you mean "denyIdentifiers"?), which
+  this library does not know. Valid keys are: allow, impact, denyIdentifiers,
+  denyWriteColumns, planTable, auditTable.
+  ```
+
+- **`limits` is read rather than cast.** It was `cfg['limits'] as LimitsConfig`,
+  which believes whatever is in the file: a cap written as `"200"` compares
+  against a row count by coercion, and `0` or a fraction reached the query. Each
+  value must now be a whole number, 1 or more.
+
+Keys beginning with `//` are still comments — JSON has none of its own, and the
+template and every worked example are written that way. The three shipped
+examples are parsed by the test suite, so the stricter parser cannot quietly
+invalidate the documentation people copy.
+
+### Added
+
+- **`test/config.test.ts`**. Along with `card`, `show` and `cli` in the two
+  releases before it, that is the last of the four files this package had no
+  tests for at the start of the day.
+
+317 tests, from 311. Ablated: removing either key check fails its own tests;
+casting the limits again fails a third.
+
 ## [0.4.6] — 2026-08-10
 
 `check` says whether the credential that commits is the same one the model can
@@ -947,6 +1001,7 @@ produced a plan describing something other than what would happen:
 - No runtime dependencies. Drivers are optional peers; the MCP server implements
   the wire protocol directly.
 
+[0.4.7]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.7
 [0.4.6]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.6
 [0.4.5]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.5
 [0.4.4]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.4
