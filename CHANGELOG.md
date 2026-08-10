@@ -677,6 +677,7 @@ produced a plan describing something other than what would happen:
 - No runtime dependencies. Drivers are optional peers; the MCP server implements
   the wire protocol directly.
 
+[0.4.2]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.2
 [0.4.1]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.1
 [0.4.0]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.0
 [0.3.1]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.3.1
