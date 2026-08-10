@@ -6,6 +6,7 @@ import { Refusal } from './refusal.js';
 import { openAdminSession, type AdminSession } from './session.js';
 import { recordPlan, type PlanStatus } from './store.js';
 import { displayReplacer } from './serialize.js';
+import { escapeInvisibles } from './show.js';
 import { VERSION } from './version.js';
 
 /**
@@ -93,7 +94,7 @@ interface Args {
   actor: string;
   yes: boolean;
   limit: number | undefined;
-  status: string | undefined;
+  status: PlanStatus | undefined;
   reason: string;
 }
 
@@ -103,7 +104,7 @@ function parse(argv: string[]): Args {
   let actor = process.env['LLM_SAFE_SQL_ACTOR'] ?? process.env['USER'] ?? process.env['USERNAME'] ?? '';
   let yes = false;
   let limit: number | undefined;
-  let status: string | undefined;
+  let status: PlanStatus | undefined;
   let reason = '';
 
   for (let i = 0; i < argv.length; i++) {
@@ -118,8 +119,8 @@ function parse(argv: string[]): Args {
       case '--config': config = next(); break;
       case '--as': actor = next(); break;
       case '--yes': case '-y': yes = true; break;
-      case '--limit': limit = Number(next()); break;
-      case '--status': status = next(); break;
+      case '--limit': limit = rowCount(next()); break;
+      case '--status': status = planStatus(next()); break;
       case '--reason': reason = next(); break;
       default: rest.push(a);
     }
@@ -128,6 +129,41 @@ function parse(argv: string[]): Args {
 }
 
 class UsageError extends Error {}
+
+const STATUSES: readonly PlanStatus[] = ['pending', 'approved', 'applying', 'applied', 'failed', 'cancelled'];
+
+/**
+ * A status this store can actually hold, or a refusal to guess.
+ *
+ * `--status pendign` used to reach the query as written, match nothing, and
+ * print "No plans." — which reads as "there is nothing waiting for you" and is
+ * how an approval queue goes unread. A filter nobody can satisfy is a usage
+ * error, not an empty result.
+ */
+function planStatus(raw: string): PlanStatus {
+  const v = raw.trim().toLowerCase();
+  const found = STATUSES.find((s) => s === v);
+  if (found === undefined) {
+    throw new UsageError(`--status takes one of: ${STATUSES.join(', ')}. Got "${raw}".`);
+  }
+  return found;
+}
+
+/**
+ * A row cap that means something.
+ *
+ * `--limit abc` became NaN and travelled all the way into the SQL, where it came
+ * back as `no such column: NaN` over a stack trace pointing into this library.
+ * Zero and negative numbers reached the query too and returned whatever the
+ * dialect makes of them.
+ */
+function rowCount(raw: string): number {
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n) || n < 1) {
+    throw new UsageError(`--limit takes a whole number of rows, 1 or more. Got "${raw}".`);
+  }
+  return n;
+}
 
 async function confirm(question: string, args: Args): Promise<boolean> {
   if (args.yes) return true;
@@ -340,7 +376,7 @@ async function run(args: Args): Promise<number> {
       if (sql.trim() === '') throw new UsageError('Nothing to read. Pass a SELECT statement.');
       return withSession(cfg, async (s) => {
         const r = await s.engine.read(sql, args.limit === undefined ? {} : { limit: args.limit });
-        out(JSON.stringify(r.rows, displayReplacer, 2));
+        out(escapeInvisibles(JSON.stringify(r.rows, displayReplacer, 2)));
         out(r.truncated ? `-- TRUNCATED at ${r.rows.length} rows; there are more.` : `-- ${r.rows.length} row(s)`);
         return 0;
       });
@@ -360,7 +396,7 @@ async function run(args: Args): Promise<number> {
     case 'list':
       return withSession(cfg, async (s) => {
         const plans = await s.store.list({
-          ...(args.status === undefined ? {} : { status: args.status as PlanStatus }),
+          ...(args.status === undefined ? {} : { status: args.status }),
           ...(args.limit === undefined ? {} : { limit: args.limit }),
         });
         if (plans.length === 0) {

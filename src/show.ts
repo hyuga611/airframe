@@ -134,3 +134,29 @@ export function fingerprint(v: unknown): string {
 export function looksTheSame(a: string, b: string): boolean {
   return a === b || a.normalize('NFKC') === b.normalize('NFKC');
 }
+
+/**
+ * The same treatment for a block of JSON on its way to a terminal or a model.
+ *
+ * `JSON.stringify` escapes what JSON requires — quotes, backslashes, and the
+ * control characters below U+0020 — and nothing else. A right-to-left override
+ * or a tag character survives it intact, so the rows a `read` returns can
+ * reorder the output they appear in, or carry text no reader will ever see into
+ * the context of a model that will. Reads are the larger surface here: they are
+ * what an injected instruction reaches first, and they need no write privilege
+ * at all.
+ *
+ * Escaping them as JSON escapes rather than stripping them keeps this lossless.
+ * `\u202e` is what U+202E means to every JSON parser, so anything reading this
+ * output as data gets the value back exactly; only the picture changes.
+ */
+export function escapeInvisibles(json: string): string {
+  return json.replace(
+    /[\u007f-\u009f\u2028\u2029]|\p{Cf}|\p{Default_Ignorable_Code_Point}/gu,
+    (c) =>
+      Array.from(
+        { length: c.length },
+        (_, i) => `\\u${c.charCodeAt(i).toString(16).padStart(4, '0')}`,
+      ).join(''),
+  );
+}

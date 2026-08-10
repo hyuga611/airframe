@@ -3,6 +3,7 @@ import { Refusal } from '../refusal.js';
 import type { ReadResult } from '../engine.js';
 import type { StoredPlan } from '../store.js';
 import { displayReplacer } from '../serialize.js';
+import { escapeInvisibles } from '../show.js';
 
 /**
  * An MCP server over stdio, written directly against the wire protocol.
@@ -273,7 +274,7 @@ function renderRead(r: ReadResult): string {
   const head = r.truncated
     ? `${r.rows.length} rows (TRUNCATED — there are more; narrow the query before drawing conclusions)`
     : `${r.rows.length} row(s)`;
-  return `${head}\n${JSON.stringify(r.rows, replacer, 2)}`;
+  return `${head}\n${escapeInvisibles(JSON.stringify(r.rows, replacer, 2))}`;
 }
 
 /**

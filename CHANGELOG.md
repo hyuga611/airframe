@@ -4,6 +4,58 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.5] — 2026-08-10
+
+0.4.4 stopped a stored value from rewriting the confirmation card. It left the
+larger surface alone: the rows a `read` returns, which reach a terminal and a
+model without passing through the card at all.
+
+**`read` printed values exactly as stored.** `JSON.stringify` escapes what JSON
+requires — quotes, backslashes, the control characters below U+0020 — and nothing
+else, so a right-to-left override survived it and reordered the output it
+appeared in. So did the tag block at U+E0000, which encodes arbitrary text in
+characters no reader will ever see. This library's own documentation calls reads
+the larger surface, on the grounds that they are what an injected instruction
+reaches first and need no write privilege at all. That surface was unescaped, in
+the CLI and in the MCP server both.
+
+**A mistyped filter answered with silence.** `llm-safe-sql list --status pendign`
+reached the query as written, matched nothing, and printed `No plans.` with exit
+0 — while two approvals sat waiting. An approval queue that answers a typo with
+"nothing is waiting for you" is a way for an approval to go unread, and it was a
+one-character mistake away at all times.
+
+**A row cap that was not a number became one anyway.** `--limit abc` passed
+`Number()` as `NaN`, travelled into the SQL, and came back as
+`Error: no such column: NaN` over a stack trace pointing into this library.
+`--limit 0` and `--limit -5` reached the dialect too and returned whatever it
+made of them.
+
+### Fixed
+
+- **Rows printed by `read` are escaped**, in the CLI and in the MCP server, with
+  the same rule the card uses. As JSON escapes, so it stays lossless: `\u202e` is
+  what U+202E means to any JSON parser, and anything consuming the output as data
+  gets the value back byte for byte. Only the picture changes.
+- **`--status` takes one of the six statuses a plan can hold**, and anything else
+  is a usage error naming them, exit 2 — not an empty list.
+- **`--limit` takes a whole number of rows, 1 or more**, checked where the flag is
+  read rather than where the query fails.
+
+### Added
+
+- **`test/cli.test.ts`** — the CLI had no tests of its own either. Most of these
+  need no database: an argument rejected by the parser never opens a connection.
+- One of them does open one, deliberately. It runs `read` against a real SQLite
+  file and reads the output the way a person would, because a test that pins
+  `escapeInvisibles` in isolation proves the function works and says nothing about
+  whether the command calls it. That distinction is the whole subject of the
+  0.4.3 changelog entry, and it applied to this fix while it was being written.
+
+308 tests, from 301. Ablated: removing the call to `escapeInvisibles` while
+leaving the function in place fails exactly the test that goes through the
+command; unvalidating the two flags fails three.
+
 ## [0.4.4] — 2026-08-10
 
 The card is the only thing a person actually reads, and it had no tests of its
@@ -833,6 +885,7 @@ produced a plan describing something other than what would happen:
 - No runtime dependencies. Drivers are optional peers; the MCP server implements
   the wire protocol directly.
 
+[0.4.5]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.5
 [0.4.4]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.4
 [0.4.3]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.3
 [0.4.2]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.2

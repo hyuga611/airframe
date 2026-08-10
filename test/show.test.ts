@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { inline, showValue } from '../src/show.js';
+import { escapeInvisibles, inline, showValue } from '../src/show.js';
 
 /**
  * What a value is allowed to do to the display it appears in.
@@ -85,4 +85,30 @@ test('an invisible letter is escaped, not passed through', () => {
   // these. U+3164 is a letter and U+115F is a letter, and both draw nothing.
   assert.equal(inline('viewer\u3164'), 'viewer\\u{3164}');
   assert.equal(inline('a\u115fb'), 'a\\u{115f}b');
+});
+
+test('JSON on its way to a terminal or a model carries no invisible characters', () => {
+  // `JSON.stringify` escapes what JSON requires and nothing more, so a
+  // right-to-left override or a tag character reaches the reader intact. Reads
+  // are the larger surface here: no write privilege is needed to put a value in
+  // front of a model, and the tag block at U+E0000 can carry a whole sentence
+  // that no reader will ever see.
+  const rows = [{ note: '\u202edrawkcab', tag: 'a\u{E0041}b', zwsp: 'view\u200ber' }];
+  const raw = JSON.stringify(rows);
+  assert.ok(raw.includes('\u202e'), 'JSON.stringify leaves it alone — that is the problem');
+
+  const safe = escapeInvisibles(raw);
+  assert.doesNotMatch(safe, /[\u202e\u200b]/, 'no raw invisible characters survive');
+  assert.match(safe, /\\u202e/);
+  assert.match(safe, /\\udb40\\udc41/, 'both halves of the surrogate pair, or the value is lost');
+
+  // Lossless: this is an escape, not a strip. Anything reading the output as
+  // data gets exactly the value that was stored.
+  assert.deepEqual(JSON.parse(safe), rows);
+});
+
+test('ordinary rows come back untouched', () => {
+  const rows = [{ name: '神奈川県', city: 'Ångström — naïve', n: 42, nothing: null }];
+  const raw = JSON.stringify(rows, null, 2);
+  assert.equal(escapeInvisibles(raw), raw);
 });
