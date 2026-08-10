@@ -152,9 +152,18 @@ npx llm-safe-sql init > llm-safe-sql.config.json
 $EDITOR llm-safe-sql.config.json          # name your tables and what they mean
 export LLM_SAFE_SQL_PASSWORD=…
 
-npx llm-safe-sql check                    # verifies the environment, per table
 npx llm-safe-sql migrate                  # creates the plan + audit tables
+npx llm-safe-sql check                    # verifies the environment, per table
 ```
+
+`migrate` first, and not the other way round: `check` does not currently notice
+that the plan and audit tables are missing — it will report every table as ready
+and exit 0, and the omission surfaces on your first `plan` instead.
+
+**[`examples/`](examples/) has this filled in and run.** Four database accounts
+with the exact grants, for MySQL and PostgreSQL, plus a config file for each —
+tested against real servers rather than written from memory, which is how two of
+the privilege lists in there got corrected.
 
 `check` is worth reading. It reports, per table, whether a dry run is even
 possible there — a non-transactional storage engine, a missing primary key, a

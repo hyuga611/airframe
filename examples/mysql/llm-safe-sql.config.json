@@ -1,0 +1,95 @@
+{
+  "//": [
+    "A filled-in configuration for the four accounts in roles.sql.",
+    "",
+    "Every string may carry a dollar-brace environment reference, filled in when the",
+    "file loads, so this file holds no secret and is safe to commit. Export the",
+    "four passwords before starting anything that reads it.",
+    "",
+    "The four connections are the point. Collapse them into one and the tool still",
+    "works, but the separation it advertises then rests entirely on this library",
+    "being free of bugs -- which is a claim no library should ask you to accept.",
+    "`llm-safe-sql check` prints which separations it could prove by asking the",
+    "server, and warns about each one it could not."
+  ],
+
+  "dialect": "mysql",
+
+  "//connection": "The dry run. Really executes, always rolls back. Never commits.",
+  "connection": {
+    "host": "127.0.0.1",
+    "port": 3306,
+    "user": "llm_plan",
+    "password": "${LLM_SAFE_SQL_PLAN_PASSWORD}",
+    "database": "shop"
+  },
+
+  "//readConnection": "What the model reads through. MySQL refuses writes on it.",
+  "readConnection": {
+    "host": "127.0.0.1",
+    "port": 3306,
+    "user": "llm_read",
+    "password": "${LLM_SAFE_SQL_READ_PASSWORD}",
+    "database": "shop"
+  },
+
+  "//applyConnection": "The only credential here that commits. Different process, different user.",
+  "applyConnection": {
+    "host": "127.0.0.1",
+    "port": 3306,
+    "user": "llm_apply",
+    "password": "${LLM_SAFE_SQL_APPLY_PASSWORD}",
+    "database": "shop"
+  },
+
+  "//storeConnection": "Plans and audit records. No privilege on business tables.",
+  "storeConnection": {
+    "host": "127.0.0.1",
+    "port": 3306,
+    "user": "llm_store",
+    "password": "${LLM_SAFE_SQL_STORE_PASSWORD}",
+    "database": "shop"
+  },
+
+  "policy": {
+    "//allow": "Default-deny. Mirror this list in the GRANTs in roles.sql.",
+    "allow": ["orders"],
+
+    "//impact": [
+      "Required before any write to a table can be planned at all. Without it the",
+      "engine refuses with IMPACT_UNDECLARED, on purpose: strip these sentences",
+      "out and the confirmation card becomes a list of column names and old/new",
+      "values, which the person approving cannot judge. They will click yes",
+      "because the diff looks right.",
+      "",
+      "Write the consequence, not the mechanism. Not 'sets the status column' --",
+      "say what happens in the world when it changes."
+    ],
+    "impact": {
+      "orders": "Marking an order shipped emails the customer and starts the 14-day return window. It cannot be taken back by editing the row again."
+    },
+
+    "//denyIdentifiers": "Never appears in any statement, read or write, mapped to the reason a human is told.",
+    "denyIdentifiers": {
+      "password_hash": "Credentials are never read through an assistant.",
+      "api_token": "A credential you can read is a credential you have leaked."
+    },
+
+    "//denyWriteColumns": "Readable, never writable.",
+    "denyWriteColumns": {
+      "orders.ref": "The order reference is printed on the customer's invoice and is quoted in support tickets."
+    }
+  },
+
+  "//autoColumns": [
+    "Columns the database maintains by itself, per table. They are dropped from",
+    "the diff -- otherwise every card would show an updated_at change nobody",
+    "decided -- and assigning one is refused outright.",
+    "",
+    "Get this list from `llm-safe-sql check`, which reports the triggers and",
+    "defaults it found, rather than from memory."
+  ],
+  "autoColumns": {
+    "orders": ["updated_at"]
+  }
+}
