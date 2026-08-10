@@ -481,6 +481,64 @@ describe('sqlite', { skip }, () => {
     })();
   });
 
+  test('a value that changes only its type is a change, and is shown as one', async () => {
+    // SQLite gives the storage class to the value, not to the column, so a column
+    // declared with no type holds the text '007' and the integer 7 as two
+    // different things. `sameValue` calls them equal — deliberately, because the
+    // same stored DECIMAL can arrive as 10 on one read and "10.00" on another, and
+    // that tolerance is what stops the apply accusing an untouched row of having
+    // moved. Applied to the before and after images of ONE dry run, where both
+    // values came out of the same driver seconds apart, it hid a real write: the
+    // card said "1 row would change, across 1 column: name" and the apply
+    // committed the code as an integer. Measured end to end before this test
+    // existed, on 0.4.2 from npm.
+    await bookkeeping.query('DROP TABLE IF EXISTS retyped');
+    await bookkeeping.query('CREATE TABLE retyped (id INTEGER PRIMARY KEY, name TEXT NOT NULL, code)');
+    await bookkeeping.query("INSERT INTO retyped VALUES (1, 'bolt', '007')");
+    const pol = new Policy({ allow: ['retyped'], impact: { retyped: 'test table' } });
+    const e = new Engine({ adapter: planning, policy: pol });
+    const applier = new Applier({ adapter: writing, policy: pol, store });
+
+    const plan = await e.plan("UPDATE retyped SET name = 'nut', code = 7 WHERE id = 1");
+    assert.deepEqual(
+      [...(plan.rows[0]?.changed ?? [])].sort(),
+      ['code', 'name'],
+      'the card must name the column whose stored type it is about to rewrite',
+    );
+    assert.ok(plan.columnsTouched.includes('code'), 'and the summary line must count it');
+
+    // And the change the strict comparison reports is a real one, not a phantom:
+    // the value really does stop being text once this is applied.
+    const rec = await applier.record(plan, 'model');
+    await applier.approve(rec.id, 'operator');
+    await applier.apply(rec.id, 'operator');
+    const [row] = await bookkeeping.query<Row>('SELECT typeof(code) AS t FROM retyped WHERE id = 1');
+    assert.equal(row?.['t'], 'integer', 'text 007 became integer 7 — which is why it belonged on the card');
+  });
+
+  test('putting the padding back is not refused as "changing nothing"', async () => {
+    // The other face of the same defect, and the worse one to read: the tool
+    // states a measurement that is false. With the column holding the integer 7,
+    // `SET code = '007'` was refused NO_CHANGE — "the rows already hold those
+    // values" — so the operator repairing the padding that rode away in the test
+    // above was told there was nothing to repair, by the component whose entire
+    // claim is that it measures rather than assumes.
+    await bookkeeping.query('DROP TABLE IF EXISTS repad');
+    await bookkeeping.query('CREATE TABLE repad (id INTEGER PRIMARY KEY, code)');
+    await bookkeeping.query('INSERT INTO repad VALUES (1, 7)');
+    const e = new Engine({
+      adapter: planning,
+      policy: new Policy({ allow: ['repad'], impact: { repad: 'test table' } }),
+    });
+
+    const plan = await e.plan("UPDATE repad SET code = '007' WHERE id = 1");
+    assert.deepEqual(plan.rows[0]?.changed, ['code']);
+    // `node:sqlite` hands integers back as BigInt, so this is 7n and not 7 — the
+    // difference the card has to show is text against integer either way.
+    assert.equal(plan.rows[0]?.before['code'], 7n);
+    assert.equal(plan.rows[0]?.after['code'], '007');
+  });
+
   test('a column assigned its own value is still verified before the apply writes it', async () => {
     // The card shows what CHANGED. The statement writes what it ASSIGNS, and the
     // two differ whenever a column is set to the value it already holds. Both the
@@ -517,6 +575,38 @@ describe('sqlite', { skip }, () => {
     );
     const [row] = await bookkeeping.query<Row>('SELECT code FROM assigned WHERE id = 1');
     assert.equal(row?.['code'], '90210', 'and the correction must still be there');
+  });
+
+  test('an edit that only changes a type still counts as somebody having edited the row', async () => {
+    // The 0.4.1 guard covers every assigned column, so the postcode case above is
+    // refused. It was still passable by editing the type rather than the digits:
+    // the guard compared with the tolerant `sameValue`, which reads text '007' and
+    // integer 7 as one value. Measured on 0.4.2 — the apply went through, wrote
+    // '007' back over the other session's 7, and reported success. That is the
+    // failure this whole guard exists to make impossible, reached by a side door.
+    await bookkeeping.query('DROP TABLE IF EXISTS retype_race');
+    await bookkeeping.query('CREATE TABLE retype_race (id INTEGER PRIMARY KEY, name TEXT NOT NULL, code)');
+    await bookkeeping.query("INSERT INTO retype_race VALUES (1, 'bolt', '007')");
+    const pol = new Policy({ allow: ['retype_race'], impact: { retype_race: 'test table' } });
+    const e = new Engine({ adapter: planning, policy: pol });
+    const applier = new Applier({ adapter: writing, policy: pol, store });
+
+    // `code` is assigned the value it already holds, so it is covered but not displayed.
+    const plan = await e.plan("UPDATE retype_race SET name = 'nut', code = '007' WHERE id = 1");
+    assert.deepEqual(plan.rows[0]?.changed, ['name']);
+    const rec = await applier.record(plan, 'model');
+    await applier.approve(rec.id, 'operator');
+
+    // Another session retypes it. Same digits, different storage class.
+    await bookkeeping.query('UPDATE retype_race SET code = 7 WHERE id = 1');
+
+    await assert.rejects(
+      () => applier.apply(rec.id, 'operator'),
+      (err: unknown) => (err as { code?: string }).code === 'ROW_CHANGED',
+      'the apply must refuse rather than write the approved spelling back',
+    );
+    const [row] = await bookkeeping.query<Row>('SELECT typeof(code) AS t FROM retype_race WHERE id = 1');
+    assert.equal(row?.['t'], 'integer', "and the other session's edit must still be there");
   });
 
   test('a row the card calls "already correct" is verified too', async () => {

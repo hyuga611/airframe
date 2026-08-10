@@ -4,6 +4,94 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] — 2026-08-10
+
+The comparison that decides whether a value moved forgave a difference in type,
+in both places it was used: the diff a human approves, and the guard that proves
+nobody edited the row in between.
+
+SQLite gives the storage class to the value rather than to the column, so one
+column holds the text `'007'` and the integer `7` as two different things. With
+`code` holding `'007'`, this was measured end to end on 0.4.2 installed from npm:
+
+```
+  UPDATE parts SET name='nut', code=7 WHERE id=1
+
+  1 row would change, across 1 column: name        <- code is not mentioned
+  ...
+  after apply: code = 7, typeof = integer          <- and it was rewritten
+```
+
+The reverse was refused with a sentence that was not true — `SET code='007'` over
+the integer `7` produced `NO_CHANGE`, "the rows already hold those values" — so
+the operator repairing the padding that had just ridden away was told by the
+measuring component that there was nothing to measure.
+
+The same tolerance made the apply's `ROW_CHANGED` guard passable. A plan that
+assigns `code` its own current text, approved; another session retypes that
+column to an integer; the apply compares live `7` against the approved `'007'`,
+calls them equal, writes `'007'` back over the edit and reports success. That is
+precisely the failure `covered` was added in 0.4.1 to make impossible, reached
+through a side door.
+
+One function was answering two different questions. Comparing a snapshot against
+a later read has to forgive a type, because a value that crossed an untyped round
+trip could come back spelled differently. Comparing the before and after images
+of a single dry run must not, because both came out of the same driver seconds
+apart. They are now two functions with two names.
+
+### Fixed
+
+- **A change of type alone is a change**, is shown on the card, is counted in
+  `columnsTouched`, and is no longer refused as `NO_CHANGE`. `Engine` compares
+  before against after with the new strict comparison.
+- **The apply's `ROW_CHANGED` and `RESULT_MISMATCH` guards are strict too**, so
+  an edit that changes only a value's type is detected like any other edit. The
+  tolerance was protecting against something this library can no longer produce:
+  the plan snapshot carries its own types (`serialize.ts`), and every adapter
+  pins the driver's type mapping — `bigNumberStrings` on MySQL, `readBigInts` on
+  SQLite, no global parser override on PostgreSQL — so two reads of an untouched
+  value return the same JavaScript type. `digest.ts` had always been strict here;
+  only these two comparisons were not.
+- The trial run's **rollback verification** used the same tolerant comparison, so
+  a trial write that changed only a type would not have been noticed as
+  un-rolled-back. It is strict now as well.
+
+### Added
+
+- **`sameValueAndType`**, exported. Use it whenever both values were read the
+  same way, through one connection. `sameValue` keeps its cross-type tolerance
+  and its export for callers whose round trip really is untyped, and now says in
+  its own documentation that nothing in this library uses it.
+
+### Changed
+
+- An apply can now refuse where it previously proceeded — only where a value's
+  type genuinely differs from the one approved. Nothing is written in that case;
+  the plan is remade against the current values, as with any other `ROW_CHANGED`.
+
+### What to check in your own data
+
+Only SQLite deployments are affected, and only tables with a column that can hold
+more than one storage class — one declared with no type at all, or `ANY` in a
+`STRICT` table. Everywhere else the column's type is fixed, so the values on both
+sides of every comparison had the same type and none of this could arise;
+verified against MySQL 8.4 and PostgreSQL 16.
+
+If that describes a table you have applied plans against, the audit trail can
+answer it. Each stored plan holds, per row, the columns it displayed (`changed`)
+and the columns it wrote (`covered`), with the before and after values and their
+types. Look for an applied plan with a column that is in `covered`, is not in
+`changed`, and whose `before` and `after` differ in **type** rather than in
+digits. That column was rewritten without appearing on the card the approver
+read, and — if another session had edited it between approval and apply — the
+apply put the approved value back over that edit.
+
+MySQL and PostgreSQL were never exposed to the display half of this: a column's
+type is fixed there, so `SET code = 7` on a `VARCHAR` arrives as `'7'` and the
+change was always shown. Verified against MySQL 8.4 and PostgreSQL 16 rather than
+assumed. 285 tests green on both, plus SQLite.
+
 ## [0.4.2] — 2026-08-10
 
 Worked examples, and the defect that writing them exposed.
@@ -677,6 +765,7 @@ produced a plan describing something other than what would happen:
 - No runtime dependencies. Drivers are optional peers; the MCP server implements
   the wire protocol directly.
 
+[0.4.3]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.3
 [0.4.2]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.2
 [0.4.1]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.1
 [0.4.0]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.0

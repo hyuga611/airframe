@@ -97,4 +97,4 @@ export { encodePlan, decodePlan } from './serialize.js';
 export { lex, splitStatements, identifiers, SqlLexError } from './lexer.js';
 export type { Token, TokenKind } from './lexer.js';
 export { tableRefs, setColumns, whereClause } from './statement.js';
-export { canonical, sameValue } from './compare.js';
+export { canonical, sameValue, sameValueAndType } from './compare.js';

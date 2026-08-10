@@ -2,7 +2,12 @@ import { normalize, Rejected } from './normalize.js';
 import { tableRefs, setColumns, setColumnsAreCertain, whereClause, lower } from './statement.js';
 import { PolicyViolation, type Policy } from './policy.js';
 import type { Adapter, Row, TableShape } from './adapter.js';
-import { sameValue as same } from './compare.js';
+// Every comparison in this file is between two values read the same way, through
+// this one connection, inside one dry run: before against after, and after
+// against what is there once the trial is rolled back. So the type-tolerant
+// `sameValue` — which exists for comparing across a round trip, in `apply` — is
+// deliberately not imported here. See the note on `sameValueAndType`.
+import { sameValueAndType as same } from './compare.js';
 import { keyOf, keyPredicate, qname } from './keys.js';
 import { Refusal } from './refusal.js';
 

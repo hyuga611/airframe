@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sameValue, canonical } from '../src/compare.js';
+import { sameValue, sameValueAndType, canonical } from '../src/compare.js';
 
 // ---------------------------------------------------------------------
 //  Regressions. Each of these was a real defect found by adversarial review:
@@ -118,4 +118,54 @@ test('the numeric tolerance survives where it was actually needed: across types'
   assert.equal(sameValue(10n, 10), true);
   assert.equal(sameValue('9007199254740993', 9007199254740993n), true);
   assert.equal(sameValue(0, 'abc'), false, 'a non-numeric string is never a number');
+});
+
+// ---------------------------------------------------------------------
+//  Two comparisons, because there are two questions.
+//
+//  `sameValue` answers "is this the same stored value, seen across a round
+//  trip?" and must forgive a type that the driver spelled differently on the
+//  second read. `sameValueAndType` answers "did this move, between two reads
+//  taken the same way?" and must not forgive anything — there was no round trip
+//  for a type to change across, so a type that differs is a value that differs.
+//  Using the first where the second was meant is how a real write stayed off the
+//  card; the tests below pin them apart.
+// ---------------------------------------------------------------------
+test('the strict comparison does not forgive a type, and the tolerant one still does', () => {
+  // SQLite stores '007' and 7 as different things in the same column.
+  assert.equal(sameValue('007', 7), true, 'across a round trip these can be one value');
+  assert.equal(sameValueAndType('007', 7), false, 'within one read they are two');
+
+  assert.equal(sameValue('10.00', 10), true);
+  assert.equal(sameValueAndType('10.00', 10), false, 'text and a number are two storage classes');
+
+  // But not everything cross-type is a change. `10n` and `10` are one integer in
+  // two JavaScript wrappers, not two things the database is holding — a driver
+  // widening to BigInt past 2^53 must not read as an edit.
+  assert.equal(sameValueAndType(10n, 10), true);
+});
+
+test('the strict comparison still calls genuinely equal values equal', () => {
+  // Strict must not mean "reports a change on every read". Nothing here moved,
+  // and a diff that cried wolf on unchanged rows would train the approver to skim
+  // the card — which defeats approval as thoroughly as hiding a column does.
+  assert.equal(sameValueAndType('007', '007'), true);
+  assert.equal(sameValueAndType(7, 7), true);
+  assert.equal(sameValueAndType(10.0, 10), true, 'one JS number, spelled twice');
+  assert.equal(sameValueAndType(null, null), true);
+  assert.equal(sameValueAndType(null, undefined), true, 'no column distinguishes these');
+  assert.equal(sameValueAndType(new Date(1700000000000), new Date(1700000000000)), true);
+  assert.equal(sameValueAndType(Buffer.from([1, 2]), Buffer.from([1, 2])), true);
+  assert.equal(sameValueAndType({ a: 1, b: 2 }, { b: 2, a: 1 }), true, 'key order is not the value');
+  assert.equal(sameValueAndType([1, 2], [1, 2]), true);
+  assert.equal(sameValueAndType(Number.NaN, Number.NaN), true, 'one stored value, and === says otherwise');
+});
+
+test('the strict comparison keeps every difference the tolerant one already caught', () => {
+  assert.equal(sameValueAndType('00100', '100'), false);
+  assert.equal(sameValueAndType({ v: 1 }, { v: 2 }), false);
+  assert.equal(sameValueAndType(Buffer.from([0xff, 0xfe]), Buffer.from([0xfe, 0xff])), false);
+  assert.equal(sameValueAndType(new Date(1700000000000), new Date(1700000000001)), false);
+  assert.equal(sameValueAndType(true, 1), false);
+  assert.equal(sameValueAndType('x', { x: 1 }), false);
 });

@@ -1,5 +1,16 @@
 import type { Adapter, Row } from './adapter.js';
-import { sameValue as same } from './compare.js';
+// Strict, including the type. The tolerant `sameValue` was here, on the argument
+// that a snapshot compared against a later read has crossed a round trip and the
+// same stored value can come back spelled differently. It cannot, in this
+// library: the snapshot carries its own types (see `serialize.ts`), and every
+// adapter pins the driver's type mapping — `bigNumberStrings` on MySQL,
+// `readBigInts` on SQLite, no global parser override on Postgres — so two reads
+// of a value nobody touched return the same JavaScript type. What the tolerance
+// did instead was measured: with `code` holding the text '007', another session
+// retyping it to the integer 7 between approval and apply passed this guard, and
+// the apply wrote '007' back over their edit and reported success. The digest in
+// `digest.ts` has always been strict here; only this comparison was not.
+import { sameValueAndType as same } from './compare.js';
 import { planDigest } from './digest.js';
 import type { Plan, PlanRow, RefusalCode } from './engine.js';
 import { keyOf, keyPredicate, qname } from './keys.js';

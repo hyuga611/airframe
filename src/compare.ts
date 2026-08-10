@@ -70,6 +70,19 @@ function normaliseNumber(s: string): string {
  *  - number vs numeric string — drivers disagree about DECIMAL and BIGINT
  *  - Date vs a date-shaped string — drivers disagree about DATETIME
  * Everything else must match by type and content.
+ *
+ * Nothing inside this library compares with it any more, and that is worth
+ * saying plainly rather than leaving as a puzzle. The tolerance was written for
+ * values that had crossed an untyped round trip; `serialize.ts` then made the
+ * round trip carry its types, and every adapter pins the driver's type mapping,
+ * so the disagreement it forgives can no longer happen between two reads this
+ * library takes. What remained was a comparison that called the text `'007'` and
+ * the integer `7` one value — in the diff shown to a human, and in the guard that
+ * checks nobody edited the row. Both now use {@link sameValueAndType}.
+ *
+ * It stays exported for a caller storing snapshots their own way, where the
+ * round trip really is untyped. If both of your values came from this library's
+ * drivers, you want the strict one.
  */
 export function sameValue(a: unknown, b: unknown): boolean {
   if (a === b) return true;
@@ -103,6 +116,29 @@ export function sameValue(a: unknown, b: unknown): boolean {
   if (aNum !== undefined && bNum !== undefined) return aNum === bNum;
   if (aNum !== undefined || bNum !== undefined) return false;
 
+  return canonical(a) === canonical(b);
+}
+
+/**
+ * True when two values are the same *and arrived as the same type*.
+ *
+ * Use this whenever both values were read the same way — one connection, one
+ * driver, one dry run. {@link sameValue} must not be used there. Its cross-type
+ * tolerance exists for a comparison across a round trip, where the same stored
+ * value can legitimately come back as `10` on one read and `"10.00"` on another.
+ * Between the before-image and the after-image of a single trial run there is no
+ * such round trip: both came out of the same driver moments apart, so a type that
+ * differs is a value that differs.
+ *
+ * Measured on SQLite, whose storage class belongs to the value and not to the
+ * column: with `code` holding the text `'007'`, `SET name='nut', code=7` was
+ * shown as "1 column: name" and committed `code` as the integer `7`. The reverse,
+ * `SET code='007'` over the integer `7`, was refused as NO_CHANGE — "the rows
+ * already hold those values" — which was not true, and which left no way to put
+ * the padding back through this tool.
+ */
+export function sameValueAndType(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
   return canonical(a) === canonical(b);
 }
 
