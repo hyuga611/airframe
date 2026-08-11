@@ -59,11 +59,18 @@ at `adapter.ts:372`, `:390` and `:391` are exactly the three gaps in
 `probeWriteAbility` that 0.5.0 closed. Two methods sharing no assumptions pointed
 at the same three lines.
 
-**And it found that `showValue` had no tests for seven of its nine branches** —
+**And it found that `showValue` had no tests for five of its eight branches** —
 the function that renders every value a human reads before approving it, in a file
-that already had a dedicated test file. Strings and invisible characters were
-covered thoroughly; `Buffer`, `Uint8Array`, `DataView`, `Date`, `bigint`, objects,
-numbers and the truncation boundary were not covered at all. Worth naming: a
+that already had a dedicated test file. Null, strings, `Buffer` and invisible
+characters were covered thoroughly; `Uint8Array`, `DataView`, `Date`, `bigint`,
+objects, numbers and the truncation boundary were not covered at all.
+
+<sup>Corrected 2026-08-11, after publication: this paragraph first said "seven of
+its nine branches". `showValue` has eight, and three of them were already covered.
+The rest of the entry stands as measured — the correction is to my count, not to
+the run.</sup>
+
+Worth naming: a
 string of exactly 80 characters (clipped or not — nothing said), the 77-character
 visible prefix, and the four-digit zero padding on an escape, which could be
 deleted to produce `\u7` where `\u0007` belongs — invalid JSON, on the path whose
