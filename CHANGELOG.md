@@ -4,6 +4,96 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] — 2026-08-11
+
+**A column can be written, committed, and never appear — for the third time, by a
+third mechanism.**
+
+MySQL 8 lets a column be `INVISIBLE`. It is listed in
+`information_schema.COLUMNS`, so it passes the check on the left of `SET`; it is
+absent from `SELECT *`, so the trial run's before-image had no entry for it. The
+diff could not see it move, the card could not show it, and `covered` — the list
+the apply re-reads and verifies before committing — dropped it silently.
+
+Measured on MySQL 8.4.11:
+
+```text
+CREATE TABLE iv_orders (id INT PRIMARY KEY, status VARCHAR(20) NOT NULL,
+                        secret VARCHAR(20) INVISIBLE NOT NULL DEFAULT 's');
+INSERT INTO iv_orders (id, status, secret) VALUES (1, 'new', 'KEEP');
+
+UPDATE iv_orders SET status = 'sent', secret = 'LEAKED' WHERE id = 1
+
+  columnsTouched : ["status"]              <- the card says one column
+  row.covered    : ["status"]              <- and the apply verifies one column
+  row.before     : {"status":"new"}        <- holding no image of the other
+```
+
+`secret` goes from `'KEEP'` to `'LEAKED'` and is named nowhere. Assigned on its
+own rather than alongside a visible column, the same statement was refused with
+`NO_CHANGE` — *"Running this changed nothing: the rows already hold those
+values"* — which is the same false sentence in the other direction.
+
+### Fixed
+
+- **The before-and-after images name their columns instead of asking for `*`.**
+  The two sets are not the same on MySQL 8, and they differ in exactly the
+  direction that hides a write. An invisible column is now fetched, diffed,
+  displayed and verified like any other.
+- **A column that is assigned and still missing from the row is a refusal**
+  (`UNREADABLE_COLUMN`), not a `continue`. Unreachable now, and left in because of
+  what the `continue` did while it was reachable.
+
+### Added
+
+Seventeen tests, sixteen of them written because a machine broke the source and
+nothing went red.
+
+Mutation testing (Stryker, 1458 mutants over the eight pure modules, 49 minutes)
+scored 58.6% against the unit suite. The score itself is not worth much — the run
+used `npm test`, so anything covered only by the integration suite counts as
+surviving — but two things in it were.
+
+**It re-found three defects fixed by hand hours earlier.** The surviving mutants
+at `adapter.ts:372`, `:390` and `:391` are exactly the three gaps in
+`probeWriteAbility` that 0.5.0 closed. Two methods sharing no assumptions pointed
+at the same three lines.
+
+**And it found that `showValue` had no tests for seven of its nine branches** —
+the function that renders every value a human reads before approving it, in a file
+that already had a dedicated test file. Strings and invisible characters were
+covered thoroughly; `Buffer`, `Uint8Array`, `DataView`, `Date`, `bigint`, objects,
+numbers and the truncation boundary were not covered at all. Worth naming: a
+string of exactly 80 characters (clipped or not — nothing said), the 77-character
+visible prefix, and the four-digit zero padding on an escape, which could be
+deleted to produce `\u7` where `\u0007` belongs — invalid JSON, on the path whose
+only job is to hand back something parseable.
+
+**Every one of those tests passed the first time it ran.** The code was already
+right; what was missing was any evidence of it, which is a different thing.
+
+`show.ts` went from 74.07% to 90.74%, `adapter.ts` from 84.75% to 87.01%. Ten
+mutants still stand in `show.ts` and most are equivalent — dropping
+`typeof v === 'bigint'` lets the value fall through to `String(v)` on the last
+line and render identically, so no input distinguishes the two programs. Those
+were left alone. A test written to raise that number would assert nothing.
+
+374 tests, from 357.
+
+### Also measured, and found nothing
+
+Fault injection at the driver boundary: every adapter call in a full
+plan → approve → apply was made to fail, one at a time, across both engines, both
+failure shapes (a rejected promise as well as a synchronous throw), an error
+carrying a privilege code as well as a generic one, and both operations — 16
+sweeps, roughly 296 injection points. **Zero violations of "apply reported success
+⟺ the data changed", and nothing escaped as an unhandled rejection.**
+
+The first version of that harness reported 32 escapes. They were its own: it was
+injecting rejected promises into `SqliteAdapter.one`, a private synchronous helper
+that returns a value and is never awaited. A tool reporting a failure is not
+evidence until the tool has been checked.
+
 ## [0.5.0] — 2026-08-11
 
 **On MySQL, two of this tool's refusals were switched off by the grants its own
@@ -1364,6 +1454,7 @@ produced a plan describing something other than what would happen:
 - No runtime dependencies. Drivers are optional peers; the MCP server implements
   the wire protocol directly.
 
+[0.5.1]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.5.1
 [0.5.0]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.5.0
 [0.4.10]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.10
 [0.4.9]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.9

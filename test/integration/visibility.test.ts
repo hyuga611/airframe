@@ -223,3 +223,52 @@ test('[postgres] the catalogue is not privilege-filtered, and this is why we say
   assert.equal(await plan(blind, UPDATE), 'AUTO_COLUMNS_UNKNOWN');
   assert.equal(await plan(blind, DELETE), 'CASCADE_SIDE_EFFECTS');
 });
+
+test('[mysql] a column the row read did not return cannot ride along unshown', async () => {
+  // The third mechanism for this package's signature defect, and the one it is
+  // named after: a column that is written and never appears.
+  //
+  // MySQL 8 lets a column be INVISIBLE. It is listed in
+  // `information_schema.COLUMNS`, so it passes the check on the left of SET, and
+  // it is absent from `SELECT *`, so the trial's before-image had no entry for
+  // it. The diff could not see it move, the card could not show it, and
+  // `covered` — the list the apply verifies before committing — dropped it.
+  //
+  // Measured on MySQL 8.4.11 before the fix:
+  //   UPDATE iv_orders SET status = 'sent', secret = 'LEAKED' WHERE id = 1
+  //   -> an approvable card reading "1 row, 1 column: status", with `secret`
+  //      going from 'KEEP' to 'LEAKED' and named nowhere.
+  const version = String((await my.query<{ v: string }>('SELECT VERSION() AS v'))[0]?.v ?? '');
+  const major = Number(version.split('.')[0] ?? 0);
+  if (major < 8 || /mariadb/i.test(version)) return; // INVISIBLE arrived in MySQL 8.0.23
+
+  await my.query('DROP TABLE IF EXISTS iv_orders');
+  await my.query(
+    "CREATE TABLE iv_orders (id INT PRIMARY KEY, status VARCHAR(20) NOT NULL, " +
+      "secret VARCHAR(20) INVISIBLE NOT NULL DEFAULT 's') ENGINE=InnoDB",
+  );
+  await my.query("INSERT INTO iv_orders (id, status, secret) VALUES (1, 'new', 'KEEP')");
+  try {
+    // The premise: the two really do disagree, or this test proves nothing.
+    const shape = await my.introspect('iv_orders');
+    assert.ok(shape.columns.some((c) => c.name === 'secret'), 'information_schema lists the invisible column');
+    const star = await my.query<Record<string, unknown>>('SELECT * FROM iv_orders WHERE id = 1');
+    assert.ok(!Object.keys(star[0] ?? {}).includes('secret'), 'and SELECT * does not return it');
+
+    const p = await new Engine({
+      adapter: my,
+      policy: new Policy({ allow: ['iv_orders'], impact: { iv_orders: 'test table' } }),
+    }).plan("UPDATE iv_orders SET status = 'sent', secret = 'LEAKED' WHERE id = 1");
+
+    assert.deepEqual([...p.columnsTouched].sort(), ['secret', 'status']);
+    assert.deepEqual([...(p.rows[0]?.changed ?? [])].sort(), ['secret', 'status']);
+    assert.deepEqual([...(p.rows[0]?.covered ?? [])].sort(), ['secret', 'status'], 'the apply must verify it too');
+    assert.equal(p.rows[0]?.before?.['secret'], 'KEEP', 'and hold the value it is about to overwrite');
+
+    // Nothing was committed: the trial ran and rolled back.
+    const after = await my.query<{ secret: string }>('SELECT secret FROM iv_orders WHERE id = 1');
+    assert.equal(after[0]?.secret, 'KEEP');
+  } finally {
+    await my.query('DROP TABLE IF EXISTS iv_orders').catch(() => {});
+  }
+});

@@ -161,6 +161,23 @@ describe('probeWriteAbility', () => {
     );
   });
 
+  test('a credential that can only UPDATE is not read-only either', async () => {
+    // Mutation testing found this one. The line `if (updated === 'ok') return
+    // 'writable'` could be replaced with `false` and the whole suite stayed green:
+    // every existing case proved writability through DELETE, so the per-column
+    // UPDATE loop — the branch that exists for exactly the role holding UPDATE and
+    // not DELETE — had never been the thing that decided an answer.
+    assert.equal<WriteAbility>(
+      await probeWriteAbility(
+        ['orders'],
+        columnsOf,
+        quote,
+        answering({ SELECT: 'ok', DELETE: 'denied', UPDATE: 'ok', INSERT: 'denied' }),
+      ),
+      'writable',
+    );
+  });
+
   test('a write that went through outranks anything unclear', async () => {
     assert.equal<WriteAbility>(
       await probeWriteAbility(['orders'], columnsOf, quote, answering({ SELECT: 'ok', DELETE: 'ok' })),

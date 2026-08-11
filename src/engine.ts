@@ -42,6 +42,7 @@ export type RefusalCode =
   | 'NOT_TRANSACTIONAL'
   | 'CASCADE_SIDE_EFFECTS'
   | 'CASCADES_UNKNOWN'
+  | 'UNREADABLE_COLUMN'
   | 'ADAPTER_UNUSABLE';
 
 /** A plan we will not produce. Producing none is always safe; producing a wrong one is not. */
@@ -168,6 +169,17 @@ export interface EngineOptions {
 }
 
 const DEFAULTS = { maxUpdateRows: 200, maxDeleteRows: 50, maxReadRows: 200, statementMs: 5_000, lockMs: 3_000 };
+
+/**
+ * The columns of a table, named, for the before-and-after images.
+ *
+ * `SELECT *` is not the same set. MySQL 8 omits an INVISIBLE column from it while
+ * still listing that column in `information_schema.COLUMNS` — so the shape and
+ * the row disagree, in exactly the direction that hides a write.
+ */
+function columnList(q: (name: string) => string, shape: TableShape): string {
+  return shape.columns.map((c) => q(c.name)).join(', ');
+}
 
 export class Engine {
   readonly adapter: Adapter;
@@ -440,7 +452,23 @@ export class Engine {
         );
       }
 
-      before = await this.adapter.query<Row>(`SELECT * FROM ${qname(q, table)} WHERE ${where}`);
+      // Not `SELECT *`. MySQL 8 lets a column be INVISIBLE: it is in
+      // `information_schema.COLUMNS`, so it passes the P7 check on the left of
+      // SET, and it is absent from `SELECT *`, so the trial's before-image has no
+      // entry for it. The diff then cannot see it move, the card cannot show it,
+      // and `covered` — the list the apply verifies before committing — silently
+      // drops it.
+      //
+      // Measured on MySQL 8.4.11:
+      //   UPDATE iv_orders SET status = 'sent', secret = 'LEAKED' WHERE id = 1
+      //   -> an approvable card reading "1 row would change, across 1 column:
+      //      status", with `secret` written from 'KEEP' to 'LEAKED' and named
+      //      nowhere. Which is the sentence this library exists to make impossible,
+      //      arriving for the third time by a third mechanism.
+      //
+      // Naming the columns fixes it at the source: an invisible column is fetched,
+      // diffed, displayed and verified like any other.
+      before = await this.adapter.query<Row>(`SELECT ${columnList(q, shape)} FROM ${qname(q, table)} WHERE ${where}`);
 
       // D5 — a name called "id" is not a guarantee of uniqueness. If the key does
       // not identify rows one-to-one, the human sees fewer rows than will change.
@@ -461,7 +489,10 @@ export class Engine {
 
       if (op === 'UPDATE') {
         const { sql: pred, params } = keyPredicate(pk, before, q, this.adapter.dialect);
-        after = await this.adapter.query<Row>(`SELECT * FROM ${qname(q, table)} WHERE ${pred}`, params);
+        after = await this.adapter.query<Row>(
+          `SELECT ${columnList(q, shape)} FROM ${qname(q, table)} WHERE ${pred}`,
+          params,
+        );
       }
     } catch (e) {
       primary = e;
@@ -734,7 +765,19 @@ export class Engine {
       const covered = [...changed];
       for (const c of assigned) {
         const actual = Object.keys(b).find((k) => lower(k) === lower(c));
-        if (actual === undefined || auto.has(lower(actual))) continue;
+        if (actual === undefined) {
+          // Unreachable now that the before-image names its columns rather than
+          // asking for `*` — and left in as a refusal rather than a `continue`
+          // because of what the `continue` did while it was reachable: the column
+          // was dropped from `covered`, so the apply held no before-image of it and
+          // wrote over it having verified nothing, without it appearing on the card.
+          throw new PlanRefused(
+            'UNREADABLE_COLUMN',
+            `\`${table}.${c}\` is assigned by this statement and was not returned when the row was read, ` +
+              'so it cannot be shown to you or checked before the change is committed.',
+          );
+        }
+        if (auto.has(lower(actual))) continue;
         if (!covered.some((x) => lower(x) === lower(actual))) covered.push(actual);
       }
 
