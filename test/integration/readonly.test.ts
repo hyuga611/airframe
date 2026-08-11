@@ -26,7 +26,7 @@ import { MysqlAdapter } from '../../src/adapters/mysql.js';
 import { PostgresAdapter } from '../../src/adapters/postgres.js';
 import { Engine } from '../../src/engine.js';
 import { Policy } from '../../src/policy.js';
-import type { Adapter, Row, WriteAbility } from '../../src/adapter.js';
+import type { Adapter, DeleteAbility, Row, WriteAbility } from '../../src/adapter.js';
 
 const MYSQL = { host: '127.0.0.1', port: 13306, user: 'root', password: 'llmsafesql', database: 'llmsafesql' };
 const PG = { host: '127.0.0.1', port: 15432, user: 'postgres', password: 'llmsafesql', database: 'llmsafesql' };
@@ -110,15 +110,33 @@ before(async () => {
 });
 
 after(async () => {
-  for (const a of opened) await a.close().catch(() => {});
+  // Not `opened` wholesale: `myAdmin` and `pgMaint` are in that list too, and
+  // closing them here is what made every statement below a no-op. Each DROP then
+  // ran on a closed connection and was swallowed by its own `.catch`, so the hook
+  // reported nothing and cleaned up nothing. Found by looking at the server:
+  // `ro_probe`, `rw_probe`, `ins_probe` and the `llmsafesql_ro` database had all
+  // survived a completed run.
+  for (const a of opened) {
+    if (a !== myAdmin && a !== pgMaint) await a.close().catch(() => {});
+  }
   // Dropping the database takes the grants, the revoke and the tables with it.
   await pgMaint.query(`DROP DATABASE IF EXISTS ${RO_DB} WITH (FORCE)`).catch(() => {});
   for (const role of ['ro_probe', 'rw_probe', 'ins_probe']) {
     await pgMaint.query(`DROP ROLE IF EXISTS ${role}`).catch(() => {});
     await myAdmin.query(`DROP USER IF EXISTS '${role}'@'%'`).catch(() => {});
   }
+
+  // Then check, rather than assume it worked — which is the whole reason the
+  // silence above went unnoticed for as long as it did.
+  const survivors = [
+    ...(await pgMaint.query<Row>("SELECT rolname AS n FROM pg_roles WHERE rolname IN ('ro_probe','rw_probe','ins_probe')")),
+    ...(await pgMaint.query<Row>(`SELECT datname AS n FROM pg_database WHERE datname = '${RO_DB}'`)),
+    ...(await myAdmin.query<Row>("SELECT user AS n FROM mysql.user WHERE user IN ('ro_probe','rw_probe','ins_probe')")),
+  ].map((r) => String(r['n']));
+
   await pgMaint.close().catch(() => {});
   await myAdmin.close().catch(() => {});
+  assert.deepEqual(survivors, [], 'the fixtures this file creates must not outlive it');
 });
 
 interface Case {
@@ -130,6 +148,16 @@ interface Case {
   rw(): Promise<Adapter>;
   /** SELECT and INSERT, no DELETE: what the examples recommend for the store. */
   ins(): Promise<Adapter>;
+  /**
+   * The same account as {@link Case.admin}, on a connection whose transactions
+   * are read-only.
+   *
+   * It holds every privilege there is and is refused every write anyway. That
+   * makes it the one credential in this file where the right answer is neither
+   * `writable` nor `read-only` — the probes learn nothing about the grants
+   * from it, and until 0.4.10 they reported the boundary anyway.
+   */
+  readOnlySession(): Promise<Adapter>;
 }
 
 const CASES: Case[] = [
@@ -139,6 +167,12 @@ const CASES: Case[] = [
     ro: () => MysqlAdapter.connect({ ...MYSQL, user: 'ro_probe', password: 'probe' }),
     rw: () => MysqlAdapter.connect({ ...MYSQL, user: 'rw_probe', password: 'probe' }),
     ins: () => MysqlAdapter.connect({ ...MYSQL, user: 'ins_probe', password: 'probe' }),
+    readOnlySession: async () => {
+      // `root`, refused every write with 1792 rather than 1142.
+      const a = await MysqlAdapter.connect(MYSQL);
+      await a.query('SET SESSION TRANSACTION READ ONLY');
+      return a;
+    },
   },
   {
     label: 'postgres',
@@ -146,6 +180,14 @@ const CASES: Case[] = [
     ro: () => PostgresAdapter.connect({ ...PG_RO, user: 'ro_probe', password: 'probe' }),
     rw: () => PostgresAdapter.connect({ ...PG_RO, user: 'rw_probe', password: 'probe' }),
     ins: () => PostgresAdapter.connect({ ...PG_RO, user: 'ins_probe', password: 'probe' }),
+    readOnlySession: async () => {
+      // A superuser, refused every write with 25006 rather than 42501. Set on
+      // the session and not with ALTER ROLE: the role is cluster-wide and the
+      // rest of the suite connects as it.
+      const a = await PostgresAdapter.connect(PG_RO);
+      await a.query('SET default_transaction_read_only = on');
+      return a;
+    },
   },
 ];
 
@@ -246,6 +288,34 @@ for (const c of CASES) {
     const rw = await open(c, 'rw');
     assert.equal<WriteAbility>(await rw.probeWritable(['no_such_table_here']), 'unknown');
     assert.equal<WriteAbility>(await rw.probeWritable([]), 'unknown');
+  });
+
+  test(`[${c.label}] a refusal that is not about the privilege is not a boundary`, async () => {
+    // Both probes took a boolean until 0.4.10, so every refusal they could not
+    // read became the reassuring one — `read-only` for the read credential,
+    // `cannot-delete` for the audit table — and `check` printed both as facts
+    // it had established by asking the server.
+    //
+    // This connection is the admin account. It holds every privilege in the
+    // database and cannot write a row, because its transactions are read-only:
+    // a mode it set itself and can unset in one statement. Nothing here is a
+    // boundary, and the honest answer to both questions is that nothing was
+    // established.
+    const a = await c.readOnlySession();
+    opened.push(a);
+    await assert.rejects(
+      () => a.query('UPDATE ro_orders SET qty = qty + 1 WHERE id = 1'),
+      'the session under test has to be one that really is refused writes',
+    );
+
+    assert.equal<WriteAbility>(await a.probeWritable(['ro_orders']), 'unknown');
+    assert.equal<DeleteAbility>((await a.probeDeletable?.('ro_orders')) as DeleteAbility, 'unknown');
+
+    // And the narrow accounts still answer, so this did not buy honesty by
+    // giving up on the question.
+    const ins = await open(c, 'ins');
+    assert.equal<DeleteAbility>((await ins.probeDeletable?.('ro_orders')) as DeleteAbility, 'cannot-delete');
+    assert.equal<WriteAbility>(await (await open(c, 'ro')).probeWritable(['ro_orders']), 'read-only');
   });
 
   test(`[${c.label}] a read-only role still cannot be used to plan`, async () => {

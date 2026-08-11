@@ -316,36 +316,69 @@ export type WriteAbility = 'writable' | 'read-only' | 'unknown';
  * the statement. A table that could not be introspected answers `unknown`,
  * because silence has to be distinguishable from a boundary.
  */
+/**
+ * What a probe statement did, as far as the driver will say.
+ *
+ * The middle value is why this type exists. A probe learns something about the
+ * grants only when the database refuses **for the privilege**. Every other
+ * refusal — a read-only transaction, a lock timeout, a dropped connection —
+ * looks identical from the outside and says nothing about them. Folded into a
+ * boolean, as these probes were until 0.4.10, each of those reads as *the guard
+ * is in place*: the reassuring answer, printed as proof, and the one an operator
+ * has no reason to go and check.
+ *
+ * Measured on PostgreSQL 16, as `postgres`, with
+ * `default_transaction_read_only = on`: `DELETE ... WHERE 1 = 0` answers
+ * `25006`, and a superuser was reported as an account the database refuses
+ * writes from.
+ */
+export type ProbeOutcome = 'ok' | 'denied' | 'unclear';
+
 export async function probeDeleteAbility(
   table: string,
   quote: (name: string) => string,
   exists: () => Promise<boolean>,
-  attempt: (sql: string) => Promise<boolean>,
+  attempt: (sql: string) => Promise<ProbeOutcome>,
 ): Promise<DeleteAbility> {
   if (!(await exists())) return 'unknown';
-  // Matches no row, so the privilege is the only thing it can be refused for.
-  return (await attempt(`DELETE FROM ${quote(table)} WHERE 1 = 0`)) ? 'can-delete' : 'cannot-delete';
+  // Matches no row, so nothing here can be refused for the data. It can still be
+  // refused for something that is not the privilege, which is the whole reason
+  // `unclear` is not folded into `cannot-delete`.
+  switch (await attempt(`DELETE FROM ${quote(table)} WHERE 1 = 0`)) {
+    case 'ok':
+      return 'can-delete';
+    case 'denied':
+      return 'cannot-delete';
+    default:
+      return 'unknown';
+  }
 }
 
 export async function probeWriteAbility(
   tables: readonly string[],
   columnsOf: (table: string) => Promise<readonly string[]>,
   quote: (name: string) => string,
-  attempt: (sql: string) => Promise<boolean>,
+  attempt: (sql: string) => Promise<ProbeOutcome>,
 ): Promise<WriteAbility> {
   let anyReadable = false;
+  /** Something refused an attempt for a reason that was not the privilege. */
+  let anyUnclear = false;
 
   for (const table of tables) {
     const name = quote(table);
     // A table this connection cannot even read says nothing about whether it can
     // write. Skipping it is the difference between "proved read-only" and "asked
     // the wrong table".
-    if (!(await attempt(`SELECT 1 FROM ${name} WHERE 1 = 0`))) continue;
+    if ((await attempt(`SELECT 1 FROM ${name} WHERE 1 = 0`)) !== 'ok') continue;
     anyReadable = true;
 
-    // DELETE first, because it names no column and so cannot fail for any reason
-    // except the privilege.
-    if (await attempt(`DELETE FROM ${name} WHERE 1 = 0`)) return 'writable';
+    // DELETE first, because it names no column and so cannot be refused for the
+    // shape of the row. It can still be refused for something other than the
+    // privilege — the comment here used to claim otherwise, and a read-only
+    // transaction answering 25006 to a superuser is what disproved it.
+    const deleted = await attempt(`DELETE FROM ${name} WHERE 1 = 0`);
+    if (deleted === 'ok') return 'writable';
+    if (deleted === 'unclear') anyUnclear = true;
 
     // A role may hold UPDATE and not DELETE. `SET c = c` is type-correct for any
     // column, but a generated column rejects being assigned at all, so a single
@@ -359,10 +392,17 @@ export async function probeWriteAbility(
     }
     for (const c of columns) {
       const col = quote(c);
-      if (await attempt(`UPDATE ${name} SET ${col} = ${col} WHERE 1 = 0`)) return 'writable';
+      const updated = await attempt(`UPDATE ${name} SET ${col} = ${col} WHERE 1 = 0`);
+      if (updated === 'ok') return 'writable';
+      if (updated === 'unclear') anyUnclear = true;
     }
   }
 
+  // Proving a credential cannot write needs every refusal along the way to have
+  // been about the privilege. One that was not leaves the question open, and
+  // open is what this has to return: `read-only` is printed by `check` as a
+  // boundary, and an operator who reads it stops looking.
+  if (anyUnclear) return 'unknown';
   return anyReadable ? 'read-only' : 'unknown';
 }
 

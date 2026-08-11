@@ -1,6 +1,26 @@
 import mysql from 'mysql2/promise';
-import type { Adapter, ColumnShape, Row, DeleteAbility, Savepoint, SelfCheckMode, TableShape, WriteAbility } from '../adapter.js';
+import type { Adapter, ColumnShape, Row, DeleteAbility, ProbeOutcome, Savepoint, SelfCheckMode, TableShape, WriteAbility } from '../adapter.js';
 import { AdapterUnusable, probeDeleteAbility, probeWriteAbility } from '../adapter.js';
+
+/**
+ * Whether MySQL refused this statement **for the privilege**, rather than for
+ * anything else.
+ *
+ * Measured against MySQL 8.4: a role holding `SELECT, INSERT` and no `DELETE`
+ * answers `1142 ER_TABLEACCESS_DENIED_ERROR`. The refusal this exists to
+ * exclude is `1792 ER_CANT_EXECUTE_IN_READ_ONLY_TRANSACTION`, which `root` gets
+ * too and which says nothing about what `root` may do.
+ */
+const PRIVILEGE_DENIED = new Set([
+  1044, // ER_DBACCESS_DENIED_ERROR
+  1142, // ER_TABLEACCESS_DENIED_ERROR
+  1143, // ER_COLUMNACCESS_DENIED_ERROR
+]);
+
+function refusedForPrivilege(e: unknown): boolean {
+  const errno = (e as { errno?: unknown } | null | undefined)?.errno;
+  return typeof errno === 'number' && PRIVILEGE_DENIED.has(errno);
+}
 
 export { AdapterUnusable };
 
@@ -386,12 +406,12 @@ export class MysqlAdapter implements Adapter {
           return false;
         }
       },
-      async (sql) => {
+      async (sql): Promise<ProbeOutcome> => {
         try {
           await this.query(sql);
-          return true;
-        } catch {
-          return false;
+          return 'ok';
+        } catch (e) {
+          return refusedForPrivilege(e) ? 'denied' : 'unclear';
         }
       },
     );
@@ -407,12 +427,12 @@ export class MysqlAdapter implements Adapter {
         tables,
         async (t) => (await this.introspect(t)).columns.map((c) => c.name),
         (n) => this.quoteIdent(n),
-        async (sql) => {
+        async (sql): Promise<ProbeOutcome> => {
           try {
             await this.conn.query(sql);
-            return true;
-          } catch {
-            return false;
+            return 'ok';
+          } catch (e) {
+            return refusedForPrivilege(e) ? 'denied' : 'unclear';
           }
         },
       );

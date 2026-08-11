@@ -331,10 +331,15 @@ async function run(args: Args): Promise<number> {
             // probe answered a different question and reported an ordinary
             // read-write account as constrained, which is this command telling
             // an operator a boundary exists when it does not.
+            //
+            // The second reason below arrived with 0.4.10. Naming only the first
+            // would make this line the same kind of defect it is reporting: a
+            // sentence that was true of the code when it was written.
             warn.push(
               'readConnection is a different credential, but whether the database will let it write could ' +
-                'not be established — none of the allowlisted tables were readable on it, so there was ' +
-                'nothing to ask about. Treat the separation as unproven until you check the grants by hand.',
+                'not be established — either none of the allowlisted tables were readable on it, or a write ' +
+                'was refused for a reason that was not the privilege. Treat the separation as unproven ' +
+                'until you check the grants by hand.',
             );
           } else {
             proved.push('read is a credential the database itself refuses writes from — probed on your own tables.');

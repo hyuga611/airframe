@@ -85,7 +85,7 @@ export { VERSION } from './version.js';
 // here too — it deliberately lives in the module with no driver imports, so the
 // root can carry it without dragging mysql2 into a Postgres-only install.
 export type { Adapter, TableShape, ColumnShape, InboundCascade, Row, Savepoint } from './adapter.js';
-export type { SelfCheckMode, WriteAbility, DeleteAbility } from './adapter.js';
+export type { SelfCheckMode, WriteAbility, DeleteAbility, ProbeOutcome } from './adapter.js';
 export { probeDeleteAbility } from './adapter.js';
 export { AdapterUnusable, probeWriteAbility } from './adapter.js';
 

@@ -4,6 +4,105 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.10] — 2026-08-11
+
+0.4.9 added a probe that asks the database whether the account writing the audit
+record is allowed to erase it. This release is about what that probe does with an
+answer it does not understand, which turned out to be: report the guard.
+
+Both privilege probes took a `boolean` from the adapter. `false` meant *refused*,
+and refused was read as *refused for the privilege* — so a lock timeout, a dropped
+socket, or a read-only transaction all arrived as the same value as `permission
+denied`, and `check` printed them as facts it had established by asking the server.
+
+Measured on PostgreSQL 16, connected as `postgres`, with
+`default_transaction_read_only = on`:
+
+```text
+probeDeletable  -> cannot-delete      (0.4.9)   -> unknown  (0.4.10)
+probeWritable   -> read-only          (0.4.9)   -> unknown  (0.4.10)
+current_user    -> postgres, usesuper -> true
+```
+
+A superuser, reported as an account the database refuses writes from. The refusal
+was real — `25006 read_only_sql_transaction` — but it is a session setting that the
+same account can turn off in one statement, and it says nothing whatever about the
+grants. MySQL 8.4 does the same thing with `1792` under `SET SESSION TRANSACTION
+READ ONLY`.
+
+The comment above the probe read *"DELETE first, because it names no column and so
+cannot fail for any reason except the privilege."* That sentence is what the
+measurement above disproves. It had been in the file since the probe was written.
+
+### Fixed
+
+- **A refusal the adapter cannot classify is now `unknown`, not the boundary.**
+  Each adapter reads its own driver's error identifier and says which of three
+  things happened: the statement went through, it was refused **for the
+  privilege**, or it was refused for something else. Only the middle one proves
+  anything.
+  - PostgreSQL: `42501`
+  - MySQL: `1044`, `1142`, `1143`
+  - SQLite: `SQLITE_READONLY` (8) and `SQLITE_AUTH` (23) — it has no accounts, so
+    the handle's mode is the privilege
+- **`probeWriteAbility` no longer reports `read-only` if anything along the way was
+  unclear**, including in the per-column `UPDATE` loop, where a genuine `DELETE`
+  denial could otherwise carry the verdict past an unclassified refusal.
+- **`check`'s "could not be established" line named only one of the two reasons it
+  can now happen.** Left alone it would have become the same defect it reports: a
+  sentence that was true of the code on the day it was written.
+
+- **The read-only suite's cleanup had never run.** Its `after` hook closed every
+  connection it had opened — a list that includes the two admin connections the
+  cleanup itself runs on — and then issued the `DROP`s, each wrapped in its own
+  `.catch(() => {})`. Every statement failed silently. Found the same way as the
+  rest of this release, by looking at the server rather than at the code:
+  `ro_probe`, `rw_probe`, `ins_probe` and the `llmsafesql_ro` database had all
+  survived a completed run. The hook now closes the admins last and then checks
+  what is left, so a cleanup that does nothing fails instead of passing.
+
+### What to check in your own deployment
+
+If `check` on 0.4.8 or 0.4.9 told you either of these:
+
+> read is a credential the database itself refuses writes from — probed on your own tables.
+
+> the audit record cannot be erased by the account that writes it — the database refused DELETE on `…`.
+
+…then on 0.4.10 run it again. Both sentences are still printed when they were
+established, and both become a warning when they were not. The configurations that
+could have produced a false one are: a connection whose transactions are read-only
+(`default_transaction_read_only`, `ALTER ROLE … SET`, a hot standby, `SET SESSION
+TRANSACTION READ ONLY`), a statement or lock timeout short enough to bite, or a
+connection that dropped mid-probe. A correctly least-privileged role answers
+exactly as it did before — that is the case the new tests pin.
+
+### Changed
+
+- `probeDeleteAbility` and `probeWriteAbility` are exported, and their `attempt`
+  callback now returns `ProbeOutcome` (`'ok' | 'denied' | 'unclear'`) rather than a
+  `boolean`. Direct callers of those helpers — writing a custom adapter — need to
+  say which kind of refusal they saw. `ProbeOutcome` is exported from the package
+  root.
+
+### Added
+
+- `test/probe.test.ts`, which pins what each helper does with an outcome it could
+  not classify, and two integration tests that measure it against a real superuser
+  under a read-only transaction on both engines.
+
+340 tests, from 328. Ablated: folding `unclear` back into `cannot-delete` fails 3;
+dropping the `anyUnclear` guard fails 4; making either classifier call every error
+a privilege refusal fails that engine's integration test. Restored, 0.
+
+### Where this came from
+
+A reader working through the same question on their own system observed that a
+check you can casually prove alive tends to be one guarding the least — because
+rehearsing it means writing the side of the comparison you already control. The
+probes here are the opposite case: both sides belong to the database, and neither
+had ever been observed giving the answer it gives when it does not know.
+
 ## [0.4.9] — 2026-08-11
 
 `session.ts` is the wiring: it opens the four connections and decides which one
@@ -1124,6 +1223,7 @@ produced a plan describing something other than what would happen:
 - No runtime dependencies. Drivers are optional peers; the MCP server implements
   the wire protocol directly.
 
+[0.4.10]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.10
 [0.4.9]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.9
 [0.4.8]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.8
 [0.4.7]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.7

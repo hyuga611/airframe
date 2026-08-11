@@ -1,6 +1,22 @@
 import pg from 'pg';
-import type { Adapter, ColumnShape, Row, DeleteAbility, Savepoint, SelfCheckMode, TableShape, WriteAbility } from '../adapter.js';
+import type { Adapter, ColumnShape, Row, DeleteAbility, ProbeOutcome, Savepoint, SelfCheckMode, TableShape, WriteAbility } from '../adapter.js';
 import { AdapterUnusable, probeDeleteAbility, probeWriteAbility } from '../adapter.js';
+
+/**
+ * Whether PostgreSQL refused this statement **for the privilege**, rather than
+ * for anything else.
+ *
+ * `42501` is `insufficient_privilege`, and it is the only answer here that says
+ * something about the grants. The one that made this function necessary is
+ * `25006`, `read_only_sql_transaction`: with `default_transaction_read_only` set
+ * on the role, a superuser is refused every write in exactly the same shape, and
+ * the probes reported it as a credential the database will not let write.
+ *
+ * @see https://www.postgresql.org/docs/16/errcodes-appendix.html
+ */
+function refusedForPrivilege(e: unknown): boolean {
+  return (e as { code?: unknown } | null | undefined)?.code === '42501';
+}
 
 export { AdapterUnusable };
 
@@ -357,12 +373,12 @@ export class PostgresAdapter implements Adapter {
           return false;
         }
       },
-      async (sql) => {
+      async (sql): Promise<ProbeOutcome> => {
         try {
           await this.query(sql);
-          return true;
-        } catch {
-          return false;
+          return 'ok';
+        } catch (e) {
+          return refusedForPrivilege(e) ? 'denied' : 'unclear';
         }
       },
     );
@@ -379,16 +395,16 @@ export class PostgresAdapter implements Adapter {
         tables,
         async (t) => (await this.introspect(t)).columns.map((c) => c.name),
         (name) => this.quoteIdent(name),
-        async (sql) => {
+        async (sql): Promise<ProbeOutcome> => {
           const sp = `llm_safe_sql_wprobe_${++n}`;
           await this.client.query(`SAVEPOINT ${sp}`);
           try {
             await this.client.query(sql);
             await this.client.query(`RELEASE SAVEPOINT ${sp}`);
-            return true;
-          } catch {
+            return 'ok';
+          } catch (e) {
             await this.client.query(`ROLLBACK TO SAVEPOINT ${sp}`).catch(() => {});
-            return false;
+            return refusedForPrivilege(e) ? 'denied' : 'unclear';
           }
         },
       );

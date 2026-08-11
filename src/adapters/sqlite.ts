@@ -1,5 +1,22 @@
-import type { Adapter, ColumnShape, InboundCascade, Row, DeleteAbility, Savepoint, SelfCheckMode, TableShape, WriteAbility } from '../adapter.js';
+import type { Adapter, ColumnShape, InboundCascade, Row, DeleteAbility, ProbeOutcome, Savepoint, SelfCheckMode, TableShape, WriteAbility } from '../adapter.js';
 import { AdapterUnusable, probeDeleteAbility, probeWriteAbility } from '../adapter.js';
+
+/**
+ * Whether SQLite refused this statement **because writing was not permitted**,
+ * rather than for anything else.
+ *
+ * SQLite has no accounts, so the handle's mode is the privilege: `SQLITE_READONLY`
+ * is the engine itself refusing, and `SQLITE_AUTH` is an authorizer callback doing
+ * the same job. Everything else — a locked file, a malformed database, an ordinary
+ * SQL error — is a refusal that proves nothing, and `node:sqlite` reports all of
+ * them through one `code`, so the numeric `errcode` is what has to be read.
+ *
+ * @see https://www.sqlite.org/rescode.html
+ */
+function refusedForPrivilege(e: unknown): boolean {
+  const errcode = (e as { errcode?: unknown } | null | undefined)?.errcode;
+  return errcode === 8 /* SQLITE_READONLY */ || errcode === 23 /* SQLITE_AUTH */;
+}
 
 export { AdapterUnusable };
 
@@ -502,12 +519,12 @@ export class SqliteAdapter implements Adapter {
           return false;
         }
       },
-      async (sql) => {
+      async (sql): Promise<ProbeOutcome> => {
         try {
           this.db.exec(sql);
-          return true;
-        } catch {
-          return false;
+          return 'ok';
+        } catch (e) {
+          return refusedForPrivilege(e) ? 'denied' : 'unclear';
         }
       },
     );
@@ -515,12 +532,12 @@ export class SqliteAdapter implements Adapter {
 
   async probeWritable(tables: readonly string[]): Promise<WriteAbility> {
     if (this.inTransaction()) return 'unknown';
-    const attempt = async (sql: string): Promise<boolean> => {
+    const attempt = async (sql: string): Promise<ProbeOutcome> => {
       try {
         this.db.exec(sql);
-        return true;
-      } catch {
-        return false;
+        return 'ok';
+      } catch (e) {
+        return refusedForPrivilege(e) ? 'denied' : 'unclear';
       }
     };
     const columnsOf = async (t: string): Promise<readonly string[]> =>
