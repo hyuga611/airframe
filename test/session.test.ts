@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import { openReadSession, openAdminSession } from '../src/session.js';
 import { parseConfig } from '../src/config.js';
 
@@ -18,6 +17,13 @@ import { parseConfig } from '../src/config.js';
  * optimised away is worse than never having configured one.
  */
 
+/**
+ * Imported dynamically, never at the top of the file.
+ *
+ * A static `import ... from 'node:sqlite'` is resolved before any `skip` can
+ * apply, so on Node 20 the whole file aborts with ERR_UNKNOWN_BUILTIN_MODULE
+ * instead of skipping. Which is how this arrived in CI on the first push.
+ */
 const HAS_SQLITE = await import('node:sqlite').then(
   () => true,
   () => false,
@@ -28,6 +34,7 @@ describe('session', { skip: HAS_SQLITE ? undefined : 'node:sqlite is not availab
   let file: string;
 
   before(async () => {
+    const { DatabaseSync } = await import('node:sqlite');
     dir = await mkdtemp(join(tmpdir(), 'llm-safe-sql-session-'));
     file = join(dir, 'app.db');
     const db = new DatabaseSync(file);
@@ -87,6 +94,7 @@ describe('session', { skip: HAS_SQLITE ? undefined : 'node:sqlite is not availab
   });
 
   test('a genuinely different database is a boundary', async () => {
+    const { DatabaseSync } = await import('node:sqlite');
     const other = join(dir, 'other.db');
     const db = new DatabaseSync(other);
     db.exec('CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL)');
