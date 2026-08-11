@@ -241,6 +241,20 @@ export class Applier {
           'be undone.',
       );
     }
+    // The re-check below compares a fresh list of foreign keys against the plan.
+    // On MySQL that list is privilege-filtered, so an apply credential that cannot
+    // see the child tables gets an empty one — and an empty list passes every
+    // comparison there is. The engine refuses to plan in that state; refusing to
+    // commit in it is the same sentence one step later.
+    if (!shape.inboundCascadesKnown) {
+      throw new ApplyRefused(
+        'CASCADES_UNKNOWN',
+        `This credential cannot see which foreign keys point at \`${table}\`, so whether committing would also ` +
+          'change rows in other tables could not be established. Grant the applying role SELECT on the whole ' +
+          'schema; an empty list of cascades from an account that cannot see them is not evidence of anything.',
+      );
+    }
+
     const cascades = shape.inboundCascades.filter((c) => {
       const rule = plan.op === 'DELETE' ? c.onDelete : c.onUpdate;
       return rule === 'CASCADE' || rule === 'SET NULL' || rule === 'SET DEFAULT';

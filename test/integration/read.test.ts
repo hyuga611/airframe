@@ -12,6 +12,7 @@ import { MysqlAdapter } from '../../src/adapters/mysql.js';
 import { PostgresAdapter } from '../../src/adapters/postgres.js';
 import { Engine, PlanRefused } from '../../src/engine.js';
 import { Policy } from '../../src/policy.js';
+import type { Adapter } from '../../src/adapter.js';
 
 const MYSQL = { host: '127.0.0.1', port: 13306, user: 'root', password: 'llmsafesql', database: 'llmsafesql' };
 const PG = { host: '127.0.0.1', port: 15432, user: 'postgres', password: 'llmsafesql', database: 'llmsafesql' };
@@ -67,6 +68,15 @@ for (const label of ['mysql', 'postgres']) {
     assert.ok(found);
     return found.engine;
   };
+  /**
+   * The server this iteration is actually about.
+   *
+   * The damage checks below used `my` in both iterations, so the PostgreSQL runs
+   * refused the statement on PostgreSQL and then confirmed that MySQL's table was
+   * untouched. Half of every one of those tests was green for a reason unrelated
+   * to what it was testing.
+   */
+  const admin = (): Adapter => (label === 'mysql' ? my : pg);
 
   test(`[${label}] an ordinary read comes back with its columns`, async () => {
     const r = await eng().read('SELECT id, ref FROM read_orders ORDER BY id');
@@ -116,8 +126,8 @@ for (const label of ['mysql', 'postgres']) {
     ]) {
       await refusal(eng().read(sql));
     }
-    const rows = await my.query<{ ref: string }>('SELECT ref FROM read_orders WHERE id = 1');
-    assert.equal(rows[0]?.ref, 'R-1');
+    const rows = await admin().query<{ ref: string }>('SELECT ref FROM read_orders WHERE id = 1');
+    assert.equal(rows[0]?.ref, 'R-1', 'and the row is unchanged on the server this iteration is about');
   });
 
   test(`[${label}] SHOW and friends are refused: no table for the allowlist to check`, async () => {

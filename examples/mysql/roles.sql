@@ -76,6 +76,30 @@ CREATE USER 'llm_plan'@'%' IDENTIFIED BY 'change-me-plan';
 GRANT SELECT, INSERT, UPDATE, DELETE ON shop.orders TO 'llm_plan'@'%';
 GRANT CREATE TEMPORARY TABLES ON shop.* TO 'llm_plan'@'%';
 
+-- The two lines below are not optional, and until 0.5.0 this file did not have
+-- them. Without them the tool cannot answer two of the questions it refuses on,
+-- and MySQL does not say so -- it answers "no triggers" and "no foreign keys"
+-- instead of "you may not look".
+--
+--   information_schema.TRIGGERS is filtered by the TRIGGER privilege and returns
+--   COUNT(*) = 0 to an account that lacks it. A table with a BEFORE UPDATE
+--   trigger was reported as having none.
+--
+--   A foreign key's rows belong to the CHILD table, and MySQL shows them only to
+--   an account holding some privilege on that child. A table whose deletes
+--   cascade into two others was reported as having no cascades, and the DELETE
+--   was offered for approval as "1 row".
+--
+-- Measured on MySQL 8.4.11, 5.7.44 and MariaDB 11.8. From 0.5.0 the tool refuses
+-- with CASCADES_UNKNOWN or AUTO_COLUMNS_UNKNOWN rather than proceeding, so a
+-- deployment missing these fails loudly instead of quietly.
+--
+-- SELECT on the whole schema is a real widening of what this account can read.
+-- That is the trade: either the planning role can see the tables your writes
+-- reach, or nobody can tell you what your writes reach.
+GRANT SELECT ON shop.* TO 'llm_plan'@'%';
+GRANT TRIGGER ON shop.* TO 'llm_plan'@'%';
+
 -- ---------------------------------------------------------------------------
 -- 3. apply -- the only account in this list that commits anything.
 --
@@ -85,6 +109,10 @@ GRANT CREATE TEMPORARY TABLES ON shop.* TO 'llm_plan'@'%';
 CREATE USER 'llm_apply'@'%' IDENTIFIED BY 'change-me-apply';
 GRANT SELECT, INSERT, UPDATE, DELETE ON shop.orders TO 'llm_apply'@'%';
 GRANT CREATE TEMPORARY TABLES ON shop.* TO 'llm_apply'@'%';
+-- Same reason as the planning role: the apply path re-checks the schema against
+-- the plan before it commits, and a check that cannot see is not a check.
+GRANT SELECT ON shop.* TO 'llm_apply'@'%';
+GRANT TRIGGER ON shop.* TO 'llm_apply'@'%';
 
 -- ---------------------------------------------------------------------------
 -- 4. store -- plans and audit records, and nothing else.

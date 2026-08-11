@@ -383,6 +383,10 @@ export class SqliteAdapter implements Adapter {
       columns,
       primaryKey,
       autoColumnsKnown: triggerCount === 0,
+      // SQLite has no accounts, so nothing can be hidden from a connection that
+      // can open the file.
+      triggersVisible: true,
+      inboundCascadesKnown: true,
       transactional,
       inboundCascades,
       triggerCount,

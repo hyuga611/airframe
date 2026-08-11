@@ -266,6 +266,12 @@ export class PostgresAdapter implements Adapter {
       columns,
       primaryKey: pk.rows.map((r) => r.attname),
       autoColumnsKnown: triggerCount === 0,
+      // `pg_trigger` and `pg_constraint` are readable by every role. Measured
+      // rather than assumed: a role with SELECT, INSERT, UPDATE, DELETE on one
+      // table reported the same trigger and the same inbound foreign key as the
+      // superuser did, where MySQL reported neither.
+      triggersVisible: true,
+      inboundCascadesKnown: true,
       transactional,
       inboundCascades,
       triggerCount,

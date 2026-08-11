@@ -41,6 +41,7 @@ export type RefusalCode =
   | 'AUTO_COLUMN_ASSIGNED'
   | 'NOT_TRANSACTIONAL'
   | 'CASCADE_SIDE_EFFECTS'
+  | 'CASCADES_UNKNOWN'
   | 'ADAPTER_UNUSABLE';
 
 /** A plan we will not produce. Producing none is always safe; producing a wrong one is not. */
@@ -341,6 +342,24 @@ export class Engine {
     // Rows in other tables that would move as a side effect can never appear on
     // the card, and for DELETE the loss is irreversible. Refuse rather than show
     // a confirmation that understates what it authorises.
+    // Before asking what the foreign keys say, ask whether this credential could
+    // have been shown them. On MySQL the rows describing a foreign key belong to
+    // the *child* table, and a connection with no privilege on that child is sent
+    // an empty list — the same empty list a table with no children gets. Measured
+    // on 8.4.11, 5.7.44 and MariaDB 11.8: a role holding SELECT, INSERT, UPDATE,
+    // DELETE on the allowlisted table alone read `inboundCascades: []` for a table
+    // that cascades deletes into two others, and this method approved the DELETE.
+    if (!shape.inboundCascadesKnown) {
+      throw new PlanRefused(
+        'CASCADES_UNKNOWN',
+        `This credential cannot see which foreign keys point at \`${table}\`, so whether a ${op} would ` +
+          'also change rows in other tables could not be established. MySQL only shows a foreign key to a ' +
+          'connection holding some privilege on the child table. Grant the planning role SELECT on the ' +
+          'whole schema (GRANT SELECT ON db.* TO ...) and this becomes answerable; without it, an empty ' +
+          'list of cascades means nothing.',
+      );
+    }
+
     const cascades = shape.inboundCascades.filter((c) => {
       const rule = op === 'DELETE' ? c.onDelete : c.onUpdate;
       return rule === 'CASCADE' || rule === 'SET NULL' || rule === 'SET DEFAULT';
@@ -461,7 +480,9 @@ export class Engine {
       }
     }
 
-    return this.build(stmt.sql, table, op, pk, before, after, auto, assigned, matched, changedReported, changedMeaningful);
+    return this.build(
+      stmt.sql, table, op, pk, before, after, auto, assigned, matched, changedReported, changedMeaningful, shape,
+    );
   }
 
   /**
@@ -668,6 +689,7 @@ export class Engine {
     matched: number,
     changedReported: number,
     changedMeaningful: boolean,
+    shape: TableShape,
   ): Plan {
     const afterByKey = new Map(after.map((r) => [keyOf(pk, r), r]));
     const rows: PlanRow[] = [];
@@ -752,6 +774,18 @@ export class Engine {
     if (auto.size > 0) {
       warnings.push(`The database maintains ${[...auto].join(', ')} by itself; those are not shown as changes.`);
     }
+    // `autoColumns` answers which columns of *this row* the database maintains. A
+    // trigger can also write rows in other tables, and no declaration says
+    // anything about that — but declaring one used to remove the only sign that
+    // there was a trigger at all, because the refusal was the sign. The card is
+    // the right place for it: the operator reading this is the person who can
+    // decide whether they know what the trigger does.
+    if (!shape.autoColumnsKnown && shape.triggersVisible) {
+      warnings.push(
+        `\`${table}\` has ${shape.triggerCount} trigger(s). Rows they write in other tables are not measured ` +
+          'by the dry run and are not shown above; only their effect on the rows listed here is.',
+      );
+    }
     // Whatever this engine cannot guarantee is said here, on the card, every
     // time — not once in a README the approver has never read.
     warnings.push(...this.adapter.limitations);
@@ -777,6 +811,21 @@ export class Engine {
     if (declared !== undefined) return new Set(declared.map(lower));
     if (shape.autoColumnsKnown) {
       return new Set(shape.columns.filter((c) => c.autoUpdated).map((c) => lower(c.name)));
+    }
+    // Two different situations, and until 0.5.0 they shared one sentence — which
+    // told an operator to declare their way out of a problem a declaration cannot
+    // fix. On MySQL, `information_schema.TRIGGERS` is filtered by the TRIGGER
+    // privilege and answers `COUNT(*) = 0` rather than an error, so the role the
+    // examples recommended was told a table with a trigger had none. The remedy
+    // there is a grant.
+    if (!shape.triggersVisible) {
+      throw new PlanRefused(
+        'AUTO_COLUMNS_UNKNOWN',
+        `This credential may not read \`information_schema.TRIGGERS\`, so whether \`${table}\` has triggers ` +
+          'could not be established — MySQL reports that as "no triggers" rather than as an error. ' +
+          'Grant the planning role the TRIGGER privilege (GRANT TRIGGER ON db.* TO ...) so the question ' +
+          'can be answered. Declaring autoColumns would silence this without answering it.',
+      );
     }
     throw new PlanRefused(
       'AUTO_COLUMNS_UNKNOWN',

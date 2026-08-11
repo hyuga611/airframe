@@ -4,6 +4,147 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-08-11
+
+**On MySQL, two of this tool's refusals were switched off by the grants its own
+documentation told you to use, and nothing said so.**
+
+`information_schema` is filtered by privilege, and MySQL filters it by returning
+fewer rows rather than an error. Two of the questions `introspect` asks are
+answered out of it:
+
+- `information_schema.TRIGGERS` needs the TRIGGER privilege. Without it,
+  `COUNT(*)` is `0` — so a table with a `BEFORE UPDATE` trigger was reported as
+  having none, `autoColumnsKnown` came back true, and the plan was offered for
+  approval.
+- A foreign key's rows belong to the **child** table, and MySQL shows them only to
+  a connection holding some privilege on that child. `examples/mysql/roles.sql`
+  granted the planning role privileges on the allowlisted table alone, so a table
+  whose deletes cascade into another read as having no cascades.
+
+Measured on MySQL 8.4.11 and 5.7.44, with a user created from that file character
+for character:
+
+```text
+                        as root      as the recommended planning role
+triggers on the table   1            0
+foreign keys onto it    1            0
+UPDATE                  refused      approvable card
+DELETE                  refused      approvable card — "1 row would be deleted outright"
+```
+
+Approving that DELETE destroyed two rows in another table that the card never
+named. MariaDB 11.8 shows the trigger to the same role and still hides the
+foreign key. PostgreSQL 16 and SQLite answer a least-privilege role exactly as
+they answer a superuser — measured, not assumed, and now pinned by a test.
+
+The failure was not in the introspection. It was that a count of zero taken
+without permission is not the same fact as a count of zero, and the type had one
+place to put both.
+
+### Fixed
+
+- **`TableShape` gained `triggersVisible` and `inboundCascadesKnown`.** The MySQL
+  adapter reads `SHOW GRANTS` once per connection and decides both. `SHOW GRANTS`
+  rather than `information_schema.SCHEMA_PRIVILEGES`, because that choice is
+  measurable: with TRIGGER held through an active role, the first reports it and
+  the second returns no rows at all, so reading the structured view would have
+  called a role-based deployment blind and refused every plan on it.
+- **`plan` and `apply` refuse with the new `CASCADES_UNKNOWN`** when the
+  credential could not have been shown the foreign keys. An empty list from an
+  account that cannot see them is not evidence of anything.
+- **`AUTO_COLUMNS_UNKNOWN` now names the right remedy.** It used to say "declare
+  them in autoColumns" in both situations, and a declaration cannot answer a
+  question about privileges. When the triggers were merely invisible it now says
+  which grant to add.
+- **A declared `autoColumns` no longer removes the only sign that a trigger
+  exists.** The declaration says which columns of *this row* the database
+  maintains; it says nothing about rows a trigger writes in other tables, and the
+  refusal it lifted was the only thing that had ever mentioned them. The card now
+  carries that warning, and no declaration silences it.
+- **`check` reports both, per table, with the grant to add** — instead of
+  printing `ready` for a table with a trigger and an inbound cascade. It is the
+  command an operator runs to find out what to declare, so it was the worst place
+  for this to be silent.
+
+### Also fixed, from the same audit
+
+- **`probeWriteAbility` never attempted `INSERT`.** "Cannot write" was concluded
+  from "cannot UPDATE and cannot DELETE", so a role granted SELECT and INSERT —
+  the shape these examples recommend for the audit store — was reported as a
+  credential the database refuses writes from. It probes
+  `INSERT INTO t SELECT * FROM t WHERE 1 = 0` now: no rows, so no constraint,
+  default or trigger is reached, and the privilege is checked when the statement
+  is prepared.
+- **A column list that could not be fetched became an empty one**, so the
+  per-column `UPDATE` probes ran zero times and the verdict was `read-only`. It
+  was the one failure inside that function that did not reach `unclear`.
+- **A table skipped because its `SELECT` was refused recorded nothing about why.**
+  A lock timeout on one allowlisted table left another table to carry the whole
+  verdict to `read-only`.
+- **`check` compared four of the six role pairs.** `read` and `store` sharing a
+  credential — the account the model reads through also writing the plan and
+  audit records — was never mentioned.
+- **A test verified the damage on the wrong server.** `read.test.ts` is a matrix
+  over both engines; its "a write cannot be smuggled in as a read" case refused
+  the statement on PostgreSQL and then confirmed that *MySQL's* table was
+  untouched. Half of every PostgreSQL run of it was green for an unrelated reason.
+
+### Breaking
+
+- **MySQL deployments need two more grants**, or `plan` refuses:
+
+  ```sql
+  GRANT SELECT  ON shop.* TO 'llm_plan'@'%';
+  GRANT TRIGGER ON shop.* TO 'llm_plan'@'%';
+  -- and the same two for the applying role
+  ```
+
+  `examples/mysql/roles.sql` has them, with the reasoning next to them. This is a
+  real widening of what the planning role can read, and it is the trade: either it
+  can see the tables your writes reach, or nobody can tell you what your writes
+  reach. PostgreSQL and SQLite are unaffected.
+- `TableShape` has two new required fields, which matters only if you implement
+  `Adapter` yourself. A custom adapter for a catalogue that is not
+  privilege-filtered sets both to `true`; one that cannot tell sets them to
+  `false` and gets a refusal rather than a wrong answer.
+
+### What to check in your own deployment
+
+Run `llm-safe-sql check`. On MySQL, any table that used to print `ready` and now
+names a grant was a table this tool could not see the triggers or foreign keys of.
+Then, for those tables, look at what was applied through them: a DELETE approved
+as "1 row" may have taken rows in a child table with it, and an UPDATE may have
+had a trigger write columns the card did not show.
+
+### Added
+
+- `test/integration/visibility.test.ts`, which creates a user from the old grant
+  list character for character and asserts that MySQL hides both facts from it —
+  so the day MySQL stops filtering these views, this fails rather than passing for
+  a new reason.
+- `test/grants.test.ts`, ten cases over real `SHOW GRANTS` output from all three
+  engines, including the column-scoped privilege whose commas are not separators
+  and MariaDB's trailing `IDENTIFIED BY PASSWORD` clause.
+
+357 tests, from 340. Ablated five ways: trusting the trigger count again, dropping
+the cascade-visibility refusal, letting a declaration silence the trigger warning,
+making the visibility probe always answer yes, and removing the INSERT attempt —
+each fails a different one of the new tests. Restored, 0.
+
+### How this was found
+
+Not by reading. Every defect in this package for four days had come from a
+hypothesis I happened to have, which is one angle, and it kept working, which is
+why I stopped reaching for others. This release came from running the angles that
+do not depend on what I can imagine: a five-lens sweep for one defect class with
+an adversarial verifier on every candidate, driver-boundary fault injection at
+each of 110 call sites in a full plan-approve-apply, and the same measurements
+repeated across MariaDB 11.8, MySQL 5.7 and PostgreSQL 13 rather than only the
+two versions on this machine. The fault injection found nothing — 0 violations of
+"apply reported success ⟺ the data changed" — and saying so is part of the
+result.
+
 ## [0.4.10] — 2026-08-11
 
 0.4.9 added a probe that asks the database whether the account writing the audit
@@ -1223,6 +1364,7 @@ produced a plan describing something other than what would happen:
 - No runtime dependencies. Drivers are optional peers; the MCP server implements
   the wire protocol directly.
 
+[0.5.0]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.5.0
 [0.4.10]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.10
 [0.4.9]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.9
 [0.4.8]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.8

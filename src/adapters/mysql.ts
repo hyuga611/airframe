@@ -3,6 +3,124 @@ import type { Adapter, ColumnShape, Row, DeleteAbility, ProbeOutcome, Savepoint,
 import { AdapterUnusable, probeDeleteAbility, probeWriteAbility } from '../adapter.js';
 
 /**
+ * What this connection is allowed to *see*, as opposed to what it may do.
+ *
+ * MySQL answers two of the questions `introspect` asks out of privilege-filtered
+ * views, and it filters them by returning fewer rows rather than an error. So
+ * "there are no triggers on this table" and "you may not know whether there are
+ * triggers on this table" arrive as the same `COUNT(*) = 0`, and an inbound
+ * foreign key whose child table you cannot see arrives as an empty list.
+ *
+ * The source is `SHOW GRANTS` and not `information_schema.SCHEMA_PRIVILEGES`,
+ * because that choice is measurable and I measured it: with the TRIGGER privilege
+ * held through an active role, `SHOW GRANTS` reports
+ * `GRANT SELECT, TRIGGER ON \`db\`.* TO ...` while `SCHEMA_PRIVILEGES` returns no
+ * rows at all. Reading the structured view would have called a role-based
+ * deployment blind and refused it.
+ */
+interface Grants {
+  /** Privileges held on `*.*`. */
+  readonly global: ReadonlySet<string>;
+  /** Privileges held on `db.*`, by database. */
+  readonly schema: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Privileges held on `db.table`, keyed `db.table`. */
+  readonly table: ReadonlyMap<string, ReadonlySet<string>>;
+}
+
+const NO_GRANTS: Grants = { global: new Set(), schema: new Map(), table: new Map() };
+
+/**
+ * Privileges that make a table appear in `information_schema` at all.
+ *
+ * Held at `db.*` or `*.*`, any one of them means every table in that database is
+ * visible — including the child tables whose rows carry the foreign keys pointing
+ * back at ours. `CREATE TEMPORARY TABLES` is deliberately absent: it is granted at
+ * schema scope and confers no visibility of anything, which is why the
+ * recommended role held it and still saw one table out of three.
+ */
+const TABLE_VISIBILITY = new Set([
+  'ALL PRIVILEGES',
+  'SELECT',
+  'INSERT',
+  'UPDATE',
+  'DELETE',
+  'CREATE',
+  'DROP',
+  'REFERENCES',
+  'INDEX',
+  'ALTER',
+  'CREATE VIEW',
+  'SHOW VIEW',
+  'TRIGGER',
+]);
+
+const unquote = (s: string): string => s.replace(/`/g, '');
+
+/** `GRANT SELECT, INSERT ON \`db\`.\`t\` TO ...` — one row of `SHOW GRANTS`. */
+function readGrantLine(line: string, into: { global: Set<string>; schema: Map<string, Set<string>>; table: Map<string, Set<string>> }): void {
+  // Role grants (`GRANT \`r\`@\`%\` TO \`u\`@\`%\``) have no ON clause and are skipped:
+  // their privileges are already expanded into the other rows.
+  const m = /^GRANT\s+(.+?)\s+ON\s+(\S+)\s+TO\s/i.exec(line);
+  if (m === null) return;
+  // A column-scoped privilege reads `SELECT (a, b)`, and those commas are not
+  // separators. Removing the parenthesised part keeps the privilege name.
+  const privileges = new Set(
+    (m[1] ?? '')
+      .replace(/\([^)]*\)/g, '')
+      .split(',')
+      .map((p) => p.trim().toUpperCase())
+      .filter((p) => p.length > 0),
+  );
+  const object = m[2] ?? '';
+  if (object === '*.*') {
+    for (const p of privileges) into.global.add(p);
+    return;
+  }
+  const dot = object.lastIndexOf('.');
+  if (dot === -1) return;
+  const db = unquote(object.slice(0, dot));
+  const rest = object.slice(dot + 1);
+  const target = rest === '*' ? into.schema : into.table;
+  const key = rest === '*' ? db : `${db}.${unquote(rest)}`;
+  const set = target.get(key) ?? new Set<string>();
+  for (const p of privileges) set.add(p);
+  target.set(key, set);
+}
+
+export function parseGrants(lines: readonly string[]): Grants {
+  const into = { global: new Set<string>(), schema: new Map<string, Set<string>>(), table: new Map<string, Set<string>>() };
+  for (const line of lines) readGrantLine(line, into);
+  return into;
+}
+
+function holds(g: Grants, privilege: string, db: string, table?: string): boolean {
+  const any = (s: ReadonlySet<string> | undefined): boolean =>
+    s !== undefined && (s.has(privilege) || s.has('ALL PRIVILEGES'));
+  return any(g.global) || any(g.schema.get(db)) || (table !== undefined && any(g.table.get(`${db}.${table}`)));
+}
+
+/**
+ * Whether this connection would be shown a trigger on `db.table` if one existed.
+ *
+ * Exported for its own test: it is the single line standing between a count of
+ * zero that means "there are none" and a count of zero that means "you may not
+ * look", and the two are the same value.
+ */
+export function canSeeTriggers(g: Grants, db: string, table: string): boolean {
+  return holds(g, 'TRIGGER', db, table);
+}
+
+/** Whether every table in `db` is visible to this connection, not just ours. */
+export function canSeeWholeSchema(g: Grants, db: string): boolean {
+  const any = (s: ReadonlySet<string> | undefined): boolean => {
+    if (s === undefined) return false;
+    for (const p of s) if (TABLE_VISIBILITY.has(p)) return true;
+    return false;
+  };
+  return any(g.global) || any(g.schema.get(db));
+}
+
+/**
  * Whether MySQL refused this statement **for the privilege**, rather than for
  * anything else.
  *
@@ -56,6 +174,8 @@ export class MysqlAdapter implements Adapter {
   private readonly conn: mysql.Connection;
   private open = false;
   private savepoints = 0;
+  /** Asked once: `SHOW GRANTS` does not change under a connection. */
+  private grants?: { grants: Grants; db: string };
 
   private constructor(conn: mysql.Connection) {
     this.conn = conn;
@@ -231,6 +351,29 @@ export class MysqlAdapter implements Adapter {
     await this.conn.query(`SET SESSION innodb_lock_wait_timeout = ${secs}`);
   }
 
+  /**
+   * What this connection may see, cached.
+   *
+   * A failure here is not allowed to become "you can see everything": it becomes
+   * no grants at all, which makes both visibility flags false, which makes the
+   * engine refuse and say why. That is the direction this whole release is about.
+   */
+  private async visibility(): Promise<{ grants: Grants; db: string }> {
+    if (this.grants !== undefined) return this.grants;
+    let grants = NO_GRANTS;
+    let db = '';
+    try {
+      const [dbRows] = await this.conn.query<mysql.RowDataPacket[]>('SELECT DATABASE() AS d');
+      db = String(dbRows[0]?.['d'] ?? '');
+      const [rows] = await this.conn.query<mysql.RowDataPacket[]>('SHOW GRANTS');
+      grants = parseGrants(rows.map((r) => String(Object.values(r)[0] ?? '')));
+    } catch {
+      grants = NO_GRANTS;
+    }
+    this.grants = { grants, db };
+    return this.grants;
+  }
+
   async introspect(table: string): Promise<TableShape> {
     const [cols] = await this.conn.query<mysql.RowDataPacket[]>(
       `SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, EXTRA
@@ -298,11 +441,19 @@ export class MysqlAdapter implements Adapter {
       autoUpdated: /on update/i.test(String(c['EXTRA'] ?? '')),
     }));
 
+    // Both of the questions below were answered out of privilege-filtered views,
+    // and both of them answer "no" and "you may not ask" with the same value.
+    const { grants, db } = await this.visibility();
+    const triggersVisible = canSeeTriggers(grants, db, table);
+    const inboundCascadesKnown = canSeeWholeSchema(grants, db);
+
     return {
       table,
       columns,
       primaryKey: pk.map((r) => String(r['COLUMN_NAME'])),
-      autoColumnsKnown: triggerCount === 0,
+      autoColumnsKnown: triggersVisible && triggerCount === 0,
+      triggersVisible,
+      inboundCascadesKnown,
       transactional,
       inboundCascades,
       triggerCount,

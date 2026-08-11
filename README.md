@@ -240,6 +240,7 @@ confirmation card that disagrees with the database.
 | A non-transactional table (MyISAM, a foreign table) | The "dry run" would be a permanent write, announced as harmless |
 | A table with no primary key | Rows cannot be shown to you one by one |
 | A trigger, on a dialect that cannot report auto-maintained columns | Guessing "none" makes every plan fail to confirm with an error that looks like a concurrency problem |
+| A credential that is not allowed to see the triggers or the foreign keys | The two rows above are answered out of `information_schema`, and MySQL filters it by privilege — silently, by returning fewer rows |
 | A statement that matched nothing, or changed nothing | Nothing to approve |
 | More rows than the ceiling | Every row is displayed individually; the ceiling is what a person can actually read |
 | Reading a column you marked secret — under any alias | To read a column you must name it, so matching the *reference* cannot be aliased around |
@@ -247,6 +248,43 @@ confirmation card that disagrees with the database.
 
 At apply time it also refuses if the rows have moved on: a different set now
 matches the condition, or a value you approved is no longer what is there.
+
+### MySQL needs two more grants than you would expect
+
+Two of the refusals above are decided from `information_schema`, and MySQL
+filters those views by privilege — by returning fewer rows, not an error. A
+connection without the `TRIGGER` privilege is told a table has no triggers. A
+connection with no privilege on a *child* table is told no foreign key points at
+the parent, because the constraint's rows belong to the child.
+
+Through 0.4.10 this package's own `examples/mysql/roles.sql` granted neither, so
+on the deployment it recommended, both guards were off and nothing said so:
+
+```text
+                        as root          as the recommended planning role
+triggers on the table   1                0
+foreign keys onto it    1                0
+UPDATE                  refused          approvable card
+DELETE                  refused          approvable card, "1 row would be deleted outright"
+```
+
+Measured on MySQL 8.4.11 and 5.7.44; MariaDB 11.8 shows the trigger to that role
+but still hides the foreign key. PostgreSQL and SQLite do not filter their
+catalogues, and answer a least-privilege role exactly as they answer a superuser.
+
+From 0.5.0 the planning and applying roles need:
+
+```sql
+GRANT SELECT  ON shop.* TO 'llm_plan'@'%';   -- so foreign keys onto your tables are visible
+GRANT TRIGGER ON shop.* TO 'llm_plan'@'%';   -- so "no triggers" means there are none
+```
+
+Without them, `plan` refuses with `CASCADES_UNKNOWN` or `AUTO_COLUMNS_UNKNOWN`
+and `check` names the grant to add, instead of printing `ready`.
+
+`GRANT SELECT ON shop.*` genuinely widens what the planning role can read, and
+that is the trade: either it can see the tables your writes reach, or nobody can
+tell you what your writes reach.
 
 **And it does not refuse for reasons that are not real.** Somebody else editing a
 column your plan does not touch is not a conflict. A concurrent write during the

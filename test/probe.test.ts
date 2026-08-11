@@ -71,9 +71,70 @@ describe('probeWriteAbility', () => {
   const columnsOf = async (): Promise<readonly string[]> => ['qty'];
 
   test('read-only is reported when every refusal along the way was about the privilege', async () => {
+    // Every one of the four, including the INSERT that was not attempted at all
+    // until 0.5.0. Proving a credential cannot write means proving it about each
+    // way of writing.
     assert.equal<WriteAbility>(
-      await probeWriteAbility(['orders'], columnsOf, quote, answering({ SELECT: 'ok', DELETE: 'denied', UPDATE: 'denied' })),
+      await probeWriteAbility(
+        ['orders'],
+        columnsOf,
+        quote,
+        answering({ SELECT: 'ok', DELETE: 'denied', UPDATE: 'denied', INSERT: 'denied' }),
+      ),
       'read-only',
+    );
+  });
+
+  test('a credential that can only INSERT is not a credential that cannot write', async () => {
+    // The shape this package's own examples recommend for the audit store:
+    // SELECT and INSERT, no UPDATE, no DELETE. It was reported as read-only,
+    // which is what `check` prints as the read path's boundary. It can add rows
+    // to any allowlisted table; it just cannot change the ones already there.
+    assert.equal<WriteAbility>(
+      await probeWriteAbility(
+        ['orders'],
+        columnsOf,
+        quote,
+        answering({ SELECT: 'ok', DELETE: 'denied', UPDATE: 'denied', INSERT: 'ok' }),
+      ),
+      'writable',
+    );
+  });
+
+  test('a table skipped for a reason that was not the privilege leaves the question open', async () => {
+    // The SELECT branch was the one place in this function that discarded an
+    // outcome without recording it, so a lock timeout on the only allowlisted
+    // table read as "nothing to ask about" — and with a second table answering
+    // denied, as "read-only".
+    assert.equal<WriteAbility>(
+      await probeWriteAbility(['orders'], columnsOf, quote, answering({ SELECT: 'unclear' })),
+      'unknown',
+    );
+
+    const answers: Record<string, ProbeOutcome[]> = { SELECT: ['unclear', 'ok'] };
+    const attempt = async (sql: string): Promise<ProbeOutcome> =>
+      answers[verb(sql)]?.shift() ?? (verb(sql) === 'SELECT' ? 'ok' : 'denied');
+    assert.equal<WriteAbility>(
+      await probeWriteAbility(['a', 'b'], columnsOf, quote, attempt),
+      'unknown',
+      'one table that could not be read is not answered by another table that could',
+    );
+  });
+
+  test('a column list that could not be fetched is not a column list with nothing in it', async () => {
+    // `columns = []` makes the UPDATE loop run zero times, which reads exactly
+    // like every column having been refused.
+    const throwing = async (): Promise<readonly string[]> => {
+      throw new Error('information_schema is not readable by this role');
+    };
+    assert.equal<WriteAbility>(
+      await probeWriteAbility(
+        ['orders'],
+        throwing,
+        quote,
+        answering({ SELECT: 'ok', DELETE: 'denied', INSERT: 'denied' }),
+      ),
+      'unknown',
     );
   });
 
@@ -90,7 +151,12 @@ describe('probeWriteAbility', () => {
     // The same gap one branch further down: DELETE can be a genuine denial while
     // the column loop is what hits the unclassified refusal.
     assert.equal<WriteAbility>(
-      await probeWriteAbility(['orders'], columnsOf, quote, answering({ SELECT: 'ok', DELETE: 'denied', UPDATE: 'unclear' })),
+      await probeWriteAbility(
+        ['orders'],
+        columnsOf,
+        quote,
+        answering({ SELECT: 'ok', DELETE: 'denied', UPDATE: 'unclear', INSERT: 'denied' }),
+      ),
       'unknown',
     );
   });
@@ -108,7 +174,7 @@ describe('probeWriteAbility', () => {
       'unknown',
     );
     assert.equal<WriteAbility>(
-      await probeWriteAbility([], columnsOf, quote, answering({ SELECT: 'ok', DELETE: 'denied' })),
+      await probeWriteAbility([], columnsOf, quote, answering({ SELECT: 'ok', DELETE: 'denied', INSERT: 'denied' })),
       'unknown',
     );
   });

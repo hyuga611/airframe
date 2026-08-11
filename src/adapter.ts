@@ -368,8 +368,15 @@ export async function probeWriteAbility(
     const name = quote(table);
     // A table this connection cannot even read says nothing about whether it can
     // write. Skipping it is the difference between "proved read-only" and "asked
-    // the wrong table".
-    if ((await attempt(`SELECT 1 FROM ${name} WHERE 1 = 0`)) !== 'ok') continue;
+    // the wrong table". But *why* it could not be read matters: a refusal for the
+    // privilege leaves the other tables to answer, while a lock timeout or a
+    // dropped socket leaves the whole question open, and until 0.5.0 both were
+    // dropped on the floor here while every other branch recorded them.
+    const readable = await attempt(`SELECT 1 FROM ${name} WHERE 1 = 0`);
+    if (readable !== 'ok') {
+      if (readable === 'unclear') anyUnclear = true;
+      continue;
+    }
     anyReadable = true;
 
     // DELETE first, because it names no column and so cannot be refused for the
@@ -388,7 +395,11 @@ export async function probeWriteAbility(
     try {
       columns = await columnsOf(table);
     } catch {
+      // An empty list makes the loop below run zero times, which is
+      // indistinguishable from every column having been refused. This was the one
+      // failure inside this function that did not reach `unclear`.
       columns = [];
+      anyUnclear = true;
     }
     for (const c of columns) {
       const col = quote(c);
@@ -396,6 +407,19 @@ export async function probeWriteAbility(
       if (updated === 'ok') return 'writable';
       if (updated === 'unclear') anyUnclear = true;
     }
+
+    // INSERT was never attempted before 0.5.0, so "cannot write" was concluded
+    // from "cannot UPDATE and cannot DELETE". A role granted SELECT and INSERT —
+    // the shape this package's own examples recommend for the audit store — was
+    // reported as a credential the database refuses writes from. It can add rows
+    // to your tables; it just cannot change the ones already there.
+    //
+    // `SELECT ... WHERE 1 = 0` supplies no rows, so nothing is written and no
+    // constraint, default or trigger is reached; the privilege is checked when the
+    // statement is prepared, which is the whole point.
+    const inserted = await attempt(`INSERT INTO ${name} SELECT * FROM ${name} WHERE 1 = 0`);
+    if (inserted === 'ok') return 'writable';
+    if (inserted === 'unclear') anyUnclear = true;
   }
 
   // Proving a credential cannot write needs every refusal along the way to have
@@ -480,4 +504,38 @@ export interface TableShape {
    * concurrency failure at approval time.
    */
   readonly autoColumnsKnown: boolean;
+
+  /**
+   * False when this credential is not allowed to find out whether the table has
+   * triggers at all.
+   *
+   * MySQL filters `information_schema.TRIGGERS` by the TRIGGER privilege, and it
+   * does so by returning `COUNT(*) = 0` rather than an error. A role granted
+   * SELECT, INSERT, UPDATE and DELETE on one table — which is what
+   * `examples/mysql/roles.sql` recommended until 0.5.0 — is told there are no
+   * triggers on a table that has one. Measured on MySQL 8.4.11 and 5.7.44;
+   * MariaDB 11.8 shows the trigger to the same role, and PostgreSQL and SQLite
+   * do not filter their catalogues at all.
+   *
+   * `autoColumnsKnown` is only ever true when this is, so callers that already
+   * check it are safe. This exists so the refusal can name the right remedy: a
+   * grant, not a declaration.
+   */
+  readonly triggersVisible: boolean;
+
+  /**
+   * False when this credential could not have seen every foreign key that points
+   * at this table.
+   *
+   * The constraint rows live with the *child* table, and MySQL shows them only to
+   * a connection holding some privilege on that child. A planning role scoped to
+   * the allowlisted table alone therefore reads `inboundCascades: []` for a table
+   * that cascades deletes into two others — the same array it would read if there
+   * were none. Measured on MySQL 8.4.11, 5.7.44 and MariaDB 11.8, all three.
+   *
+   * True on PostgreSQL and SQLite, where the catalogue is not privilege-filtered:
+   * measured with a role holding SELECT, INSERT, UPDATE, DELETE on one table,
+   * which reported the same trigger and the same foreign key as the superuser.
+   */
+  readonly inboundCascadesKnown: boolean;
 }

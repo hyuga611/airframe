@@ -350,6 +350,15 @@ async function run(args: Args): Promise<number> {
             'store uses the same credential as apply, so whatever can commit a change can also edit the ' +
               'record of it having been approved.',
           );
+        } else if (storeId === readId) {
+          // Four of the six pairs were compared and two were not. This is the one
+          // that matters: the credential the model reads through is also the one
+          // that writes the plan and audit records, so anything that reaches the
+          // read path reaches the record of what was approved.
+          warn.push(
+            'store uses the same credential as read, so the account the model reads through is also the one ' +
+              'that writes the plan and audit records. Point storeConnection at a database user of its own.',
+          );
         } else if (storeId === plan) {
           // Checked separately, because it used not to be checked at all: with
           // `storeConnection` left at the default and a distinct
@@ -421,7 +430,23 @@ async function run(args: Args): Promise<number> {
           const notes: string[] = [];
           if (!shape.transactional) notes.push('NOT TRANSACTIONAL — no dry run is possible here');
           if (shape.primaryKey.length === 0) notes.push('no primary key — writes cannot be planned');
-          if (!shape.autoColumnsKnown && cfg.autoColumns?.[table] === undefined) {
+          // Three different situations that all used to print the same sentence,
+          // and only one of them is fixed by declaring anything. On MySQL the
+          // other two are fixed by a grant, and until 0.5.0 neither was reported
+          // at all: the command an operator runs to find out what to declare told
+          // them a table with a trigger and an inbound cascade was "ready".
+          if (!shape.inboundCascadesKnown) {
+            notes.push(
+              'this credential cannot see which foreign keys point at it, so writes will be refused — ' +
+                'GRANT SELECT ON <schema>.* to the planning and applying roles',
+            );
+          }
+          if (!shape.triggersVisible) {
+            notes.push(
+              'this credential may not read information_schema.TRIGGERS, so whether it has any is unknown — ' +
+                'GRANT TRIGGER ON <schema>.* to the planning and applying roles',
+            );
+          } else if (!shape.autoColumnsKnown && cfg.autoColumns?.[table] === undefined) {
             notes.push('has triggers and no autoColumns declared — writes will be refused until you declare them');
           }
           const cascades = shape.inboundCascades.filter(
