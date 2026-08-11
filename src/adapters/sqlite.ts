@@ -473,7 +473,14 @@ export class SqliteAdapter implements Adapter {
   async identity(): Promise<string> {
     const rows = await this.query<Row>('PRAGMA database_list');
     const main = rows.find((r) => String(r['name']) === 'main') ?? rows[0] ?? {};
-    return `file:${String(main['file'] ?? '(in memory)')}`;
+    // The mode belongs in the identity here, unlike anywhere else. SQLite has no
+    // accounts, so a read-only handle IS the privilege — it is the one boundary
+    // this engine enforces on its own behalf. Leaving it out made two handles on
+    // one file look like one connection, and the session then closed the
+    // read-only one and sent reads back through the handle that can write.
+    // Measured on the way to 0.4.9, before it was released.
+    const mode = this.isReadOnly ? ' (read-only)' : '';
+    return `file:${String(main['file'] ?? '(in memory)')}${mode}`;
   }
 
   /**

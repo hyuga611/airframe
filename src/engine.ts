@@ -172,7 +172,15 @@ export class Engine {
   readonly adapter: Adapter;
   /** Where reads go. The same object as {@link adapter} unless one was supplied. */
   readonly readAdapter: Adapter;
-  /** True when reads and dry runs are the same connection, and so the same privileges. */
+  /**
+   * True when reads run on a connection of their own, and so possibly on
+   * privileges of their own.
+   *
+   * This said the opposite until 0.4.9 — "true when reads and dry runs are the
+   * same connection" — while the line that sets it is `readAdapter !== adapter`.
+   * The code was right and the sentence was inverted, on a public field whose
+   * whole purpose is to tell a caller which of those two situations they are in.
+   */
   readonly readIsSeparate: boolean;
   private readonly policy: Policy;
   private readonly limits: Required<NonNullable<EngineOptions['limits']>>;

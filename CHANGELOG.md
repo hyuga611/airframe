@@ -4,6 +4,72 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.9] — 2026-08-11
+
+`session.ts` is the wiring: it opens the four connections and decides which one
+each role actually gets. It had no tests of its own, and it was the last file in
+the package in that state.
+
+**It decided whether reads were separate by comparing two strings out of the
+config file** — the same comparison `check` stopped trusting in 0.4.6, three lines
+below a comment describing exactly what that permits:
+
+> Opening a second session with the same identity would look like a boundary in
+> the process list and be none — and `Engine.readIsSeparate` would then report a
+> separation that does not exist, which is worse than not having one.
+
+Measured on 0.4.8, with `connection` on `127.0.0.1` and `readConnection` on
+`localhost`:
+
+```text
+engine.readIsSeparate : true
+plan connection is    : postgres@172.18.0.2:5432/llmsafesql schema=public
+read connection is    : postgres@172.18.0.2:5432/llmsafesql schema=public
+```
+
+One extra socket and no extra privilege, reported to the rest of the program as a
+boundary.
+
+### Fixed
+
+- **The read connection is opened, asked who it turned out to be, and closed
+  again** if the answer is the account already held. `readIsSeparate` then means
+  what it says. Where an adapter cannot answer, the connection is kept and
+  `check` reports the uncertainty, as it does for every other unproven claim.
+- **`Engine.readIsSeparate`'s documentation said the opposite of the field.** It
+  read "true when reads and dry runs are the same connection", while the line
+  setting it is `readAdapter !== adapter`. A public field whose only purpose is to
+  tell a caller which of two situations they are in, documented backwards.
+- **SQLite's identity now carries the handle's mode.** It has no accounts, so
+  read-only *is* the privilege — the one boundary that engine enforces on its own
+  behalf.
+
+### The regression this nearly was
+
+The first version of the fix above collapsed that SQLite boundary. Two handles on
+one file returned the same identity, so the read-only connection was closed and
+reads were handed back to the handle that can write. That is not a cosmetic
+downgrade: it removes the only separation SQLite offers, in the configuration the
+README recommends.
+
+It was caught by running it, in the ten minutes between writing the fix and
+committing it, and there is now a test that fails if it ever comes back. Written
+down because the ratio matters: the defect this release fixes had been shipped for
+weeks and cost nothing yet, and the one introduced fixing it would have been live
+in an hour.
+
+### Added
+
+- **`test/session.test.ts` and `test/integration/session.test.ts`.** The second
+  counts sessions in `pg_stat_activity`, because "the code closes what it opened
+  before rethrowing" is easy to assert by reading and impossible to be sure of
+  that way. A failure at the fourth connection leaves none of the first three
+  behind — measured on the server, not inferred from the source.
+
+328 tests, from 320. Ablated: restoring the config-file comparison fails two of
+the new tests; dropping the read-only flag from SQLite's identity fails the one
+that guards the near-regression.
+
 ## [0.4.8] — 2026-08-11
 
 The audit record is the one thing here meant to outlive everything else — the
@@ -1058,6 +1124,7 @@ produced a plan describing something other than what would happen:
 - No runtime dependencies. Drivers are optional peers; the MCP server implements
   the wire protocol directly.
 
+[0.4.9]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.9
 [0.4.8]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.8
 [0.4.7]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.7
 [0.4.6]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.6
