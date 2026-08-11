@@ -70,6 +70,9 @@ before(async () => {
     // does *not* include CREATE TEMPORARY TABLES on MySQL — which is exactly why
     // a probe built on temporary tables called this account read-only.
     ['rw_probe', 'SELECT, INSERT, UPDATE, DELETE'],
+    // The shape the worked examples recommend for the store: it can write the
+    // record that a human approved something and cannot erase having written it.
+    ['ins_probe', 'SELECT, INSERT'],
   ] as const) {
     await myAdmin.query(`DROP USER IF EXISTS '${user}'@'%'`);
     await myAdmin.query(`CREATE USER '${user}'@'%' IDENTIFIED BY 'probe'`);
@@ -89,6 +92,7 @@ before(async () => {
   for (const [role, grant] of [
     ['ro_probe', 'SELECT'],
     ['rw_probe', 'SELECT, INSERT, UPDATE, DELETE'],
+    ['ins_probe', 'SELECT, INSERT'],
   ] as const) {
     // Roles are cluster-wide even though the database is not, so a leftover from
     // a killed run has to be cleared first.
@@ -109,7 +113,7 @@ after(async () => {
   for (const a of opened) await a.close().catch(() => {});
   // Dropping the database takes the grants, the revoke and the tables with it.
   await pgMaint.query(`DROP DATABASE IF EXISTS ${RO_DB} WITH (FORCE)`).catch(() => {});
-  for (const role of ['ro_probe', 'rw_probe']) {
+  for (const role of ['ro_probe', 'rw_probe', 'ins_probe']) {
     await pgMaint.query(`DROP ROLE IF EXISTS ${role}`).catch(() => {});
     await myAdmin.query(`DROP USER IF EXISTS '${role}'@'%'`).catch(() => {});
   }
@@ -124,6 +128,8 @@ interface Case {
   ro(): Promise<Adapter>;
   /** Full DML, and *also* without that privilege. The discriminating case. */
   rw(): Promise<Adapter>;
+  /** SELECT and INSERT, no DELETE: what the examples recommend for the store. */
+  ins(): Promise<Adapter>;
 }
 
 const CASES: Case[] = [
@@ -132,17 +138,19 @@ const CASES: Case[] = [
     admin: () => myAdmin,
     ro: () => MysqlAdapter.connect({ ...MYSQL, user: 'ro_probe', password: 'probe' }),
     rw: () => MysqlAdapter.connect({ ...MYSQL, user: 'rw_probe', password: 'probe' }),
+    ins: () => MysqlAdapter.connect({ ...MYSQL, user: 'ins_probe', password: 'probe' }),
   },
   {
     label: 'postgres',
     admin: () => pgAdmin,
     ro: () => PostgresAdapter.connect({ ...PG_RO, user: 'ro_probe', password: 'probe' }),
     rw: () => PostgresAdapter.connect({ ...PG_RO, user: 'rw_probe', password: 'probe' }),
+    ins: () => PostgresAdapter.connect({ ...PG_RO, user: 'ins_probe', password: 'probe' }),
   },
 ];
 
-async function open(c: Case, which: 'ro' | 'rw'): Promise<Adapter> {
-  const a = which === 'ro' ? await c.ro() : await c.rw();
+async function open(c: Case, which: 'ro' | 'rw' | 'ins'): Promise<Adapter> {
+  const a = which === 'ro' ? await c.ro() : which === 'ins' ? await c.ins() : await c.rw();
   opened.push(a);
   return a;
 }
@@ -170,6 +178,27 @@ for (const c of CASES) {
     // configuration — which is what 0.3.0 did.
     await ro.selfCheck('read');
     await assert.rejects(() => ro.selfCheck('full'), 'the full check should still be impossible here');
+  });
+
+  test(`[${c.label}] the audit trail's own privilege is asked about, not assumed`, async () => {
+    // The examples grant the store account INSERT and no DELETE and say why: it
+    // records that a human approved something and must not be able to unsay it.
+    // Until 0.4.8 that was a sentence in the documentation and nothing verified
+    // it — the same shape as comparing credentials by reading the config file.
+    const ins = await open(c, 'ins');
+    assert.equal(await ins.probeDeletable?.('ro_orders'), 'cannot-delete');
+
+    // And the answer is about the privilege, not about the role being narrow:
+    // an account that holds DELETE is reported as holding it.
+    const rw = await open(c, 'rw');
+    assert.equal(await rw.probeDeletable?.('ro_orders'), 'can-delete');
+    assert.equal(await c.admin().probeDeletable?.('ro_orders'), 'can-delete');
+
+    // A table this connection cannot see establishes nothing either way.
+    assert.equal(await ins.probeDeletable?.('no_such_table'), 'unknown');
+
+    // Nothing was deleted to find any of that out.
+    assert.deepEqual(await qtys(c.admin()), [10, 20]);
   });
 
   test(`[${c.label}] E8: probeWritable reports read-only only when it proved it`, async () => {

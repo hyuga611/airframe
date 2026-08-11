@@ -156,3 +156,44 @@ test('check compares who the connections are, not how they were spelled', { skip
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('check says whether the audit record can be erased by the account that writes it', { skip: HAS_SQLITE ? undefined : 'no node:sqlite' }, async () => {
+  // The worked examples grant the store account INSERT and no DELETE, and say
+  // why. Nothing verified it until 0.4.8: the property was a sentence in the
+  // documentation, which is the same shape as comparing credentials by reading
+  // the config file. SQLite has no accounts to grant, so the honest answer here
+  // is that the trail is editable — and saying so is the point.
+  const { DatabaseSync } = await import('node:sqlite');
+  const dir = await mkdtemp(join(tmpdir(), 'llm-safe-sql-audit-'));
+  try {
+    const file = join(dir, 'app.db');
+    const db = new DatabaseSync(file);
+    db.exec('CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL)');
+    db.close();
+
+    const cfgPath = join(dir, 'cfg.json');
+    await writeFile(
+      cfgPath,
+      JSON.stringify({
+        dialect: 'sqlite',
+        connection: { file },
+        policy: { allow: ['notes'], impact: { notes: 'test table' } },
+      }),
+      'utf8',
+    );
+
+    await cli('migrate', '--config', cfgPath);
+    const r = await cli('check', '--config', cfgPath);
+    assert.match(r.out, /can also erase it/, r.out);
+    assert.match(r.out, /llm_safe_sql_audit/);
+    assert.doesNotMatch(r.out, /cannot be erased/, 'and it must not claim the opposite');
+
+    // The probe must not be the thing that erases it.
+    const after = new DatabaseSync(file);
+    const rows = after.prepare('SELECT count(*) AS n FROM llm_safe_sql_audit').all();
+    after.close();
+    assert.equal(Number((rows[0] as { n: number }).n), 0, 'nothing was written or removed by check');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

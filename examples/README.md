@@ -34,7 +34,7 @@ Four accounts move the important half below the library, into the database:
 | `read` | the model's `SELECT`s | cannot write. At all. |
 | `plan` | the dry run: really executes, always rolls back | cannot commit anything the apply did not approve, cannot touch the plan or audit tables |
 | `apply` | the only one that commits | lives in a different process the model has no path to |
-| `store` | plans and audit records | no privilege on your business tables, and no `DELETE` — it cannot erase an approval it wrote |
+| `store` | plans and audit records | no privilege on your business tables, and no `DELETE` — it cannot erase an approval it wrote, and `check` proves it by asking the server |
 
 `llm-safe-sql check` prints a `+` line for each separation it could **prove** by
 asking the server, and a warning for each one it could only read out of your

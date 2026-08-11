@@ -121,6 +121,22 @@ export interface Adapter {
   probeWritable(tables: readonly string[]): Promise<WriteAbility>;
 
   /**
+   * Can this connection erase rows from this table? Asked without erasing one.
+   *
+   * There is one table where the answer matters on its own. The audit record is
+   * written by the account that records approvals, and the whole value of that
+   * record is that it survives the thing it is a record of — including this
+   * library being wrong, and including the person who wanted the approval to have
+   * happened differently. The worked examples grant that account `INSERT` and no
+   * `DELETE` for exactly this reason, and until 0.4.8 nothing checked whether the
+   * deployment had done it. It was a sentence in the documentation.
+   *
+   * A trace is only a trace if the party it would implicate cannot edit it, and
+   * that is a question about privileges, not about intentions.
+   */
+  probeDeletable?(table: string): Promise<DeleteAbility>;
+
+  /**
    * Who this connection actually is, as the server itself reports it.
    *
    * `check` tells an operator whether the credential that commits is the same one
@@ -292,6 +308,25 @@ export type WriteAbility = 'writable' | 'read-only' | 'unknown';
  * and PostgreSQL 16 — a denied role is denied, a permitted role succeeds, and the
  * table still holds every row afterwards.
  */
+/**
+ * Whether a connection may erase rows from one named table.
+ *
+ * `cannot-delete` is the answer worth having and the one that must never be
+ * guessed: it is reported only when the table was found and the server refused
+ * the statement. A table that could not be introspected answers `unknown`,
+ * because silence has to be distinguishable from a boundary.
+ */
+export async function probeDeleteAbility(
+  table: string,
+  quote: (name: string) => string,
+  exists: () => Promise<boolean>,
+  attempt: (sql: string) => Promise<boolean>,
+): Promise<DeleteAbility> {
+  if (!(await exists())) return 'unknown';
+  // Matches no row, so the privilege is the only thing it can be refused for.
+  return (await attempt(`DELETE FROM ${quote(table)} WHERE 1 = 0`)) ? 'can-delete' : 'cannot-delete';
+}
+
 export async function probeWriteAbility(
   tables: readonly string[],
   columnsOf: (table: string) => Promise<readonly string[]>,
@@ -330,6 +365,9 @@ export async function probeWriteAbility(
 
   return anyReadable ? 'read-only' : 'unknown';
 }
+
+/** What {@link Adapter.probeDeletable} found out. */
+export type DeleteAbility = 'can-delete' | 'cannot-delete' | 'unknown';
 
 export interface Savepoint {
   readonly name: string;

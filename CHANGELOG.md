@@ -4,6 +4,63 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.8] — 2026-08-11
+
+The audit record is the one thing here meant to outlive everything else — the
+library being wrong, the apply failing, and whoever would prefer the approval had
+gone differently. The worked examples grant the store account `INSERT` and no
+`DELETE` for exactly that reason, and say so in a table.
+
+Nothing checked it. The property was a sentence in the documentation, which is
+the same shape as the credential comparison fixed in 0.4.6: a claim about the
+deployment, made by reading a file rather than by asking the server. A deployment
+that granted the store account `DELETE`, or pointed it at a superuser, got no
+mention of it from `check`.
+
+This came out of a conversation on the discussions page rather than from the
+code. The argument being made there was that a rule needs two columns — what
+would refuse it, and how anyone would find out if it were broken — and then a
+third: **who can edit the record that would be the evidence.** A trace is only a
+trace if the party it would implicate cannot edit it. Asking that question of
+this library found the answer written down and unverified.
+
+### Added
+
+- **`Adapter.probeDeletable(table)`**, optional, alongside `probeWritable`. It
+  asks with `DELETE ... WHERE 1 = 0`, which matches no row, so the privilege is
+  the only thing it can be refused for. `cannot-delete` is reported only when the
+  table was found *and* the server refused the statement; a table that cannot be
+  introspected answers `unknown`, because silence must stay distinguishable from
+  a boundary.
+- **`check` asks it about the audit table** and reports one of three things:
+
+  ```text
+  + the audit record cannot be erased by the account that writes it — the
+    database refused DELETE on `llm_safe_sql_audit`.
+
+  ! the store credential can DELETE from `llm_safe_sql_audit` — probed, not
+    assumed. It writes the record that a human approved something and can erase
+    having written it.
+
+  ! SQLite has no accounts, so whatever writes `llm_safe_sql_audit` can also
+    erase it and there is no grant to withhold. Backups of the file are the only
+    thing standing between the trail and an edit to it.
+  ```
+
+  The SQLite line is not a misconfiguration and does not change the exit code. It
+  is a property of an engine with no accounts, and it belongs on the screen where
+  the other deployment facts are.
+
+Verified against real roles rather than described: the integration suite now
+creates a MySQL user and a PostgreSQL role holding `SELECT, INSERT` and nothing
+else — the shape the examples recommend — and asserts `cannot-delete` for them,
+`can-delete` for an account that holds it, and `unknown` for a table the
+connection cannot see. It also asserts that finding all that out deleted nothing.
+
+319 tests, from 317. Ablated: removing the call from `check` fails the test that
+runs the command; making the adapters answer without asking the server fails both
+integration tests.
+
 ## [0.4.7] — 2026-08-10
 
 A one-letter typo switched off a security control, and nothing said so.
@@ -1001,6 +1058,7 @@ produced a plan describing something other than what would happen:
 - No runtime dependencies. Drivers are optional peers; the MCP server implements
   the wire protocol directly.
 
+[0.4.8]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.8
 [0.4.7]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.7
 [0.4.6]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.6
 [0.4.5]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.5

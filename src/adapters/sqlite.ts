@@ -1,5 +1,5 @@
-import type { Adapter, ColumnShape, InboundCascade, Row, Savepoint, SelfCheckMode, TableShape, WriteAbility } from '../adapter.js';
-import { AdapterUnusable, probeWriteAbility } from '../adapter.js';
+import type { Adapter, ColumnShape, InboundCascade, Row, DeleteAbility, Savepoint, SelfCheckMode, TableShape, WriteAbility } from '../adapter.js';
+import { AdapterUnusable, probeDeleteAbility, probeWriteAbility } from '../adapter.js';
 
 export { AdapterUnusable };
 
@@ -474,6 +474,36 @@ export class SqliteAdapter implements Adapter {
     const rows = await this.query<Row>('PRAGMA database_list');
     const main = rows.find((r) => String(r['name']) === 'main') ?? rows[0] ?? {};
     return `file:${String(main['file'] ?? '(in memory)')}`;
+  }
+
+  /**
+   * SQLite has no accounts, so this answers for the handle rather than for a
+   * role: anything that can insert an audit row can delete one. That is a real
+   * property of the deployment and `check` says so — the file's backups are the
+   * only thing standing between an audit trail and an edit to it.
+   */
+  async probeDeletable(table: string): Promise<DeleteAbility> {
+    if (this.inTransaction()) return 'unknown';
+    return probeDeleteAbility(
+      table,
+      (n) => this.quoteIdent(n),
+      async () => {
+        try {
+          await this.introspect(table);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      async (sql) => {
+        try {
+          this.db.exec(sql);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+    );
   }
 
   async probeWritable(tables: readonly string[]): Promise<WriteAbility> {

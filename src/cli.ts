@@ -356,6 +356,41 @@ async function run(args: Args): Promise<number> {
               'stored plan it will later be checked against.',
           );
         }
+        // Can the account that writes the approval record erase it?
+        //
+        // The worked examples grant the store account INSERT and no DELETE, and
+        // say why: it records that a human approved something and must not be
+        // able to unsay it. Nothing verified that the deployment had done it —
+        // the property was a sentence in the documentation, which is the same
+        // shape as the identity comparison this command was doing until 0.4.6.
+        // A trace is only a trace if the party it would implicate cannot edit it.
+        const erasable =
+          s.store.adapter.probeDeletable === undefined
+            ? 'unknown'
+            : await s.store.adapter.probeDeletable(s.store.auditTable).catch(() => 'unknown' as const);
+        if (erasable === 'cannot-delete') {
+          proved.push(
+            `the audit record cannot be erased by the account that writes it — the database refused DELETE on \`${s.store.auditTable}\`.`,
+          );
+        } else if (erasable === 'can-delete' && cfg.dialect === 'sqlite') {
+          warn.push(
+            `SQLite has no accounts, so whatever writes \`${s.store.auditTable}\` can also erase it and there is no ` +
+              'grant to withhold. Backups of the file are the only thing standing between the trail and an edit ' +
+              'to it. On MySQL or PostgreSQL this is a revoked privilege instead.',
+          );
+        } else if (erasable === 'can-delete') {
+          warn.push(
+            `the store credential can DELETE from \`${s.store.auditTable}\` — probed, not assumed. It writes the ` +
+              'record that a human approved something and can erase having written it, so the trail survives only ' +
+              'as long as nobody wants it gone. Grant that account INSERT and no DELETE.',
+          );
+        } else {
+          warn.push(
+            `whether the store account can erase \`${s.store.auditTable}\` could not be established, so treat the ` +
+              'audit trail as editable until you check the grants by hand.',
+          );
+        }
+
         // Whether the three comparisons above are facts about the server or facts
         // about a text file. Decided here, with the others, and printed with them:
         // written after the lists had already gone to the terminal, it said nothing

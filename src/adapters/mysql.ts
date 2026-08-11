@@ -1,6 +1,6 @@
 import mysql from 'mysql2/promise';
-import type { Adapter, ColumnShape, Row, Savepoint, SelfCheckMode, TableShape, WriteAbility } from '../adapter.js';
-import { AdapterUnusable, probeWriteAbility } from '../adapter.js';
+import type { Adapter, ColumnShape, Row, DeleteAbility, Savepoint, SelfCheckMode, TableShape, WriteAbility } from '../adapter.js';
+import { AdapterUnusable, probeDeleteAbility, probeWriteAbility } from '../adapter.js';
 
 export { AdapterUnusable };
 
@@ -372,6 +372,29 @@ export class MysqlAdapter implements Adapter {
     );
     const r = rows[0] ?? {};
     return `${String(r['u'])}/${String(r['d'])} on ${String(r['s'])}`;
+  }
+
+  async probeDeletable(table: string): Promise<DeleteAbility> {
+    return probeDeleteAbility(
+      table,
+      (n) => this.quoteIdent(n),
+      async () => {
+        try {
+          await this.introspect(table);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      async (sql) => {
+        try {
+          await this.query(sql);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+    );
   }
 
   async probeWritable(tables: readonly string[]): Promise<WriteAbility> {
