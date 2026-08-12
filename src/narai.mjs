@@ -16,11 +16,23 @@ import {
   readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync,
   openSync, readSync, closeSync, realpathSync,
 } from 'node:fs';
-import { execFileSync } from 'node:child_process';
-import { join, resolve, basename, dirname } from 'node:path';
+import { join, resolve, basename } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import { homedir, hostname } from 'node:os';
 import { pathToFileURL } from 'node:url';
+
+// What may be written down at all lives in one auditable file, on its own. Re-exported
+// here because this module is the package entry point and those names are part of it.
+import { looksSecret, mayStoreBody } from './secrets.mjs';
+export {
+  NEVER_STORE,
+  CREDENTIAL_NAME,
+  SECRET_TEXT,
+  namedForCredential,
+  looksSecret,
+  mayStoreBody,
+  isGitIgnored,
+} from './secrets.mjs';
 
 export const STORE = process.env.NARAI_HOME || join(homedir(), '.claude', 'narai');
 const ARTIFACTS = () => join(STORE, 'artifacts');
@@ -33,94 +45,6 @@ const MAX_BYTES = 512 * 1024; // above this, keep the hash but not the contents
 const MAX_LINES = 40;         // how many changed lines a correction keeps
 const MAX_LINE = 400;         // and how much of each one
 const EDIT_TOOLS = /^(Write|Edit|MultiEdit|NotebookEdit)$/;
-
-// Paths whose contents are never stored. It costs the diff, which is a far better trade
-// than accumulating secrets on disk — detecting *that* something changed only needs the hash.
-export const NEVER_STORE = [
-  /(^|[/\\])\.env(\.|$)/i,
-  /(^|[/\\])\.npmrc$/i,
-  /(^|[/\\])\.netrc$/i,
-  /(^|[/\\])id_(rsa|dsa|ecdsa|ed25519)/i,
-  /\.(pem|key|p12|pfx|keystore|jks)$/i,
-];
-
-/**
- * A path segment that *is* named for a credential, rather than merely containing the letters.
- *
- * This used to be a bare substring test over the whole path, which excluded far more than it
- * meant to: `tokenlint/`, `tokenizer.js`, `TokenList.tsx`, `secretary/`. A directory caught by
- * it took everything underneath with it, so narai went silent across a whole repository and
- * said nothing about why — the failure looks exactly like the tool working and finding nothing.
- *
- * Testing each segment with a boundary keeps `secrets.yml`, `API_KEY.txt` and `config/secrets/`
- * while letting a word that merely starts the same through. The trade is real and deliberate:
- * a file called `mytokenstore.json` is now stored where it was not before. A name that is the
- * word is a signal; a name that contains the letters is a coincidence.
- */
-export const CREDENTIAL_NAME =
-  /(^|[^a-z0-9])(secrets?|credentials?|passwords?|passphrases?|tokens?|apikey|api[_-]?key|auth[_-]?token|private[_-]?key)([^a-z0-9]|$)/i;
-
-/** Is any segment of this path named for a credential? */
-export function namedForCredential(file) {
-  return String(file).split(/[/\\]+/).some((seg) => seg && CREDENTIAL_NAME.test(seg));
-}
-
-/**
- * Text that must not reach the disk, wherever it came from.
- *
- * `NEVER_STORE` judges a path, which covers a file named for a credential and nothing else.
- * Two things narai keeps are not files: the sentence you typed (`askedFor`, taken from the
- * transcript) and the text of a failed call. Paste a key into the chat and the path rules
- * never see it. These patterns match the *shape* of a credential in free text, so they apply
- * to both.
- *
- * Matching the shape means false positives — a sentence that merely discusses a password can
- * be dropped. That is the right way to be wrong: the diff survives either way, and the worst
- * case is one weaker piece of evidence rather than a live secret sitting in a JSON file.
- */
-export const SECRET_TEXT = [
-  /\b(sk|sk-ant|sk-proj)-[A-Za-z0-9_-]{16,}/,
-  /\bgh[pousr]_[A-Za-z0-9]{16,}/,
-  /\bAKIA[0-9A-Z]{12,}/,
-  /\bBearer\s+[A-Za-z0-9._-]{12,}/i,
-  /\b(password|passwd|pwd)\s*[:=]\s*\S{4,}/i,
-  /(パスワード|合言葉)\s*[:=は＝]\s*\S{4,}/,
-  /\b(api[_-]?key|apikey|access[_-]?token|auth[_-]?token|secret[_-]?key|client[_-]?secret)\s*[:=]\s*\S{8,}/i,
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
-  /https?:\/\/[^/\s:]+:[^@\s]+@/,
-];
-
-/** Does this free text look like it carries a credential? When in doubt, yes. */
-export function looksSecret(text) {
-  if (typeof text !== 'string' || !text) return false;
-  return SECRET_TEXT.some((re) => re.test(text));
-}
-
-/** May this file's contents be kept? When in doubt, no. */
-export function mayStoreBody(file) {
-  if (process.env.NARAI_HASH_ONLY === '1') return false;
-  const p = resolve(file);
-  if (NEVER_STORE.some((re) => re.test(p))) return false;
-  if (namedForCredential(p)) return false;
-  return !isGitIgnored(p);
-}
-
-/**
- * A git-ignored file is usually machine-local config or build output, so its contents
- * are not kept (the hash still is). False when git is absent or this is not a repository.
- */
-export function isGitIgnored(file) {
-  try {
-    execFileSync('git', ['check-ignore', '-q', '--', file], {
-      cwd: dirname(resolve(file)),
-      stdio: 'ignore',
-      timeout: 3000,
-    });
-    return true; // exit 0 = ignored
-  } catch {
-    return false; // exit 1 = not ignored, or no git at all
-  }
-}
 
 const sha = (s) => createHash('sha256').update(s).digest('hex');
 const keyOf = (p) => sha(resolve(p).toLowerCase()).slice(0, 32);
