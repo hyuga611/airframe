@@ -99,6 +99,12 @@ export function encodePlan(plan: Plan): string {
     rowsMatched: plan.rowsMatched,
     rowsChanged: plan.rowsChanged,
     rowsChangedIsMeaningful: plan.rowsChangedIsMeaningful,
+    // The apply compares this against a fresh introspect, so it has to survive the
+    // round trip through the store. These two functions are a field whitelist by
+    // design — adding a property to `Plan` does not add it to what is written —
+    // and this line is here because it was measured missing: a plan made seconds
+    // earlier came back with `triggerCount: undefined`.
+    triggerCount: plan.triggerCount,
     columnsTouched: plan.columnsTouched,
     impact: plan.impact,
     warnings: plan.warnings,
@@ -134,6 +140,10 @@ export function decodePlan(text: string): Plan {
     rowsMatched: Number(raw['rowsMatched'] ?? 0),
     rowsChanged: Number(raw['rowsChanged'] ?? 0),
     rowsChangedIsMeaningful: raw['rowsChangedIsMeaningful'] === true,
+    // Absent for a plan stored before 0.5.2, and that has to stay distinguishable
+    // from zero: zero would say "there were no triggers when this was measured",
+    // which is the reassuring answer and is not something the record establishes.
+    ...(typeof raw['triggerCount'] === 'number' ? { triggerCount: raw['triggerCount'] } : {}),
     impact: String(raw['impact'] ?? ''),
     warnings: Array.isArray(raw['warnings']) ? (raw['warnings'] as string[]) : [],
   };

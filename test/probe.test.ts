@@ -178,6 +178,71 @@ describe('probeWriteAbility', () => {
     );
   });
 
+  test('one writable column is enough, whatever the other columns said', async () => {
+    // Column-level grants are real — `GRANT UPDATE (qty) ON orders` makes
+    // `SET id = id` a refusal and `SET qty = qty` a success on the same table.
+    // A loop that stopped at the first refusal would report a credential that can
+    // write as one that cannot, which is the direction this whole family of bugs
+    // runs in. Measured on MySQL 8.4 and PostgreSQL 16: a role holding
+    // `SELECT, UPDATE (n)` is reported writable.
+    const seen: string[] = [];
+    const attempt = async (sql: string): Promise<ProbeOutcome> => {
+      if (verb(sql) === 'SELECT') return 'ok';
+      if (verb(sql) === 'DELETE') return 'denied';
+      seen.push(sql);
+      return sql.includes('"qty"') ? 'ok' : 'denied';
+    };
+    assert.equal<WriteAbility>(
+      await probeWriteAbility(['orders'], async () => ['id', 'qty'], quote, attempt),
+      'writable',
+    );
+    assert.ok(seen.length >= 2, 'and it kept asking after the first refusal');
+  });
+
+  test('a column that cannot answer does not silence the columns that can', async () => {
+    // A generated or identity column refuses a value from anybody, and PostgreSQL
+    // raises 428C9 for it ahead of the privilege check. Measured on PostgreSQL 16
+    // before this was fixed: a SELECT-only role on a table whose primary key is
+    // `GENERATED ALWAYS AS IDENTITY` — the ordinary modern spelling — reported
+    // `unknown` instead of `read-only`, so `check` could no longer prove the one
+    // boundary it exists to prove.
+    const attempt = async (sql: string): Promise<ProbeOutcome> => {
+      if (verb(sql) === 'SELECT') return 'ok';
+      if (verb(sql) === 'DELETE') return 'denied';
+      return sql.includes('"generated"') ? 'unclear' : 'denied';
+    };
+    assert.equal<WriteAbility>(
+      await probeWriteAbility(['orders'], async () => ['generated', 'qty'], quote, attempt),
+      'read-only',
+    );
+  });
+
+  test('but a table where no column could answer is still unknown', async () => {
+    // Every column unclear means nothing was established about any of them, and
+    // the loop must not launder that into a refusal.
+    const attempt = async (sql: string): Promise<ProbeOutcome> => {
+      if (verb(sql) === 'SELECT') return 'ok';
+      if (verb(sql) === 'DELETE') return 'denied';
+      return 'unclear';
+    };
+    assert.equal<WriteAbility>(
+      await probeWriteAbility(['orders'], async () => ['a', 'b'], quote, attempt),
+      'unknown',
+    );
+  });
+
+  test('an INSERT that goes through on one column is a write, even with DELETE and UPDATE refused', async () => {
+    const attempt = async (sql: string): Promise<ProbeOutcome> => {
+      if (verb(sql) === 'SELECT') return 'ok';
+      if (verb(sql) === 'INSERT') return 'ok';
+      return 'denied';
+    };
+    assert.equal<WriteAbility>(
+      await probeWriteAbility(['orders'], async () => ['qty'], quote, attempt),
+      'writable',
+    );
+  });
+
   test('a write that went through outranks anything unclear', async () => {
     assert.equal<WriteAbility>(
       await probeWriteAbility(['orders'], columnsOf, quote, answering({ SELECT: 'ok', DELETE: 'ok' })),

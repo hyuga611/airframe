@@ -416,23 +416,46 @@ export class MysqlAdapter implements Adapter {
 
     // Foreign keys pointing AT this table. With CASCADE or SET NULL, changing an
     // approved row also changes rows in another table that were never displayed.
+    // Both of the questions in this method were answered out of privilege-filtered views,
+    // and both of them answer "no" and "you may not ask" with the same value.
+    const { grants, db } = await this.visibility();
+    const triggersVisible = canSeeTriggers(grants, db, table);
+    const inboundCascadesKnown = canSeeWholeSchema(grants, db);
+
+    // `CONSTRAINT_SCHEMA` is the CHILD's database, not this table's. Filtering on
+    // it therefore asked "which children of mine live in my own database", and a
+    // child in another database was never found — while `inboundCascadesKnown`
+    // still said true, so nothing downstream hesitated. Measured on MySQL 8.4.11:
+    // a table in `archive` with `ON DELETE CASCADE` onto a table here read as no
+    // cascades at all, and the DELETE was offered for approval as "1 row".
+    //
+    // `UNIQUE_CONSTRAINT_SCHEMA` is the referenced side — this table's database —
+    // which is the question that was meant. The join stays on the child's schema,
+    // because that is where `KEY_COLUMN_USAGE` keeps the row.
     const [fks] = await this.conn.query<mysql.RowDataPacket[]>(
-      `SELECT k.TABLE_NAME AS child, r.CONSTRAINT_NAME AS name,
+      `SELECT k.TABLE_SCHEMA AS child_schema, k.TABLE_NAME AS child, r.CONSTRAINT_NAME AS name,
               r.DELETE_RULE AS del, r.UPDATE_RULE AS upd
          FROM information_schema.REFERENTIAL_CONSTRAINTS r
          JOIN information_schema.KEY_COLUMN_USAGE k
            ON k.CONSTRAINT_SCHEMA = r.CONSTRAINT_SCHEMA
           AND k.CONSTRAINT_NAME = r.CONSTRAINT_NAME
-        WHERE r.CONSTRAINT_SCHEMA = DATABASE() AND r.REFERENCED_TABLE_NAME = ?
-        GROUP BY k.TABLE_NAME, r.CONSTRAINT_NAME, r.DELETE_RULE, r.UPDATE_RULE`,
+        WHERE r.UNIQUE_CONSTRAINT_SCHEMA = DATABASE() AND r.REFERENCED_TABLE_NAME = ?
+        GROUP BY k.TABLE_SCHEMA, k.TABLE_NAME, r.CONSTRAINT_NAME, r.DELETE_RULE, r.UPDATE_RULE`,
       [table],
     );
-    const inboundCascades = fks.map((f) => ({
-      table: String(f['child']),
-      constraint: String(f['name']),
-      onDelete: String(f['del'] ?? 'NO ACTION').toUpperCase(),
-      onUpdate: String(f['upd'] ?? 'NO ACTION').toUpperCase(),
-    }));
+    const inboundCascades = fks.map((f) => {
+      const schema = String(f['child_schema'] ?? '');
+      const child = String(f['child']);
+      return {
+        // Qualified when it is somewhere else, because "rows in `order_history`
+        // would go with it" is a different warning depending on which database
+        // that is, and the operator is the one who has to recognise the name.
+        table: schema === '' || schema === db ? child : `${schema}.${child}`,
+        constraint: String(f['name']),
+        onDelete: String(f['del'] ?? 'NO ACTION').toUpperCase(),
+        onUpdate: String(f['upd'] ?? 'NO ACTION').toUpperCase(),
+      };
+    });
 
     const columns: ColumnShape[] = cols.map((c) => ({
       name: String(c['COLUMN_NAME']),
@@ -440,12 +463,6 @@ export class MysqlAdapter implements Adapter {
       nullable: String(c['IS_NULLABLE']).toUpperCase() === 'YES',
       autoUpdated: /on update/i.test(String(c['EXTRA'] ?? '')),
     }));
-
-    // Both of the questions below were answered out of privilege-filtered views,
-    // and both of them answer "no" and "you may not ask" with the same value.
-    const { grants, db } = await this.visibility();
-    const triggersVisible = canSeeTriggers(grants, db, table);
-    const inboundCascadesKnown = canSeeWholeSchema(grants, db);
 
     return {
       table,

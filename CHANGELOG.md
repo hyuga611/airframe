@@ -4,6 +4,132 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] — 2026-08-12
+
+Four defects, three of them mine from the previous twenty-four hours. The worst
+of them made every approved `UPDATE` on a table with an `updated_at` trigger
+impossible to apply, on all three dialects, in the configuration this package
+tells you to use.
+
+### Fixed
+
+**An approved UPDATE on a triggered table could never be applied.** The apply
+re-checks that a trigger has not appeared since the plan was measured, and it did
+that by refusing whenever the table had *any* trigger — comparing against zero
+rather than against what was measured. With `autoColumns` declared, which is what
+the engine's own refusal tells the operator to do, the plan is made deliberately
+against a triggered table. So every one of those plans was measured, carded,
+stored, approved, and then:
+
+```text
+Refused (SCHEMA_CHANGED): `orders` now has 1 trigger(s), so which columns move by
+themselves can no longer be determined. That was not true when this plan was
+measured, so it no longer describes what would happen. Make a new plan.
+```
+
+Every clause of that is false. The trigger was there when the plan was measured;
+the operator had declared which columns it maintains. The plan went to `failed`
+and a new one reproduced it exactly, so there was no configuration that worked —
+and `check` printed the table as `ready`, because it suppresses its trigger note
+precisely when `autoColumns` is declared. The plausible thing for an operator to
+try next is dropping a production trigger.
+
+A plan now records the trigger count it measured, and the apply compares against
+it. A trigger created between approval and apply still stops the commit, with a
+message that is now true: *"had 0 trigger(s) when this plan was measured and has
+1 now"*. A plan stored before 0.5.2 carries no baseline and is refused rather than
+compared against a guess — treating its absence as zero would say "there were no
+triggers when this was measured", which the record does not establish.
+
+**The apply verified columns it had not read.** 0.5.1 made the plan's before-image
+name its columns, so a MySQL 8 `INVISIBLE` column reaches the card. Its two
+verification reads were left as `SELECT *`, and the halves disagreeing is worse
+than either half alone. Measured on MySQL 8.4.11, both directions of one missing
+key:
+
+- **NOT NULL:** `same(undefined, 'KEEP')` is false, so an approved plan was refused
+  with `ROW_CHANGED` — *"`secret` was 'KEEP' when the plan was made and is (empty)
+  now"* — about a row nobody had touched, and burned to `failed`.
+- **NULL:** `canonical(undefined)` and `canonical(null)` are the same string, so
+  another session's write to that column passed the concurrent-edit guard, was
+  overwritten, and the apply returned `{ rowsAffected: 1, warnings: [] }`.
+
+The second is the worst outcome this package can produce: the guard that exists to
+catch a concurrent edit was defeated, the other session's data was destroyed, and
+it was reported as a plain success.
+
+**Foreign keys from another database were invisible on MySQL.**
+`REFERENTIAL_CONSTRAINTS.CONSTRAINT_SCHEMA` is the *child's* database, so filtering
+on it asked "which of my children live in my own database". A table in `archive`
+with `ON DELETE CASCADE` onto a table here read as no cascades at all — while
+`inboundCascadesKnown` still said `true`, so nothing downstream hesitated and the
+DELETE was offered for approval as "1 row would be deleted outright". The filter
+is now on `UNIQUE_CONSTRAINT_SCHEMA`, the referenced side, and a child elsewhere
+is named `schema.table` so the operator recognises it.
+
+**The write probe could not answer for an identity column.** 0.5.0 added an
+`INSERT` attempt and wrote it as one whole-row statement — despite the comment two
+paragraphs above it explaining why the `UPDATE` attempt is a per-column loop: a
+generated column refuses a value from anybody, for a reason that has nothing to do
+with privileges. PostgreSQL raises `428C9` for it *ahead of* the privilege check,
+so on any table with `GENERATED ALWAYS AS IDENTITY` — the ordinary modern primary
+key — a SELECT-only role went from `read-only` to `unknown`, and `check` stopped
+being able to prove the one boundary it exists to prove.
+
+Both column loops now follow three rules, and each of them was a defect:
+
+- one column going through settles it, because `GRANT UPDATE (qty)` makes
+  `SET id = id` a refusal and `SET qty = qty` a success on the same table;
+- one column that cannot answer does not silence the ones that can;
+- a loop that ran no times has established nothing, and must not report a refusal.
+
+### Corrected
+
+The 0.5.1 entry said `showValue` had no tests for "seven of its nine branches". It
+has eight, and three were already covered, so five were untested. Corrected in
+place with a note. The correction was committed before this release but after
+0.5.1 was published, so anyone reading the changelog inside the 0.5.1 tarball has
+the wrong number — which is why this release exists at all.
+
+### What to check in your own deployment
+
+If you run MySQL and any table you allowlist is referenced by a foreign key from
+another database, re-run `llm-safe-sql check`: that cascade was invisible before
+0.5.2 and any DELETE approved through this tool may have taken rows with it. If
+you have plans sitting in `pending` or `approved`, they will be refused once and
+ask you to make a new one; that is the missing baseline, not a problem with your
+data.
+
+### Known and unfixed
+
+A foreign key whose child table lives in a database this credential cannot see at
+all is still invisible, and `inboundCascadesKnown` does not account for it — it
+asks only whether the *current* schema is fully visible. Making it honest would
+require a `*.*` grant, which would refuse nearly every least-privilege deployment
+to guard against something rare. It is written down here rather than closed, and
+it is a real gap: on MySQL, "no cascades" means "none that this credential could
+see", not "none".
+
+Ablation also says one of the four lines added to `apply.ts` in this release —
+the check that a covered column is present in the row before comparing it — fails
+no test when deleted. Nothing reaches it now that the read names its columns. It
+stays as a backstop and the comment beside it says so, because the failure it
+would catch is a committed change announced as a success.
+
+386 tests, from 374. Ablated five ways: the locking read asking for `*`, the
+trigger check comparing against zero, the baseline not surviving the store, the
+foreign-key filter on the child's schema, and the presence check — four of the
+five fail a test that names the defect, and the fifth is the one above.
+
+### How these were found
+
+Not by reading, again. Two lenses came from the same outside reader: *which of the
+two answers is silent*, and *work that was never done, reported as done* — the
+second being their own refinement, a step past "there was nowhere to put I could
+not tell". Two more came from turning the last two days of hurried fixes back on
+themselves. Six releases in two days is six opportunities, and three of the four
+defects above were introduced by the releases that fixed the previous three.
+
 ## [0.5.1] — 2026-08-11
 
 **A column can be written, committed, and never appear — for the third time, by a
@@ -1461,6 +1587,7 @@ produced a plan describing something other than what would happen:
 - No runtime dependencies. Drivers are optional peers; the MCP server implements
   the wire protocol directly.
 
+[0.5.2]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.5.2
 [0.5.1]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.5.1
 [0.5.0]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.5.0
 [0.4.10]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.4.10

@@ -59,6 +59,11 @@ before(async () => {
   pgMaint = await PostgresAdapter.connect(PG);
   opened.push(myAdmin, pgMaint);
 
+  await myAdmin.query('DROP TABLE IF EXISTS ro_generated');
+  await myAdmin.query(
+    'CREATE TABLE ro_generated (id INT PRIMARY KEY, qty INT NOT NULL, doubled INT AS (qty * 2) STORED) ENGINE=InnoDB',
+  );
+  await myAdmin.query('INSERT INTO ro_generated (id, qty) VALUES (1, 10)');
   await myAdmin.query('DROP TABLE IF EXISTS ro_orders');
   await myAdmin.query('CREATE TABLE ro_orders (id INT PRIMARY KEY, qty INT NOT NULL) ENGINE=InnoDB');
   await myAdmin.query('INSERT INTO ro_orders VALUES (1,10),(2,20)');
@@ -86,6 +91,15 @@ before(async () => {
   pgAdmin = await PostgresAdapter.connect(PG_RO);
   opened.push(pgAdmin);
 
+  // The ordinary modern spelling of a primary key. It is here because the probe
+  // could not answer for it: PostgreSQL refuses a value for an identity column
+  // ahead of the privilege check, and one unclassified refusal was dragging the
+  // whole verdict to `unknown`.
+  await pgAdmin.query(
+    'CREATE TABLE ro_generated (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, qty int NOT NULL, ' +
+      'doubled int GENERATED ALWAYS AS (qty * 2) STORED)',
+  );
+  await pgAdmin.query('INSERT INTO ro_generated (qty) VALUES (10)');
   await pgAdmin.query('CREATE TABLE ro_orders (id INT PRIMARY KEY, qty INT NOT NULL)');
   await pgAdmin.query('INSERT INTO ro_orders VALUES (1,10),(2,20)');
 
@@ -120,6 +134,7 @@ after(async () => {
     if (a !== myAdmin && a !== pgMaint) await a.close().catch(() => {});
   }
   // Dropping the database takes the grants, the revoke and the tables with it.
+  await myAdmin.query('DROP TABLE IF EXISTS ro_generated').catch(() => {});
   await pgMaint.query(`DROP DATABASE IF EXISTS ${RO_DB} WITH (FORCE)`).catch(() => {});
   for (const role of ['ro_probe', 'rw_probe', 'ins_probe']) {
     await pgMaint.query(`DROP ROLE IF EXISTS ${role}`).catch(() => {});
@@ -316,6 +331,32 @@ for (const c of CASES) {
     const ins = await open(c, 'ins');
     assert.equal<DeleteAbility>((await ins.probeDeletable?.('ro_orders')) as DeleteAbility, 'cannot-delete');
     assert.equal<WriteAbility>(await (await open(c, 'ro')).probeWritable(['ro_orders']), 'read-only');
+  });
+
+  test(`[${c.label}] a generated or identity column does not stop the probe answering`, async () => {
+    // 0.5.0 added an INSERT attempt to the write probe and wrote it as one
+    // whole-row statement — \`INSERT INTO t SELECT * FROM t WHERE 1 = 0\` — despite
+    // the comment two paragraphs above it explaining why the UPDATE attempt is a
+    // per-column loop: a generated column refuses a value from anybody, for a
+    // reason that has nothing to do with privileges.
+    //
+    // Measured on PostgreSQL 16 before the fix: a SELECT-only role on this table
+    // reported \`unknown\` rather than \`read-only\`, so \`check\` stopped being able
+    // to prove the one boundary it exists to prove — on a table whose only unusual
+    // feature is \`GENERATED ALWAYS AS IDENTITY\`.
+    const ro = await open(c, 'ro');
+    assert.equal<WriteAbility>(await ro.probeWritable(['ro_generated']), 'read-only');
+
+    // And the other direction still works on the same table: an account that can
+    // write is not called read-only because one of its columns is generated.
+    const rw = await open(c, 'rw');
+    assert.equal<WriteAbility>(await rw.probeWritable(['ro_generated']), 'writable');
+    assert.equal<WriteAbility>(await c.admin().probeWritable(['ro_generated']), 'writable');
+
+    // Nothing was written to find that out.
+    const rows = await c.admin().query<Row>('SELECT qty FROM ro_generated');
+    assert.equal(rows.length, 1);
+    assert.equal(Number(rows[0]?.['qty']), 10);
   });
 
   test(`[${c.label}] a read-only role still cannot be used to plan`, async () => {

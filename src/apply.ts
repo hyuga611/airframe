@@ -13,6 +13,7 @@ import type { Adapter, Row } from './adapter.js';
 import { sameValueAndType as same } from './compare.js';
 import { planDigest } from './digest.js';
 import type { Plan, PlanRow, RefusalCode } from './engine.js';
+import { columnList } from './engine.js';
 import { keyOf, keyPredicate, qname } from './keys.js';
 import { normalize } from './normalize.js';
 import type { Policy } from './policy.js';
@@ -273,12 +274,36 @@ export class Applier {
     // above are re-run from a fresh introspect for exactly this reason; triggers
     // were left out of the same re-check, though the engine refuses to plan at
     // all when it cannot say which columns move by themselves.
-    if (plan.op === 'UPDATE' && !shape.autoColumnsKnown) {
+    // "A trigger created since the plan was measured" is the property, and until
+    // 0.5.2 this compared against zero rather than against what was measured. With
+    // `autoColumns` declared — which is what the engine's own refusal tells the
+    // operator to do — the plan is made deliberately against a triggered table, and
+    // this refused it afterwards saying the trigger was new. Every clause of that
+    // message was false, the plan was burned to `failed`, and re-planning
+    // reproduced it forever: there was no configuration in which an UPDATE on a
+    // table with an `updated_at` trigger could be applied. Measured on
+    // PostgreSQL 16 and MySQL 8.4.11.
+    if (plan.triggerCount === undefined) {
       throw new ApplyRefused(
         'SCHEMA_CHANGED',
-        `\`${table}\` now has ${shape.triggerCount} trigger(s), so which columns move by themselves can no ` +
-          'longer be determined. That was not true when this plan was measured, so it no longer describes ' +
-          'what would happen. Make a new plan.',
+        `This plan was stored before \`${table}\`'s trigger count was recorded with it, so whether a trigger ` +
+          'has appeared since it was measured cannot be established. Make a new plan; it will carry the ' +
+          'baseline this check needs.',
+      );
+    }
+    if (!shape.triggersVisible) {
+      throw new ApplyRefused(
+        'SCHEMA_CHANGED',
+        `This credential may not read the trigger catalogue for \`${table}\`, so whether one has appeared ` +
+          'since the plan was measured could not be established. Grant the applying role the TRIGGER ' +
+          'privilege on the schema.',
+      );
+    }
+    if (shape.triggerCount !== plan.triggerCount) {
+      throw new ApplyRefused(
+        'SCHEMA_CHANGED',
+        `\`${table}\` had ${plan.triggerCount} trigger(s) when this plan was measured and has ` +
+          `${shape.triggerCount} now, so what the statement does has changed. Make a new plan.`,
       );
     }
 
@@ -350,8 +375,22 @@ export class Applier {
       // A3 + A4 in one locking read. Doing it as two queries leaves a gap in
       // which the row set can change between "which rows are these" and "are
       // they still what you saw".
+      // Named columns, for the reason 0.5.1 named them in the engine — and this
+      // is the half of that release that was missed. MySQL 8 omits an INVISIBLE
+      // column from `SELECT *`, so the plan carried `secret` in `covered` and the
+      // row this compares it against had no such key. Measured on MySQL 8.4.11,
+      // both directions of the same line:
+      //
+      //   NOT NULL column: `same(undefined, 'KEEP')` is false, so an approved plan
+      //   was refused with ROW_CHANGED — "`secret` was 'KEEP' and is (empty) now" —
+      //   about a row nobody had touched, and burned to `failed` for good.
+      //
+      //   NULL column: `canonical(undefined)` and `canonical(null)` are the same
+      //   string, so another session's write to that column passed the
+      //   concurrent-edit guard, was overwritten, and the apply returned
+      //   `{ rowsAffected: 1, warnings: [] }`.
       const locked = await this.adapter.query<Row>(
-        `SELECT * FROM ${qname(q, table)} WHERE ${where}${this.adapter.rowLockClause()}`,
+        `SELECT ${columnList(q, shape)} FROM ${qname(q, table)} WHERE ${where}${this.adapter.rowLockClause()}`,
       );
 
       const wanted = new Set(plan.rows.map((r) => keyOf(pk, r.key)));
@@ -380,6 +419,23 @@ export class Applier {
         // would be a false alarm that teaches people to bypass this. For DELETE
         // `covered` is every column, because the whole row is being destroyed.
         for (const c of coveredOf(pr)) {
+          // Absence is not a value. `canonical(undefined)` and `canonical(null)`
+          // are the same string, so a column missing from this row compared equal
+          // to a NULL the plan had recorded, and another session's write to it was
+          // overwritten and reported as a success.
+          //
+          // The read above now names its columns, so nothing reaches this. Stated
+          // plainly because the ablation says so: deleting these four lines fails
+          // no test in the suite, which makes this a backstop and not a check.
+          // It stays because the failure it would catch is a committed change
+          // announced as a success, and that is the one this file cannot afford.
+          if (!(c in live)) {
+            throw new ApplyRefused(
+              'UNREADABLE_COLUMN',
+              `Row ${describeKey(pr.key)} came back without \`${c}\`, which the approved plan covers, so whether ` +
+                'it still holds the value you approved could not be checked. Nothing was applied.',
+            );
+          }
           if (!same(live[c], pr.before[c])) {
             throw new ApplyRefused(
               'ROW_CHANGED',
@@ -412,7 +468,10 @@ export class Applier {
 
       // A6 — read back and check the result is the one on the card.
       const { sql: pred, params } = keyPredicate(pk, plan.rows.map((r) => r.key), q, dialect);
-      const nowRows = await this.adapter.query<Row>(`SELECT * FROM ${qname(q, table)} WHERE ${pred}`, params);
+      const nowRows = await this.adapter.query<Row>(
+        `SELECT ${columnList(q, shape)} FROM ${qname(q, table)} WHERE ${pred}`,
+        params,
+      );
 
       if (plan.op === 'DELETE') {
         if (nowRows.length !== 0) {

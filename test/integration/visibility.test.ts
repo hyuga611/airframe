@@ -5,6 +5,9 @@ import { PostgresAdapter } from '../../src/adapters/postgres.js';
 import { Engine } from '../../src/engine.js';
 import { Policy } from '../../src/policy.js';
 import type { Adapter } from '../../src/adapter.js';
+import { openAdminSession } from '../../src/session.js';
+import { parseConfig } from '../../src/config.js';
+import { planStoreDdl } from '../../src/store.js';
 
 /**
  * What a credential is allowed to *see*, as opposed to what it may do.
@@ -270,5 +273,133 @@ test('[mysql] a column the row read did not return cannot ride along unshown', a
     assert.equal(after[0]?.secret, 'KEEP');
   } finally {
     await my.query('DROP TABLE IF EXISTS iv_orders').catch(() => {});
+  }
+});
+
+test('[mysql] the apply verifies the columns the plan covers, not the ones SELECT * returns', async () => {
+  // 0.5.1 made the plan's before-image name its columns so an INVISIBLE column
+  // reaches the card. The apply's two verification reads were left as `SELECT *`,
+  // and the halves disagreeing is worse than either half alone. Measured on
+  // MySQL 8.4.11, both directions of the same missing key:
+  //
+  //   NOT NULL: `same(undefined, 'KEEP')` is false, so an approved plan was
+  //   refused with ROW_CHANGED — "`secret` was 'KEEP' and is (empty) now" — about
+  //   a row nobody had touched, and burned to `failed` for good.
+  //
+  //   NULL: `canonical(undefined)` and `canonical(null)` are one string, so
+  //   another session's write to that column passed the concurrent-edit guard, was
+  //   overwritten, and apply returned `{ rowsAffected: 1, warnings: [] }`.
+  const version = String((await my.query<{ v: string }>('SELECT VERSION() AS v'))[0]?.v ?? '');
+  if (Number(version.split('.')[0] ?? 0) < 8 || /mariadb/i.test(version)) return;
+
+  for (const d of planStoreDdl('mysql')) await my.query(d);
+  await my.query('DELETE FROM llm_safe_sql_plans');
+  await my.query('DROP TABLE IF EXISTS iv_apply');
+  await my.query(
+    'CREATE TABLE iv_apply (id INT PRIMARY KEY, status VARCHAR(20) NOT NULL, ' +
+      "secret VARCHAR(20) INVISIBLE NOT NULL DEFAULT 's') ENGINE=InnoDB",
+  );
+  await my.query("INSERT INTO iv_apply (id, status, secret) VALUES (1, 'new', 'KEEP')");
+
+  const s = await openAdminSession(
+    parseConfig(
+      { dialect: 'mysql', connection: MYSQL, policy: { allow: ['iv_apply'], impact: { iv_apply: 'test table' } } },
+      {},
+    ),
+  );
+  try {
+    const p = await s.engine.plan("UPDATE iv_apply SET status = 'sent', secret = 'LEAKED' WHERE id = 1");
+    assert.deepEqual([...(p.rows[0]?.covered ?? [])].sort(), ['secret', 'status']);
+    const rec = await s.applier.record(p, 'assistant');
+    await s.applier.approve(rec.id, 'alice');
+
+    const r = await s.applier.apply(rec.id, 'alice');
+    assert.equal(r.rowsAffected, 1);
+    assert.deepEqual(r.warnings, []);
+    const row = await my.query<{ status: string; secret: string }>('SELECT status, secret FROM iv_apply WHERE id = 1');
+    assert.equal(row[0]?.status, 'sent');
+    assert.equal(row[0]?.secret, 'LEAKED', 'the column the card showed is the column that changed');
+  } finally {
+    await s.close();
+    await my.query('DROP TABLE IF EXISTS iv_apply').catch(() => {});
+  }
+});
+
+test('[mysql] a write by somebody else to an invisible column is still caught', async () => {
+  // The other direction, and the dangerous one: the concurrent-edit guard has to
+  // fire for a column `SELECT *` would not have returned.
+  const version = String((await my.query<{ v: string }>('SELECT VERSION() AS v'))[0]?.v ?? '');
+  if (Number(version.split('.')[0] ?? 0) < 8 || /mariadb/i.test(version)) return;
+
+  for (const d of planStoreDdl('mysql')) await my.query(d);
+  await my.query('DELETE FROM llm_safe_sql_plans');
+  await my.query('DROP TABLE IF EXISTS iv_race');
+  await my.query(
+    'CREATE TABLE iv_race (id INT PRIMARY KEY, status VARCHAR(20) NOT NULL, secret VARCHAR(20) INVISIBLE NULL) ENGINE=InnoDB',
+  );
+  await my.query("INSERT INTO iv_race (id, status) VALUES (1, 'new')");
+
+  const s = await openAdminSession(
+    parseConfig(
+      { dialect: 'mysql', connection: MYSQL, policy: { allow: ['iv_race'], impact: { iv_race: 'test table' } } },
+      {},
+    ),
+  );
+  try {
+    const p = await s.engine.plan("UPDATE iv_race SET status = 'sent', secret = NULL WHERE id = 1");
+    const rec = await s.applier.record(p, 'assistant');
+    await s.applier.approve(rec.id, 'alice');
+
+    await my.query("UPDATE iv_race SET secret = 'IMPORTANT' WHERE id = 1");
+
+    await assert.rejects(
+      () => s.applier.apply(rec.id, 'alice'),
+      (e: { code?: string }) => e.code === 'ROW_CHANGED',
+      'their write must not be overwritten and reported as a success',
+    );
+    const row = await my.query<{ secret: string }>('SELECT secret FROM iv_race WHERE id = 1');
+    assert.equal(row[0]?.secret, 'IMPORTANT', 'and it must still be there');
+  } finally {
+    await s.close();
+    await my.query('DROP TABLE IF EXISTS iv_race').catch(() => {});
+  }
+});
+
+test('[mysql] a foreign key from another database is found, because its row lives with the child', async () => {
+  // `REFERENTIAL_CONSTRAINTS.CONSTRAINT_SCHEMA` is the CHILD's database. Filtering
+  // on it asked "which of my children live in my own database", so a child in
+  // `archive` with ON DELETE CASCADE onto a table here read as no cascades at all
+  // — while `inboundCascadesKnown` still said true, so nothing downstream
+  // hesitated and the DELETE was offered for approval as "1 row".
+  await my.query('DROP TABLE IF EXISTS xdb_arch.child').catch(() => {});
+  await my.query('DROP DATABASE IF EXISTS xdb_arch').catch(() => {});
+  await my.query('DROP TABLE IF EXISTS xdb_parent');
+  await my.query('CREATE DATABASE xdb_arch');
+  await my.query('CREATE TABLE xdb_parent (id INT PRIMARY KEY) ENGINE=InnoDB');
+  await my.query(
+    'CREATE TABLE xdb_arch.child (c_id INT AUTO_INCREMENT PRIMARY KEY, pid INT, KEY(pid), ' +
+      'CONSTRAINT fk_xdb FOREIGN KEY (pid) REFERENCES llmsafesql.xdb_parent(id) ON DELETE CASCADE) ENGINE=InnoDB',
+  );
+  await my.query('INSERT INTO xdb_parent VALUES (5)');
+  await my.query('INSERT INTO xdb_arch.child (pid) VALUES (5),(5)');
+  try {
+    const shape = await my.introspect('xdb_parent');
+    assert.equal(shape.inboundCascades.length, 1, 'the constraint is in another database, not absent');
+    assert.equal(shape.inboundCascades[0]?.table, 'xdb_arch.child', 'and it is named so the operator recognises it');
+
+    await assert.rejects(
+      () =>
+        new Engine({
+          adapter: my,
+          policy: new Policy({ allow: ['xdb_parent'], impact: { xdb_parent: 'test table' } }),
+        }).plan('DELETE FROM xdb_parent WHERE id = 5'),
+      (err: { code?: string }) => err.code === 'CASCADE_SIDE_EFFECTS',
+    );
+    const left = await my.query<{ c: number }>('SELECT COUNT(*) AS c FROM xdb_arch.child');
+    assert.equal(Number(left[0]?.c), 2, 'and nothing was destroyed finding that out');
+  } finally {
+    await my.query('DROP TABLE IF EXISTS xdb_arch.child').catch(() => {});
+    await my.query('DROP DATABASE IF EXISTS xdb_arch').catch(() => {});
+    await my.query('DROP TABLE IF EXISTS xdb_parent').catch(() => {});
   }
 });

@@ -401,12 +401,37 @@ export async function probeWriteAbility(
       columns = [];
       anyUnclear = true;
     }
-    for (const c of columns) {
-      const col = quote(c);
-      const updated = await attempt(`UPDATE ${name} SET ${col} = ${col} WHERE 1 = 0`);
-      if (updated === 'ok') return 'writable';
-      if (updated === 'unclear') anyUnclear = true;
-    }
+    /**
+     * Put a per-column question to the table until it gives a real answer.
+     *
+     * Three rules, and each of them is a defect this had:
+     *
+     * - **One column going through settles it.** Column-level grants are real:
+     *   `GRANT UPDATE (qty) ON orders` makes `SET id = id` a refusal and
+     *   `SET qty = qty` a success on the same table, and stopping at the first
+     *   refusal would report a credential that can write as one that cannot.
+     * - **One column that cannot answer must not silence the ones that can.** A
+     *   generated or identity column refuses a value from anybody, and PostgreSQL
+     *   raises `428C9` for it *ahead of* the privilege check — so on any table with
+     *   `GENERATED ALWAYS AS IDENTITY`, which is the ordinary modern primary key,
+     *   one unclassified refusal was dragging the whole verdict to `unknown`.
+     * - **A loop that ran no times has established nothing.** `columns` is empty
+     *   only when the list could not be fetched, and a zero-iteration loop
+     *   followed by "refused" is the reassuring answer with no work behind it.
+     */
+    const askEachColumn = async (build: (col: string) => string): Promise<ProbeOutcome> => {
+      let sawDenied = false;
+      for (const c of columns) {
+        const outcome = await attempt(build(quote(c)));
+        if (outcome === 'ok') return 'ok';
+        if (outcome === 'denied') sawDenied = true;
+      }
+      return sawDenied ? 'denied' : 'unclear';
+    };
+
+    const updated = await askEachColumn((col) => `UPDATE ${name} SET ${col} = ${col} WHERE 1 = 0`);
+    if (updated === 'ok') return 'writable';
+    if (updated === 'unclear') anyUnclear = true;
 
     // INSERT was never attempted before 0.5.0, so "cannot write" was concluded
     // from "cannot UPDATE and cannot DELETE". A role granted SELECT and INSERT —
@@ -414,10 +439,19 @@ export async function probeWriteAbility(
     // reported as a credential the database refuses writes from. It can add rows
     // to your tables; it just cannot change the ones already there.
     //
+    // Named columns rather than `SELECT *`, for the reason directly above: a
+    // whole-row insert is refused outright by any table holding a generated
+    // column, and 0.5.0 shipped it as a single statement despite that reasoning
+    // already being written two paragraphs up for UPDATE. Measured on
+    // PostgreSQL 16: a SELECT-only role on a table with an identity primary key
+    // went from `read-only` to `unknown`.
+    //
     // `SELECT ... WHERE 1 = 0` supplies no rows, so nothing is written and no
     // constraint, default or trigger is reached; the privilege is checked when the
     // statement is prepared, which is the whole point.
-    const inserted = await attempt(`INSERT INTO ${name} SELECT * FROM ${name} WHERE 1 = 0`);
+    const inserted = await askEachColumn(
+      (col) => `INSERT INTO ${name} (${col}) SELECT ${col} FROM ${name} WHERE 1 = 0`,
+    );
     if (inserted === 'ok') return 'writable';
     if (inserted === 'unclear') anyUnclear = true;
   }

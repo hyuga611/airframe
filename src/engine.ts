@@ -103,6 +103,19 @@ export interface Plan {
   readonly rowsChanged: number;
   /** False when the dialect cannot distinguish "changed" from "matched" (Postgres). */
   readonly rowsChangedIsMeaningful: boolean;
+  /**
+   * How many triggers the table had when this plan was measured.
+   *
+   * The apply re-checks that a trigger has not appeared since — and until 0.5.2 it
+   * did that by refusing whenever the table had any trigger at all, comparing
+   * against zero instead of against this. With `autoColumns` declared the engine
+   * plans a triggered table on purpose, so every one of those plans was carded,
+   * stored, approved and then refused with a sentence that was false in every
+   * clause. Optional because a plan stored by an earlier version has no baseline:
+   * the apply says so and asks for a new plan rather than guessing one.
+   */
+  readonly triggerCount?: number;
+
   /** The business consequence of touching this table. Never empty: see D13. */
   readonly impact: string;
   readonly warnings: readonly string[];
@@ -177,7 +190,7 @@ const DEFAULTS = { maxUpdateRows: 200, maxDeleteRows: 50, maxReadRows: 200, stat
  * still listing that column in `information_schema.COLUMNS` — so the shape and
  * the row disagree, in exactly the direction that hides a write.
  */
-function columnList(q: (name: string) => string, shape: TableShape): string {
+export function columnList(q: (name: string) => string, shape: TableShape): string {
   return shape.columns.map((c) => q(c.name)).join(', ');
 }
 
@@ -843,6 +856,7 @@ export class Engine {
       rowsMatched: matched,
       rowsChanged: changedReported,
       rowsChangedIsMeaningful: changedMeaningful,
+      triggerCount: shape.triggerCount,
       impact,
       warnings,
     };
