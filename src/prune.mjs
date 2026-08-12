@@ -16,7 +16,7 @@
  * Nothing is removed on a schedule and nothing runs this on its own. It is a command, it
  * defaults to a dry run, and it prints what it would drop before it drops anything.
  */
-import { readdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { artifactsDir } from './narai.mjs';
 

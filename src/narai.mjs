@@ -691,7 +691,7 @@ export function recordSignal(kind, payload) {
 }
 
 /** Reduce a tool input to the least that could still become a rule. */
-export function summarizeToolInput(tool, input) {
+export function summarizeToolInput(_tool, input) {
   if (!input || typeof input !== 'object') return null;
   if (typeof input.command === 'string') {
     // Arguments hold keys, tokens and URLs. Keep the program and a bare-word subcommand,

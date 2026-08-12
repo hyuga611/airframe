@@ -32,3 +32,15 @@ jobs:
         # The package is scoped; `tenken` is only the bin name, so bare `npx tenken`
         # looks up a package that does not exist and 404s.
         run: npx @hyuga/tenken AGENTS.md
+
+  lint:
+    # Correctness rules only, no formatter. biome.jsonc records which rules are off
+    # and why: each one is a preference this codebase already applies consistently,
+    # so enforcing a different one would be churn rather than improvement.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm run lint

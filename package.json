@@ -16,7 +16,8 @@
     "skills"
   ],
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "lint": "npx --yes @biomejs/biome@2.5.8 lint src test"
   },
   "keywords": [
     "claude-code",
