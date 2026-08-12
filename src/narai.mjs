@@ -14,7 +14,7 @@
  */
 import {
   readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync,
-  openSync, readSync, closeSync,
+  openSync, readSync, closeSync, realpathSync,
 } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, resolve, basename, dirname } from 'node:path';
@@ -1075,7 +1075,28 @@ export function main(argv) {
   return 0;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+/**
+ * Was this run directly, or imported?
+ *
+ * argv[1] is the path as invoked, and both `npm i -g` and `npx` put a symlink
+ * there. import.meta.url is the resolved real path, so the two never matched for
+ * an installed copy and this did nothing at all: exit 0, no output. Every hook in
+ * the README is spelled `npx @hyuga/narai hook ...`, so the product was inert
+ * wherever it was actually installed — and a hook that returns 0 without speaking
+ * is indistinguishable from one with nothing to say. Resolve the link first.
+ */
+function runDirectly() {
+  const arg = process.argv[1];
+  if (!arg) return false;
+  if (import.meta.url === pathToFileURL(arg).href) return true;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(arg)).href;
+  } catch {
+    return false;
+  }
+}
+
+if (runDirectly()) {
   const result = main(process.argv.slice(2));
   // corpus / validate settle asynchronously; the rest return a number straight away.
   if (result && typeof result.then === 'function') result.then((code) => process.exit(code ?? 0));
