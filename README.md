@@ -67,8 +67,12 @@ isn't specific to code, and neither is this.
 ## Install
 
 ```bash
-npm i -g narai
+npm i -g @hyuga/narai
 ```
+
+The package is scoped; `narai` is only the bin name. Bare `npx narai` looks up a
+package that does not exist and 404s — npm refuses the unscoped name as too close
+to an existing one.
 
 Then add the hooks to your Claude Code `settings.json`. The first two are the product; the
 rest are what makes it learn rather than only warn:
@@ -77,17 +81,17 @@ rest are what makes it learn rather than only warn:
 {
   "hooks": {
     "PostToolUse": [{ "matcher": "Write|Edit", "hooks": [
-      { "type": "command", "command": "npx narai hook post", "timeout": 10 }]}],
+      { "type": "command", "command": "npx @hyuga/narai hook post", "timeout": 10 }]}],
     "PreToolUse":  [{ "matcher": "Write|Edit", "hooks": [
-      { "type": "command", "command": "npx narai hook pre",  "timeout": 10 }]}],
+      { "type": "command", "command": "npx @hyuga/narai hook pre",  "timeout": 10 }]}],
     "SessionStart": [{ "hooks": [
-      { "type": "command", "command": "npx narai hook session", "timeout": 10 }]}],
+      { "type": "command", "command": "npx @hyuga/narai hook session", "timeout": 10 }]}],
     "SubagentStart": [{ "hooks": [
-      { "type": "command", "command": "npx narai hook subagent", "timeout": 10 }]}],
+      { "type": "command", "command": "npx @hyuga/narai hook subagent", "timeout": 10 }]}],
     "PermissionDenied": [{ "hooks": [
-      { "type": "command", "command": "npx narai hook denied", "timeout": 10 }]}],
+      { "type": "command", "command": "npx @hyuga/narai hook denied", "timeout": 10 }]}],
     "PostToolUseFailure": [{ "hooks": [
-      { "type": "command", "command": "npx narai hook failed", "timeout": 10 }]}]
+      { "type": "command", "command": "npx @hyuga/narai hook failed", "timeout": 10 }]}]
   }
 }
 ```

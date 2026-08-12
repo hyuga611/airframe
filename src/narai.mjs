@@ -1057,17 +1057,17 @@ export function main(argv) {
   rest are what makes it learn rather than only warn:
 
     "PostToolUse":       [{ "matcher": "Write|Edit", "hooks": [
-      { "type": "command", "command": "npx narai hook post", "timeout": 10 }]}],
+      { "type": "command", "command": "npx @hyuga/narai hook post", "timeout": 10 }]}],
     "PreToolUse":        [{ "matcher": "Write|Edit", "hooks": [
-      { "type": "command", "command": "npx narai hook pre",  "timeout": 10 }]}],
+      { "type": "command", "command": "npx @hyuga/narai hook pre",  "timeout": 10 }]}],
     "SessionStart":      [{ "hooks": [
-      { "type": "command", "command": "npx narai hook session", "timeout": 10 }]}],
+      { "type": "command", "command": "npx @hyuga/narai hook session", "timeout": 10 }]}],
     "SubagentStart":     [{ "hooks": [
-      { "type": "command", "command": "npx narai hook subagent", "timeout": 10 }]}],
+      { "type": "command", "command": "npx @hyuga/narai hook subagent", "timeout": 10 }]}],
     "PermissionDenied":  [{ "hooks": [
-      { "type": "command", "command": "npx narai hook denied", "timeout": 10 }]}],
+      { "type": "command", "command": "npx @hyuga/narai hook denied", "timeout": 10 }]}],
     "PostToolUseFailure":[{ "hooks": [
-      { "type": "command", "command": "npx narai hook failed", "timeout": 10 }]}]
+      { "type": "command", "command": "npx @hyuga/narai hook failed", "timeout": 10 }]}]
 
   Set NARAI_HASH_ONLY=1 to never store file contents.
   Set NARAI_NO_PROMPTS=1 to keep the diffs but not what you said.

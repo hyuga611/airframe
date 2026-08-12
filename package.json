@@ -1,5 +1,5 @@
 {
-  "name": "narai",
+  "name": "@hyuga/narai",
   "version": "0.3.0",
   "description": "Tells your coding agent when you edited what it wrote, so it stops silently reverting your fixes. Claude Code hooks, no daemon, no network. The accumulated edits distill into rules, the rules are handed back at session start, and the ledger says whether they held.",
   "type": "module",
@@ -28,6 +28,9 @@
     "feedback-loop",
     "developer-tools"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "license": "MIT",
   "author": "hyuga611",
   "homepage": "https://github.com/hyuga611/narai",
