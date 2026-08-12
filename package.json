@@ -20,6 +20,7 @@
   ],
   "scripts": {
     "test": "node --test",
+    "lint": "npx --yes @biomejs/biome@2.5.8 lint src test",
     "poc": "node examples/db-insert.mjs",
     "selfcheck": "node src/cli.mjs verify --probe \"node -e \\\"import('./src/index.mjs').then(m=>process.stdout.write(String(Object.keys(m).length)))\\\"\" --at-least 4"
   },
