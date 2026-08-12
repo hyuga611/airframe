@@ -14,7 +14,9 @@ name: Release
 # to go up by hand once; every version after that comes from here.
 on:
   push:
-    tags: ['v*']
+    # v0 / v1 are moving major tags, not releases. Matching them here would
+    # start a release run on every major-tag move and fail the version check.
+    tags: ["v*.*.*"]
   workflow_dispatch:
     inputs:
       dry_run:
