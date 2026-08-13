@@ -17,6 +17,9 @@ measurement won and the test records what was observed, on which version.
    from anything the model asserts.
 3. **Refusing is always allowed.** Any rule that cannot be satisfied produces no
    plan. A missing plan is an inconvenience; a wrong one is an incident.
+4. **The approver is somebody other than the proposer.** A card read by the actor
+   who wrote the statement confirms nothing, so it is refused rather than
+   recorded. One person may hold both roles, but only by saying so.
 
 ---
 
@@ -68,6 +71,7 @@ measurement won and the test records what was observed, on which version.
 
 | ID | Rule | Why |
 |---|---|---|
+| A0 | The approver must not be the actor who proposed the plan. Compared without case or surrounding space, and overridable only by an explicit `allowSelfApproval` / `--allow-self-approve` | Approval is the whole of what this library adds over running the statement, and it is worth exactly as much as the reviewer's independence from the author. Without this, an agent holding one credential proposed and approved its own `UPDATE` and produced a complete audit trail — `planned` by X, `approved` by X — attesting to a review that never took place. The comparison must be case-insensitive or `--as Alice` walks past it; it must not be fuzzy, because refusing `alice@example.com` for containing `alice` locks out a real second reviewer, and a check that blocks honest use gets switched off. **What A0 does not do is authenticate.** It compares two names this process was handed, so it stops one identity running both halves — an agent and its operator sharing `$USER`, which is what a single terminal gives you — and does nothing about a caller who types a different name. It converts a silently plausible audit trail into a refusal; it is not an authorisation boundary, and `check` says so unprompted so that nobody infers one |
 | A1 | Verify we are inside a transaction. Refuse if not | Otherwise "everything was rolled back" is a false statement in the error path |
 | A2 | Re-validate the stored statement before applying | The stored plan may have been tampered with |
 | A3 | Re-fetch the **set of keys**, not just the count | With a count-only check, a swap of one row for another passes |
@@ -159,6 +163,16 @@ Consequences worth stating plainly:
 - `INSERT` — no before-image to show
 - Multi-table statements
 - Schema changes, even where the dialect could roll them back
+- **Authenticating an actor.** `--as` is taken at its word everywhere. A0 is the
+  one place a name is compared at all, and it is compared against another name
+  from the same untrusted source. Identity that means something has to come from
+  below this library — a database account the proposing side has no password for.
+- **Restricting who may `cancel`.** Deliberate, not an oversight. Cancelling only
+  ever prevents an apply, the MCP surface does not expose it, and everyone who can
+  reach it can already write to the plan table directly. A name check there would
+  add a second string comparison that reads like authorisation and is not one,
+  which is the failure A0's own note exists to avoid. The actor and the reason are
+  recorded; that is what the field is for.
 
 
 ---
@@ -197,6 +211,7 @@ of guaranteeing they catch two.
 | `ROLLBACK_FAILED` | **Read the message.** It says whether anything was written. The connection is retired either way |
 | `ADAPTER_UNUSABLE` | The environment cannot support the guarantees, or the connection's state is no longer known |
 | `PLAN_NOT_FOUND`, `NOT_APPROVED`, `ALREADY_APPLIED` | The plan is missing, or is not in a state that can be applied |
+| `SELF_APPROVAL` | The approver proposed this plan. Have somebody else approve it, or say `--allow-self-approve` |
 | `PLAN_TAMPERED` | The stored plan does not match its checksum, or its statement no longer agrees with it |
 | `SCHEMA_CHANGED` | The table's primary key is not the one the plan identifies rows by |
 | `ROWS_MOVED` | A different set of rows matches the condition now |

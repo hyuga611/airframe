@@ -26,8 +26,8 @@
 export { Engine, PlanRefused } from './engine.js';
 export type { Plan, PlanRow, EngineOptions, RefusalCode } from './engine.js';
 
-export { Applier, ApplyRefused } from './apply.js';
-export type { ApplyResult, ApplierOptions, ApplyCode } from './apply.js';
+export { Applier, ApplyRefused, assertNotSelfApproval } from './apply.js';
+export type { ApplyResult, ApplierOptions, ApplyCode, ApproveOptions } from './apply.js';
 
 export { Policy, PolicyViolation } from './policy.js';
 export type { PolicyOptions, PolicyCode } from './policy.js';

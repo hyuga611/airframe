@@ -353,6 +353,82 @@ describe('sqlite', { skip }, () => {
   });
 
   // =====================================================================
+  //  S — approving is somebody else's act.
+  // =====================================================================
+
+  test('S: the actor who proposed a plan cannot approve it', async () => {
+    const plan = await engine.plan('UPDATE orders SET qty = qty + 5 WHERE id = 1');
+    const rec = await applier.record(plan, 'assistant');
+
+    await assert.rejects(
+      () => applier.approve(rec.id, 'assistant'),
+      (e: unknown) => e instanceof Refusal && e.code === 'SELF_APPROVAL',
+    );
+
+    // Refused, not half-done. A plan left in `approved` after a refused approval
+    // would be worse than the hole itself: the trail would read as reviewed.
+    const after = await applier.store.get(rec.id);
+    assert.equal(after?.status, 'pending');
+    assert.equal(after?.approvedBy, null);
+    await assert.rejects(() => applier.apply(rec.id, 'assistant'));
+    assert.equal(await qtyOf(1), 10);
+  });
+
+  test('S: a capital or a stray space does not make the proposer a second person', async () => {
+    const plan = await engine.plan('UPDATE orders SET qty = qty + 5 WHERE id = 1');
+    const rec = await applier.record(plan, 'assistant');
+
+    for (const alias of ['Assistant', 'ASSISTANT', '  assistant  ']) {
+      await assert.rejects(
+        () => applier.approve(rec.id, alias),
+        (e: unknown) => e instanceof Refusal && e.code === 'SELF_APPROVAL',
+        `${JSON.stringify(alias)} is the proposer under another spelling`,
+      );
+    }
+    assert.equal((await applier.store.get(rec.id))?.status, 'pending');
+  });
+
+  test('S: a name that merely contains the proposer is a different person, and may approve', async () => {
+    // The check must not reach for cleverness. Refusing `assistant@example.com`
+    // because it contains `assistant` would turn a security check into a way of
+    // locking a real reviewer out, which is how such checks get switched off.
+    const plan = await engine.plan('UPDATE orders SET qty = qty + 5 WHERE id = 1');
+    const rec = await applier.record(plan, 'assistant');
+    const ok = await applier.approve(rec.id, 'assistant@example.com');
+    assert.equal(ok.status, 'approved');
+  });
+
+  test('S: an unnamed proposer is not approvable by an unnamed approver', async () => {
+    // Both empty is where a misconfigured caller lands: no --as, no $USER. Two
+    // anonymous actors are not evidence of two people, so this stays refused.
+    const plan = await engine.plan('UPDATE orders SET qty = qty + 5 WHERE id = 1');
+    const rec = await applier.record(plan, '');
+    await assert.rejects(
+      () => applier.approve(rec.id, ''),
+      (e: unknown) => e instanceof Refusal && e.code === 'SELF_APPROVAL',
+    );
+  });
+
+  test('S: allowSelfApproval lets it through, and both acts stay under the one name', async () => {
+    const plan = await engine.plan('UPDATE orders SET qty = qty + 5 WHERE id = 1');
+    const rec = await applier.record(plan, 'solo');
+    await applier.approve(rec.id, 'solo', { allowSelfApproval: true });
+    await applier.apply(rec.id, 'solo');
+    assert.equal(await qtyOf(1), 15);
+
+    // The switch buys an apply. It does not buy a tidier story about who read the
+    // card: `planned` and `approved` both say `solo`, and an auditor can see it.
+    const trail = await bookkeeping.query<Row>(
+      'SELECT phase, actor FROM llm_safe_sql_audit WHERE plan_id = ? ORDER BY id',
+      [rec.id],
+    );
+    const approved = trail.filter((r) => r['phase'] === 'approved');
+    assert.equal(approved.length, 1);
+    assert.equal(approved[0]?.['actor'], 'solo');
+    assert.equal(trail.find((r) => r['phase'] === 'planned')?.['actor'], 'solo');
+  });
+
+  // =====================================================================
   //  Config.
   // =====================================================================
 

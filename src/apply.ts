@@ -48,6 +48,7 @@ export type ApplyCode =
   | 'PLAN_NOT_FOUND'
   | 'PLAN_TAMPERED'
   | 'NOT_APPROVED'
+  | 'SELF_APPROVAL'
   | 'ALREADY_APPLIED'
   | 'SCHEMA_CHANGED'
   | 'ROWS_MOVED'
@@ -61,6 +62,59 @@ export class ApplyRefused extends Refusal {
   constructor(code: ApplyCode, message: string) {
     super(code, message);
   }
+}
+
+export interface ApproveOptions {
+  /**
+   * Let the actor who proposed a plan be the one who approves it.
+   *
+   * Off by default, and it has to be asked for out loud. There are real setups
+   * where one person holds both roles — a solo operator driving the CLI by hand,
+   * with no second human to route the card to — so this is a switch and not a
+   * wall. What it must never be is the default, because then the separation is
+   * whatever the caller happened to pass in `--as`.
+   */
+  readonly allowSelfApproval?: boolean;
+}
+
+/**
+ * Whether two actor names name the same person.
+ *
+ * Compared case-insensitively and without surrounding space, because `--as Alice`
+ * and `--as alice` are one person and a check that says otherwise is theatre: it
+ * would refuse the honest caller and wave through anyone who typed a capital.
+ * This is deliberately not clever — it does not try to decide that `alice` and
+ * `alice@example.com` are the same, because guessing wrong in that direction
+ * refuses a legitimate second reviewer.
+ */
+function sameActor(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+/**
+ * Throw when the approver is the actor who proposed the plan.
+ *
+ * Exported because {@link Applier.approve} is not the only place that has to know
+ * the rule: a caller that prompts before approving — the CLI does — has to refuse
+ * *before* it offers the choice, or it puts "Approve this as kenji?" on screen for
+ * an approval that cannot happen. Two copies of the rule is how two copies drift,
+ * so both paths call this one.
+ */
+export function assertNotSelfApproval(
+  rec: StoredPlan,
+  approver: string,
+  opts: ApproveOptions = {},
+): void {
+  if (opts.allowSelfApproval === true) return;
+  if (!sameActor(approver, rec.createdBy)) return;
+  throw new ApplyRefused(
+    'SELF_APPROVAL',
+    `Plan ${rec.id} was proposed by ${rec.createdBy}, and ${approver} is the same person. ` +
+      'A confirmation card confirms nothing when the person reading it is the person who wrote ' +
+      'the statement, so this is refused rather than recorded as a review. Have somebody else ' +
+      'approve it — or, if you genuinely hold both roles, pass --allow-self-approve, which ' +
+      'approves it and leaves both acts under your name in the audit trail.',
+  );
 }
 
 export interface ApplyResult {
@@ -133,12 +187,19 @@ export class Applier {
    * Separate from {@link apply} because approving and writing are different acts
    * by different people at different times, and because a plan that was approved
    * and then never applied is a fact worth being able to see.
+   *
+   * Refuses when the approver is the actor who proposed the plan. That check was
+   * missing until 0.6.0, and its absence was not a design position: the card is
+   * worth something only because somebody who did not write the statement reads
+   * it, so a proposer approving their own plan produced a full audit trail —
+   * `planned` by X, `approved` by X — attesting to a review that never happened.
    */
-  async approve(id: string, approver: string): Promise<StoredPlan> {
+  async approve(id: string, approver: string, opts: ApproveOptions = {}): Promise<StoredPlan> {
     const rec = await this.mustLoad(id);
     if (rec.status !== 'pending') {
       throw new ApplyRefused('NOT_APPROVED', `Plan ${id} is ${rec.status}, so it cannot be approved now.`);
     }
+    assertNotSelfApproval(rec, approver, opts);
     this.verifyDigest(rec);
     const moved = await this.store.transition(id, ['pending'], 'approved', approver);
     if (!moved) {

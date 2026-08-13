@@ -4,6 +4,107 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-08-13
+
+One hole, found by attacking the published package instead of re-reading it.
+Everything here exists to support one sentence — *somebody who is not the model
+read the measurement and said yes* — and until this release that sentence could
+be produced by one actor talking to itself.
+
+### Security
+
+**The actor who proposed a plan could approve it.** `approve(id, approver)` never
+compared `approver` against the plan's `createdBy`, so this ran end to end:
+
+```console
+$ llm-safe-sql plan "UPDATE members SET quota = quota + 10, profile = '{"role":"admin"}' WHERE id = 7" --as kenji
+$ llm-safe-sql approve <id> --as kenji     # accepted
+$ llm-safe-sql apply   <id> --as kenji     # committed
+```
+
+and left a trail that reads as a review: `planned` by `kenji`, `approved` by
+`kenji`. That is worse than having no trail at all, because the record attests to
+a second pair of eyes that were never there.
+
+The absence was not a design position, which is the part worth writing down.
+`SPEC.md` already had P5 — the plan and audit tables are refused in every
+configuration, *because "a model that can write the plan table can approve its own
+writes"* — so the indirect path had been thought about and the direct one had
+not. The README's answer to "the model cannot approve" was that `approve` runs in
+a different process the model cannot reach. That is true of the deployment it
+recommends and false of the one `npx` gives you, and the recommended deployment
+is not where anybody starts.
+
+Self-approval is now refused with `SELF_APPROVAL`. The comparison ignores case and
+surrounding space, so `--as Kenji` does not walk past it. It is deliberately not
+fuzzy: `alice@example.com` may approve a plan proposed by `alice`, because a check
+that locks out a legitimate second reviewer is a check that gets switched off.
+
+### Added
+
+**`--allow-self-approve`, and `allowSelfApproval` on `Applier.approve`.** One
+person genuinely does hold both roles sometimes — a solo operator driving the CLI
+by hand with nobody to route the card to. The switch approves the plan and leaves
+*both* acts under the one name in the audit trail. It does not launder them.
+
+**`assertNotSelfApproval(rec, approver, opts)`, exported.** The CLI now refuses
+before it prompts, instead of printing a card, asking "Approve this as kenji?",
+and refusing after the answer — offering a choice it will not honour. Both the CLI
+and `approve` call this, so the rule has one home.
+
+**`check` now says, every time, that `--as` authenticates nobody.** This release
+would otherwise have shipped the exact defect that section of `check` exists to
+report. The new refusal compares two self-asserted names, so it stops one identity
+running both halves — a single terminal, an agent sharing `$USER` with its
+operator — and does nothing about a caller who types a different name. Left
+unsaid, a guard that converts a silent non-review into a refusal reads as an
+authorisation boundary, and a guard mistaken for a stronger one is worse than
+none. The note names `applyConnection` as the identity that does not rely on the
+honour system.
+
+### What to check in your own data
+
+Nothing was written that you did not approve — the apply path is unchanged, and
+every commit it made was still measured, locked and reconciled. What may be wrong
+is the *record of who agreed to it*. If you ran 0.5.2 or earlier, any plan whose
+`planned` and `approved` rows name the same actor was applied without a second
+reader, and the trail does not say so. Find them:
+
+```sql
+SELECT p.plan_id, p.actor AS proposed_by, p.logged_at, p.detail
+FROM llm_safe_sql_audit p
+JOIN llm_safe_sql_audit a
+  ON a.plan_id = p.plan_id AND a.phase = 'approved'
+WHERE p.phase = 'planned'
+  AND LOWER(TRIM(p.actor)) = LOWER(TRIM(a.actor))
+ORDER BY p.logged_at;
+```
+
+Rows that come back are changes that were committed to your database on one
+person's word while the audit trail reads as though two people were involved.
+They are not necessarily wrong — a solo operator legitimately holds both roles —
+but they were never reviewed, and anything downstream that treated the `approved`
+row as evidence of a review was reading something that was not there. From 0.6.0
+that same situation is either refused or explicitly marked by the operator having
+passed `--allow-self-approve`.
+
+### Not changed, deliberately
+
+**Anyone may still `cancel` anyone's plan.** Cancelling only ever prevents an
+apply, the MCP surface does not expose it, and everybody who can reach it can
+already write to the plan table directly. Adding a name check there would put a
+second string comparison that reads like authorisation next to one that already
+needs a paragraph explaining it is not. The actor and the reason are recorded,
+which is what that field is for. Written down in `SPEC.md` under Out of scope so
+it is a decision rather than a gap somebody closes by reflex.
+
+### Changed
+
+**A caller that approved plans under the same actor that created them now gets
+`SELF_APPROVAL`.** This is the breaking change in this release. Pass
+`allowSelfApproval: true` (library) or `--allow-self-approve` (CLI) where that was
+deliberate.
+
 ## [0.5.2] — 2026-08-12
 
 Four defects, three of them mine from the previous twenty-four hours. The worst
@@ -1587,6 +1688,7 @@ produced a plan describing something other than what would happen:
 - No runtime dependencies. Drivers are optional peers; the MCP server implements
   the wire protocol directly.
 
+[0.6.0]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.6.0
 [0.5.2]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.5.2
 [0.5.1]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.5.1
 [0.5.0]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.5.0

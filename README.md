@@ -62,10 +62,24 @@ the reason [SPEC.md](SPEC.md) exists as a testable list rather than a descriptio
     │                           ├── execute, reconcile, COMMIT   │
 ```
 
-The model gets a plan id. It cannot approve and it cannot apply — not because
-those tools are guarded, but because they are in a different process that the
+The model gets a plan id. It cannot approve and it cannot apply, for two separate
+reasons, and the second one is why this library reached 0.6.0 with a hole in it.
+
+The first is deployment: `approve` and `apply` live in a different process the
 model has no path to. The two halves can run as different OS users against
 different database accounts, so the separation survives a bug in this library.
+That is the arrangement worth building, and it is not the one you get by running
+`npx` in one terminal.
+
+The second is the rule itself. **Whoever proposed a plan cannot approve it.**
+Until 0.6.0 that was not checked, so a single actor could propose, approve and
+apply its own `UPDATE`, and produce an audit trail that read as a review —
+`planned` by `kenji`, `approved` by `kenji`. The card is worth something only
+because the person reading it did not write the statement, so approving your own
+plan is now refused (`SELF_APPROVAL`) rather than recorded. If you genuinely hold
+both roles — a solo operator with nobody to hand the card to — say so with
+`--allow-self-approve`, and the trail will keep both acts under your one name
+instead of dressing them up as two.
 
 ## What a confirmation card looks like
 
@@ -243,6 +257,7 @@ confirmation card that disagrees with the database.
 | A credential that is not allowed to see the triggers or the foreign keys | The two rows above are answered out of `information_schema`, and MySQL filters it by privilege — silently, by returning fewer rows |
 | A statement that matched nothing, or changed nothing | Nothing to approve |
 | More rows than the ceiling | Every row is displayed individually; the ceiling is what a person can actually read |
+| An approval by the actor who proposed the plan | A card read by its own author confirms nothing, and recording it as an approval puts a review in the audit trail that never happened. `--allow-self-approve` if one person really holds both roles |
 | Reading a column you marked secret — under any alias | To read a column you must name it, so matching the *reference* cannot be aliased around |
 | The library's own plan and audit tables, always | A model that can write the plan table can approve its own writes |
 
@@ -358,6 +373,20 @@ None of this makes the in-process guards pointless. They catch the ordinary
 mistakes, and they produce the explanations. But when the two disagree, the
 database wins, and it should.
 
+**Who you say you are is not one of the guards.** `--as` is taken at its word
+everywhere in this tool. The 0.6.0 refusal that stops a proposer approving their
+own plan compares two names this process was handed, from the same untrusted
+place — so it catches one identity running both halves, which is what a single
+terminal gives you and the case that produces a plausible-looking audit trail by
+accident, and it does nothing about somebody who types a different name. It turns
+a silent non-review into a refusal. It is not an authorisation boundary, and
+`check` says so every time rather than waiting to be asked, because a guard
+mistaken for a stronger one is worse than no guard at all.
+
+The identity that does mean something is `applyConnection`: a database account the
+proposing side has no password for. That is the same answer as everywhere else on
+this page — put the boundary below this code, where it survives our mistakes.
+
 There is a longer write-up of this idea, covering how the other tools in this space answer the same question: **[Which layer is actually stopping it?](https://github.com/hyuga611/llm-safe-sql/discussions/3)**
 
 ## Measured, not assumed
@@ -453,9 +482,33 @@ JSONB・配列・バイナリの全列と、ドライバが浮動小数で返す
 5. 適用時にもう一度、対象行をロックして「承認したときの値のままか」を確認してから実行し、
    件数と結果を照合してからコミットする
 
-モデルは承認も適用もできません。ツールを隠しているからではなく、**モデルから到達
-できない別プロセスにあるから**です。OS ユーザーも DB アカウントも分けられるので、
-この分離はこのライブラリにバグがあっても成立します。
+モデルは承認も適用もできません。理由は 2 つあり、2 つめは 0.6.0 まで穴として
+空いていたものです。
+
+1 つめは**配置**です。承認と適用はモデルから到達できない別プロセスにあります。
+OS ユーザーも DB アカウントも分けられるので、この分離はこのライブラリにバグが
+あっても成立します。ただしこれは「そう組んだ場合」の話で、`npx` を 1 つの端末で
+叩いた既定の形はそうなっていません。
+
+2 つめは**規則そのもの**です。**提案した本人は承認できません。** 0.6.0 より前は
+これを検査しておらず、1 人（あるいは 1 つのエージェント）が提案・承認・適用まで
+通せてしまい、しかも監査証跡は「レビュー済み」に見える形で残りました——
+`planned` が `kenji`、`approved` も `kenji`。確認カードに意味があるのは、読む人が
+その文を書いた人ではないからです。よって自己承認は記録せず拒否します
+（`SELF_APPROVAL`）。1 人二役が実態なら `--allow-self-approve` で明示してください。
+承認は通り、監査証跡には両方の行為があなた 1 人の名前のまま残ります——
+2 人いたかのように見せかけることはしません。
+
+**ただし、この検査は認証ではありません。** `--as` はこのツール全体で自己申告として
+そのまま受け取られます。0.6.0 の拒否は、同じ信用できない出所から渡された 2 つの名前
+を比べているだけです。したがって**1 つの身元が両方の役をやっている場合**——端末 1 枚
+で動かせばそうなり、これが「それらしい監査証跡が事故で出来上がる」経路です——は
+捕まえますが、**別の名前を打つ人**は素通りします。買えるのは「黙って通っていたものが
+拒否になる」ことだけで、権限の境界ではありません。`check` は聞かれなくても毎回
+そう表示します。**強い保護と誤解された保護は、保護が無いより悪い**からです。
+
+本当に意味がある身元は `applyConnection`——提案側がパスワードを持たない DB アカウント
+です。このページの他の箇所と同じ答えで、**境界はこのコードより下に置く**のが正解です。
 
 ## DB を用意せずに試す
 
@@ -552,6 +605,7 @@ allowlist 外のテーブル、`INSERT`、`WHERE` なし、`JOIN`・複数テー
 が刺さっているテーブル、非トランザクションなテーブル、主キーの無いテーブル、
 自動更新列を報告できない方言でのトリガー付きテーブル、0 件・変化なし、上限行数超過、
 別名を付けても秘密列の参照、そして常にこのライブラリ自身の plan / audit テーブル。
+さらに**提案者本人による承認**（`--allow-self-approve` で明示解除）。
 
 **そして、実在しない理由では拒否しません。** 他人が別の列を編集していることは競合では
 ないし、試走中の他セッションの書き込みはロールバック失敗ではないし、実行前に拒否した

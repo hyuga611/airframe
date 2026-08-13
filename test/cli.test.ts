@@ -157,6 +157,44 @@ test('check compares who the connections are, not how they were spelled', { skip
   }
 });
 
+test('check says that --as authenticates nobody, so the 0.6.0 refusal is not read as a boundary', { skip: HAS_SQLITE ? undefined : 'no node:sqlite' }, async () => {
+  // 0.6.0 made a proposer approving their own plan a refusal. That is worth
+  // having and it is two self-asserted strings being compared, so an operator who
+  // takes it for an authorisation check has been given exactly the false boundary
+  // this command exists to expose. The note is unconditional: there is no
+  // configuration in which `--as` becomes authenticated, so there is none in
+  // which this may go quiet.
+  const { DatabaseSync } = await import('node:sqlite');
+  const dir = await mkdtemp(join(tmpdir(), 'llm-safe-sql-actor-'));
+  try {
+    const file = join(dir, 'app.db');
+    const db = new DatabaseSync(file);
+    db.exec('CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL)');
+    db.close();
+
+    const cfgPath = join(dir, 'cfg.json');
+    await writeFile(
+      cfgPath,
+      JSON.stringify({
+        dialect: 'sqlite',
+        connection: { file },
+        policy: { allow: ['notes'], impact: { notes: 'test table' } },
+      }),
+      'utf8',
+    );
+
+    await cli('migrate', '--config', cfgPath);
+    const r = await cli('check', '--config', cfgPath);
+    assert.match(r.out, /`--as` is taken at its word/, r.out);
+    assert.match(r.out, /Actor separation is a record, not a boundary/, r.out);
+    // And it names the boundary that does not depend on the honour system, rather
+    // than leaving the reader with only the bad news.
+    assert.match(r.out, /applyConnection/, r.out);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('check says whether the audit record can be erased by the account that writes it', { skip: HAS_SQLITE ? undefined : 'no node:sqlite' }, async () => {
   // The worked examples grant the store account INSERT and no DELETE, and say
   // why. Nothing verified it until 0.4.8: the property was a sentence in the

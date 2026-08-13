@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createInterface } from 'node:readline/promises';
+import { assertNotSelfApproval } from './apply.js';
 import { planCard } from './card.js';
 import { connectionIdentity, loadConfig, type Config, type ConnectionConfig } from './config.js';
 import { Refusal } from './refusal.js';
@@ -38,6 +39,9 @@ Options
   --as <who>        Who is acting. Defaults to $LLM_SAFE_SQL_ACTOR, then $USER
   --yes             Skip the interactive confirmation (required when not a terminal)
   --limit <n>       Row cap for 'read' and 'list'
+  --allow-self-approve
+                    Let 'approve' accept the actor who proposed the plan. Off by
+                    default: a card read by its own author confirms nothing.
 
 Exit codes: 0 success, 1 refused or failed, 2 wrong usage.
 `;
@@ -96,6 +100,7 @@ interface Args {
   limit: number | undefined;
   status: PlanStatus | undefined;
   reason: string;
+  allowSelfApprove: boolean;
 }
 
 function parse(argv: string[]): Args {
@@ -106,6 +111,7 @@ function parse(argv: string[]): Args {
   let limit: number | undefined;
   let status: PlanStatus | undefined;
   let reason = '';
+  let allowSelfApprove = false;
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -122,10 +128,21 @@ function parse(argv: string[]): Args {
       case '--limit': limit = rowCount(next()); break;
       case '--status': status = planStatus(next()); break;
       case '--reason': reason = next(); break;
+      case '--allow-self-approve': allowSelfApprove = true; break;
       default: rest.push(a);
     }
   }
-  return { command: rest[0] ?? '', rest: rest.slice(1), config, actor, yes, limit, status, reason };
+  return {
+    command: rest[0] ?? '',
+    rest: rest.slice(1),
+    config,
+    actor,
+    yes,
+    limit,
+    status,
+    reason,
+    allowSelfApprove,
+  };
 }
 
 class UsageError extends Error {}
@@ -419,6 +436,20 @@ async function run(args: Args): Promise<number> {
           );
         }
 
+        // Unconditional, and pushed after the check above so that adding it does
+        // not silence the "four different accounts" proof by making `warn` never
+        // empty. It belongs in this list because the alternative is 0.6.0's
+        // self-approval refusal reading as an authorisation boundary — which is
+        // the exact failure this whole section exists to prevent, committed by
+        // the release that added the guard.
+        warn.push(
+          '`--as` is taken at its word: nothing here authenticates anybody. So the refusal that stops a ' +
+            'proposer approving their own plan catches one identity running both halves — an agent and its ' +
+            'operator sharing $USER, which is what a single terminal gives you — and does not catch a person ' +
+            'who types a different name. Actor separation is a record, not a boundary. The boundary is ' +
+            'applyConnection: a database account the proposing side has no password for.',
+        );
+
         for (const p of proved) out(`  + ${p}`);
         for (const w of warn) {
           out('');
@@ -536,11 +567,14 @@ async function run(args: Args): Promise<number> {
         }
         out(planCard(rec));
         out('');
+        // Before the prompt, not after it: `approve` enforces this too, but asking
+        // first would offer an approval that cannot happen.
+        assertNotSelfApproval(rec, actor, { allowSelfApproval: args.allowSelfApprove });
         if (!(await confirm(`Approve this as ${actor}?`, args))) {
           out('Not approved. Nothing has changed.');
           return 1;
         }
-        await s.applier.approve(id, actor);
+        await s.applier.approve(id, actor, { allowSelfApproval: args.allowSelfApprove });
         out(`Approved. Apply it with:  llm-safe-sql apply ${id} --as ${actor}`);
         return 0;
       });
