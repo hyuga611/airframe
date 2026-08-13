@@ -31,7 +31,7 @@ well-behaved.
 | A dry run leaves nothing behind | The rollback is verified by re-reading the rows; a connection whose state becomes unknown is retired, never returned to a pool |
 | A plan cannot be applied twice | A conditional status transition that must report exactly one row, committed on a connection separate from the apply |
 | A plan cannot be edited between approval and apply | SHA-256 over the statement and every measured value, checked at approval and again at apply; the statement is re-parsed and re-checked against the policy in force at apply time |
-| Secrets stay unread | Denied by *reference*, not by output column name — aliasing, wrapping in a function and using it only in `WHERE` are all caught |
+| Secrets stay unread | Two checks, because either alone has a blind side. By *reference*, which catches aliasing it, wrapping it in a function and using it only in `WHERE`. By the columns the result came back with, which catches never naming it at all — `SELECT *` returned a denied column until 0.7.0 |
 | The audit trail cannot be erased by the caller | The plan and audit tables are refused unconditionally, including when the operator allowlists them |
 | An unrecorded change is never made | The "attempting" record is committed before the transaction opens; if it cannot be written, nothing is applied |
 
@@ -47,6 +47,11 @@ well-behaved.
   `denyIdentifiers` for credential columns — then revoke those columns at the
   database level too. A string check in application code should not be the last
   line of defence.
+- **A view that renames a denied column.** Allowlist `CREATE VIEW v AS SELECT
+  password_hash AS pw FROM users` and `SELECT pw FROM v` reads it: the denied
+  name is neither in the statement nor in the result, so neither check can see
+  it. Every name-based guard ends here, which is why step 2 of the checklist
+  below is not optional. Allowlist tables rather than views.
 - **Denial of service.** Limits bound a statement and a lock, not a determined
   caller issuing many of them.
 - **Anything outside `UPDATE` and `DELETE`.** Everything else is refused rather

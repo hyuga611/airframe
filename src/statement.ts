@@ -114,6 +114,41 @@ export function tableRefs(tokens: readonly Token[]): string[] {
   return out.filter((n) => !defined.has(lower(n)));
 }
 
+/** Words after which a `*` is selecting columns rather than multiplying numbers. */
+const STAR_LEAD = new Set(['select', 'distinct', 'distinctrow', 'all']);
+
+/**
+ * Whether the statement projects a `*` — a wildcard that hands back whichever
+ * columns the table happens to have.
+ *
+ * This exists because `denyIdentifiers` matches identifier *references*, and a
+ * wildcard names nothing. `SELECT * FROM users` therefore returned a column the
+ * operator had marked as never-readable, while `SELECT password_hash FROM users`
+ * was refused — the simplest spelling of the query walked past the guard that the
+ * clever one hit.
+ *
+ * `COUNT(*)` is not projection: the `*` sits behind `(` and no column comes back.
+ * Nor is arithmetic, where the `*` follows a value. Both are excluded by looking
+ * at the token before it rather than by trying to parse the select list.
+ *
+ * A spelling this misses is a wildcard that gets fetched. It is not a wildcard
+ * that gets *returned* — {@link Engine.read} checks the column names that came
+ * back as well, and that check needs no parser to be right. This one is here so
+ * that in the ordinary case the value never leaves the database at all.
+ */
+export function hasProjectionStar(tokens: readonly Token[]): boolean {
+  const toks = significant(tokens);
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    if (t?.kind !== 'punct' || t.value !== '*') continue;
+    const prev = toks[i - 1];
+    if (prev === undefined) continue;
+    if (prev.kind === 'punct' && (prev.value === ',' || prev.value === '.')) return true;
+    if (prev.kind === 'ident' && STAR_LEAD.has(lower(prev.value))) return true;
+  }
+  return false;
+}
+
 /** Names introduced by `WITH name AS (…)`, including the `, name AS (…)` chain. */
 function cteNames(toks: readonly Token[]): ReadonlySet<string> {
   const names = new Set<string>();

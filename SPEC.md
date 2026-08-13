@@ -105,10 +105,12 @@ measurement won and the test records what was observed, on which version.
 | ID | Rule | Why |
 |---|---|---|
 | R1 | The allowlist applies to reads as well as writes | A credential you can read is a credential you have leaked |
-| R2 | Deny secrets by **reference**, not by output column name | Masking a result set by column name is defeated by `SELECT secret AS x`, and only ever worked for `SELECT *`. To read a column you must name it, so matching the reference cannot be aliased around |
+| R2 | Deny secrets by **reference** | Masking a result set by column name is defeated by `SELECT secret AS x`. Matching what the statement names survives an alias, and an alias is the spelling somebody reaching for the column would use |
+| R2a | …**and also** by the column names the result actually came back with | R2 alone is blind in the other direction, because a wildcard names nothing. See R6 |
 | R3 | Recommend a database role with the secret columns revoked | A string check in application code should not be the last line of defence |
 | R4 | Request `limit + 1` rows so truncation is detectable, by **wrapping** the statement rather than appending to it | Fetching exactly the limit makes "was there more?" unanswerable, and the caller is told it saw everything. Appending would also collide with a `LIMIT` the statement already had |
 | R5 | Accept `SELECT` and `WITH` only | `SHOW TABLES` and its relatives name no table, so the allowlist has nothing to bite on and they would report the shape of the whole schema from a tool whose premise is default-deny |
+| R6 | A `SELECT *` over a table holding a denied column is refused, **before** it runs where the wildcard can be seen in the statement and **after** it runs from the column names that came back | Until 0.7.0 this was the hole R2 left. `SELECT password_hash FROM users` was refused; `SELECT * FROM users` returned the hash. The guard held against the deliberate spelling and gave way to the one an assistant writes first, which is the wrong way round. The check on the result set is the load-bearing one — it cannot be out-spelled — and the check on the statement is what stops the value ever leaving the database |
 
 > **Threat model.** The caller is a language model, and language models read
 > untrusted content — customer records, inbound email, scraped pages. Assume
@@ -167,6 +169,12 @@ Consequences worth stating plainly:
   one place a name is compared at all, and it is compared against another name
   from the same untrusted source. Identity that means something has to come from
   below this library — a database account the proposing side has no password for.
+- **A view that renames a denied column.** `CREATE VIEW v AS SELECT password_hash
+  AS pw FROM users`, allowlisted, then `SELECT pw FROM v`: the denied name is not
+  in the statement and not in the result, so neither half of R6 can see it. This
+  is not a gap that a longer list closes — every name-based guard ends here. R3 is
+  the answer, and it is why R3 is in the list: revoke the column on the read role.
+  Allowlisting a view is the operator handing over whatever the view exposes.
 - **Restricting who may `cancel`.** Deliberate, not an oversight. Cancelling only
   ever prevents an apply, the MCP surface does not expose it, and everyone who can
   reach it can already write to the plan table directly. A name check there would

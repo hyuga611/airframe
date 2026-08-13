@@ -4,6 +4,83 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-08-13
+
+The second hole found the same way as the first: by installing the published
+package as a stranger and typing the most obvious thing, rather than by reading
+the code again.
+
+### Security
+
+**`denyIdentifiers` did not apply to `SELECT *`.** Naming a denied column was
+refused. Never naming it was not:
+
+```
+$ llm-safe-sql read "SELECT password_hash FROM users"
+Refused (DENIED_IDENTIFIER): `password_hash` cannot be used here…
+    Naming it under an alias or inside a function does not change that.
+
+$ llm-safe-sql read "SELECT * FROM users"
+[ { "id": "1", "email": "a@example.com", "password_hash": "$2b$…" } ]
+```
+
+The guard held against the deliberate spelling and gave way to the one an
+assistant writes first. Every wildcard form was affected — `SELECT *`,
+`SELECT u.*`, `SELECT users.*`, `SELECT *, id`, `SELECT DISTINCT *`, and a
+wildcard inside a `WITH`.
+
+The cause is in the design note that has sat in `policy.ts` since 0.1.0: matching
+output column names "only ever worked for `SELECT *`", so matching identifier
+*references* was chosen instead. Both halves of that sentence are true. What was
+wrong was reading it as a choice — `SELECT *` is precisely the case the reference
+check cannot see, so the two are complements and the library shipped one of them.
+The README stated the missing half as a guarantee: *"To read a column you must
+name it, so matching the reference cannot be aliased around."* You do not have to
+name it.
+
+Reads now refuse in both directions (SPEC R6):
+
+- **before the statement runs**, when a wildcard is visible in it and a table it
+  reads has a denied column — so the value never leaves the database
+- **after it runs**, from the column names the result actually came back with —
+  which needs no parser to be right, and is the half that carries the guarantee
+
+`COUNT(*)`, `price * qty` and `SELECT id, email` are unaffected, and a wildcard
+over a table with no denied column still runs. There is a test for each, because
+a guard that fires on the innocent case gets deleted from the config, and then it
+is not guarding anything.
+
+**What to check in your own data.** This library records plans and approvals; it
+has never recorded reads. So there is nothing in `llm_safe_sql_audit` to search,
+and the honest answer is that the places to look are outside it: your database's
+own query log or `pg_stat_statements`, and the agent transcripts. Look for a
+`SELECT *` against any table named in `denyIdentifiers`. If your read connection
+is a role with the column revoked — R3, and the reason R3 is in the spec — the
+database refused it regardless of what this library did, and you have nothing to
+find.
+
+### Changed
+
+- **Breaking, and intended:** a `SELECT *` over a table holding a denied column
+  now refuses where it previously returned rows. If a caller depended on that,
+  it was depending on the leak. Name the columns.
+- `SPEC.md` R2 no longer claims the reference check covers wildcards; R2a and R6
+  say what actually happens.
+
+### Not changed, deliberately
+
+- **A view that renames a denied column still passes.** `CREATE VIEW v AS SELECT
+  password_hash AS pw FROM users`, allowlisted, then `SELECT pw FROM v`: the
+  denied name is in neither the statement nor the result, so neither half of R6
+  can see it. No longer list closes this — it is where every name-based guard
+  ends. It is now in **Out of scope** with that reasoning, and pinned by a test
+  that asserts the unwanted behaviour so nobody writes "impossible" about it
+  later. Allowlisting a view is handing over what the view exposes; R3 is the
+  answer.
+- The confirmation card was checked and does not leak: it shows only the columns
+  a write actually changes, and the plan record stores only those. A denied
+  column that a write never touches does not reach the card or the plan table.
+
 ## [0.6.0] — 2026-08-13
 
 One hole, found by attacking the published package instead of re-reading it.
@@ -1688,6 +1765,7 @@ produced a plan describing something other than what would happen:
 - No runtime dependencies. Drivers are optional peers; the MCP server implements
   the wire protocol directly.
 
+[0.7.0]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.7.0
 [0.6.0]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.6.0
 [0.5.2]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.5.2
 [0.5.1]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.5.1

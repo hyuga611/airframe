@@ -90,6 +90,27 @@ export class Policy {
     return this.impact.get(lower(table));
   }
 
+  /** Whether any identifier is denied at all, so callers can skip the work when not. */
+  get hasDeniedIdentifiers(): boolean {
+    return this.denyIdent.size > 0;
+  }
+
+  /**
+   * The first denied name in a list of columns, with the reason.
+   *
+   * {@link check} matches what the statement *names*, which is the direction that
+   * survives an alias. It is blind in the other direction: a wildcard names
+   * nothing and still returns everything. This answers that second question — put
+   * a table's columns in, or the columns a result set actually came back with.
+   */
+  deniedAmong(columns: Iterable<string>): { readonly name: string; readonly why: string } | undefined {
+    for (const c of columns) {
+      const why = this.denyIdent.get(lower(c));
+      if (why !== undefined) return { name: c, why };
+    }
+    return undefined;
+  }
+
   /** Throws {@link PolicyViolation} if this statement may not proceed. */
   check(stmt: NormalizeResult): void {
     const tokens = stmt.tokens;

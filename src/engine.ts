@@ -1,5 +1,5 @@
 import { normalize, Rejected } from './normalize.js';
-import { tableRefs, setColumns, setColumnsAreCertain, whereClause, lower } from './statement.js';
+import { tableRefs, setColumns, setColumnsAreCertain, whereClause, hasProjectionStar, lower } from './statement.js';
 import { PolicyViolation, type Policy } from './policy.js';
 import type { Adapter, Row, TableShape } from './adapter.js';
 // Every comparison in this file is between two values read the same way, through
@@ -612,6 +612,24 @@ export class Engine {
       );
     }
 
+    // R6 — a wildcard names no column, so `denyIdentifiers` could not see it.
+    // `SELECT password_hash FROM users` was refused and `SELECT * FROM users`
+    // printed the hash, which is the wrong way round: the guard held against the
+    // deliberate spelling and gave way to the obvious one. Asking the table what
+    // columns it has is the only way to know what a `*` is about to hand over.
+    if (this.policy.hasDeniedIdentifiers && hasProjectionStar(stmt.tokens)) {
+      for (const table of tableRefs(stmt.tokens)) {
+        const shape = await this.readAdapter.introspect(table);
+        const hit = this.policy.deniedAmong(shape.columns.map((c) => c.name));
+        if (hit === undefined) continue;
+        throw new PlanRefused(
+          'DENIED_IDENTIFIER',
+          `\`${table}\` has a column \`${hit.name}\`, and it is ${hit.why} A \`*\` would return it without ` +
+            'ever naming it. Name the columns you want instead.',
+        );
+      }
+    }
+
     const limit = Math.max(1, Math.floor(opts.limit ?? this.limits.maxReadRows));
     await this.readAdapter.applyLimits({ statementMs: this.limits.statementMs, lockMs: this.limits.lockMs });
 
@@ -624,10 +642,31 @@ export class Engine {
     );
     const truncated = rows.length > limit;
     const shown = truncated ? rows.slice(0, limit) : rows;
+    const columns = Object.keys(shown[0] ?? {});
+
+    // R6, again, and this is the half that is load-bearing. The check above reads
+    // the statement, so it is only ever as good as the reading; this one reads the
+    // result and cannot be out-spelled. A wildcard behind a spelling the token
+    // walk does not recognise still arrives here, and still does not get returned.
+    //
+    // It runs after the fetch, so the value did reach this process before being
+    // refused. That is worth less than not fetching it, which is exactly why the
+    // check above exists — but it is what makes the guarantee unconditional.
+    if (this.policy.hasDeniedIdentifiers) {
+      const hit = this.policy.deniedAmong(columns);
+      if (hit !== undefined) {
+        throw new PlanRefused(
+          'DENIED_IDENTIFIER',
+          `This read returned a column \`${hit.name}\`, and it is ${hit.why} It was not named in the ` +
+            'statement, so a wildcard brought it back. Name the columns you want instead.',
+        );
+      }
+    }
+
     return {
       sql: stmt.sql,
       rows: shown,
-      columns: Object.keys(shown[0] ?? {}),
+      columns,
       truncated,
     };
   }

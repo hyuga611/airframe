@@ -258,7 +258,7 @@ confirmation card that disagrees with the database.
 | A statement that matched nothing, or changed nothing | Nothing to approve |
 | More rows than the ceiling | Every row is displayed individually; the ceiling is what a person can actually read |
 | An approval by the actor who proposed the plan | A card read by its own author confirms nothing, and recording it as an approval puts a review in the audit trail that never happened. `--allow-self-approve` if one person really holds both roles |
-| Reading a column you marked secret — under any alias | To read a column you must name it, so matching the *reference* cannot be aliased around |
+| Reading a column you marked secret — named, aliased, or swept up by a `SELECT *` | Naming it is matched on the *reference*, so an alias does not help. Never naming it is matched on the columns that came back, so a wildcard does not help either. Both halves are needed: until 0.7.0 only the first existed, and `SELECT *` returned the column |
 | The library's own plan and audit tables, always | A model that can write the plan table can approve its own writes |
 
 At apply time it also refuses if the rows have moved on: a different set now
