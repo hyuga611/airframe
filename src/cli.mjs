@@ -24,7 +24,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { verify, expect as X } from './index.mjs';
 
-const VERSION = '0.1.0';
+const VERSION = '0.3.0';
 
 function parse(argv) {
   const out = { _: [], flags: {} };
@@ -90,11 +90,11 @@ async function cmdVerify(p) {
     const { error, ...rest } = v;
     process.stdout.write(JSON.stringify(error ? { ...rest, error: String(error.message || error) } : rest) + '\n');
   } else if (v.ok) {
-    process.stdout.write(`✓ verified [${label}] — re-fetched: ${v.evidence}\n`);
+    process.stdout.write(`✓ verified [${label}] — the probe returned: ${v.evidence}\n`);
   } else if (v.reason === 'probe-error') {
     process.stderr.write(`✗ probe failed — ${v.evidence}\n  Real state could not be read, so this cannot be reported as done.\n`);
   } else {
-    process.stderr.write(`✗ ${v.reason} [${label}]${v.detail ? ' — ' + v.detail : ''}\n  re-fetched: ${v.evidence}\n`);
+    process.stderr.write(`✗ ${v.reason} [${label}]${v.detail ? ' — ' + v.detail : ''}\n  the probe returned: ${v.evidence}\n`);
   }
 
   if (v.ok) process.exit(0);
@@ -125,7 +125,7 @@ async function cmdGuard(p) {
   }
   process.stderr.write(`✗ genchi guard: ${failures.length}/${lines.length} contracts unmet — blocking completion\n`);
   for (const f of failures) {
-    process.stderr.write(`  - "${f.action}" — ${f.reason}${f.detail ? ': ' + f.detail : ''}\n    re-fetched: ${f.evidence ?? ''}\n`);
+    process.stderr.write(`  - "${f.action}" — ${f.reason}${f.detail ? ': ' + f.detail : ''}\n    the probe returned: ${f.evidence ?? ''}\n`);
   }
   process.exit(2); // Claude Code hook: exit 2 で stop をブロック
 }
@@ -141,7 +141,13 @@ const HELP = `genchi ${VERSION} — completion verification gate
     One contract per line: {action, probe, expect:{type,value}}. Re-fetches every
     one of them; exits 2 if any is unmet.
 
-  Nothing gets to report "done" except a re-fetched real result.
+  What this buys: an empty result, a probe error and a mismatch are all refused,
+  and the evidence printed is what the probe returned — never something invented.
+
+  What it does not buy: whether the probe read the world at all. A probe is a
+  command, and nothing here can make one do I/O — \`--probe "echo 45" --count 45\`
+  passes. The separation is yours to keep; point it at the thing that reads the
+  actual state.
 `;
 
 async function main() {

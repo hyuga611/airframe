@@ -56,7 +56,7 @@ export class GenchiIncomplete extends Error {
     const d = verdict.detail ? `: ${verdict.detail}` : '';
     super(
       `genchi: "${verdict.action}" cannot be reported as done — ${verdict.reason}${d}\n` +
-      `  re-fetched real state: ${verdict.evidence}`
+      `  the probe returned: ${verdict.evidence}`
     );
     this.name = 'GenchiIncomplete';
     /** @type {Verdict} */
@@ -135,23 +135,23 @@ export async function gate(contract) {
  */
 export const expect = {
   /** 実状態が何か存在する（非empty） */
-  nonEmpty: () => (s) => (!isEmpty(s) ? true : { ok: false, detail: `re-fetched real state was empty: ${valueText(s)}` }),
+  nonEmpty: () => (s) => (!isEmpty(s) ? true : { ok: false, detail: `the probe returned nothing: ${valueText(s)}` }),
   /** 数として n と一致（例：投入件数） */
   count: (n) => (s) => {
     const got = Number(s);
-    return got === n ? true : { ok: false, detail: `expected a count of ${n}, re-fetched ${valueText(s)}` };
+    return got === n ? true : { ok: false, detail: `expected a count of ${n}, the probe returned ${valueText(s)}` };
   },
   /** 数として n 以上 */
   atLeast: (n) => (s) => {
     const got = Number(s);
-    return got >= n ? true : { ok: false, detail: `expected at least ${n}, re-fetched ${valueText(s)}` };
+    return got >= n ? true : { ok: false, detail: `expected at least ${n}, the probe returned ${valueText(s)}` };
   },
   /** 文字列として sub を含む（例：再取得したURLが 200 を返す本文に含む語） */
   contains: (sub) => (s) => (String(s).includes(sub) ? true : { ok: false, detail: `does not contain "${sub}": ${valueText(s)}` }),
   /** 値が一致（文字列は trim 比較） */
   equals: (v) => (s) => {
     const eq = (typeof s === 'string') ? s.trim() === String(v).trim() : s === v;
-    return eq ? true : { ok: false, detail: `expected ${valueText(v)}, re-fetched ${valueText(s)}` };
+    return eq ? true : { ok: false, detail: `expected ${valueText(v)}, the probe returned ${valueText(s)}` };
   },
   /** 正規表現に一致 */
   matches: (re) => (s) => (re.test(String(s)) ? true : { ok: false, detail: `does not match ${re}: ${valueText(s)}` }),

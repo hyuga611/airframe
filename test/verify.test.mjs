@@ -137,3 +137,40 @@ test('describeState customizes the evidence string', async () => {
   });
   assert.equal(v.evidence, '3 rows');
 });
+
+// ---- 買えないものを固定する ----
+//
+// README は 0.2.0 まで「行為の戻り値を証拠として渡す API は無いので『たぶん
+// やった』は書けない」「構造的に不可能」と書いていた。書けた。probe は関数で
+// あって、JavaScript には関数に I/O を強制する手段がない。
+//
+// ここに置くのは「直すべき挙動」ではなく「直せない限界」である。テストが無い
+// と、次に読んだ人がまた不可能だと書く。実際そうなった。
+
+test('既知の限界: 何も読まない probe は通る（構造的には防げない）', async () => {
+  const v = await verify({ action: 'insert 45 rows', probe: () => 45, expect: expect.count(45) });
+  assert.equal(v.ok, true, 'これが false になったなら、防ぐ手段が見つかったということ。README を直すこと');
+});
+
+test('既知の限界: 行為の戻り値そのものを probe にしても通る', async () => {
+  // 「実際には何も起きていないが、戻り値だけはそれらしい」という一番危ない形。
+  const result = { inserted: 45 };
+  const v = await verify({ action: 'insert 45 rows', probe: () => result.inserted, expect: expect.count(45) });
+  assert.equal(v.ok, true);
+});
+
+test('買えているもの: 空・probe例外・不一致は拒否される', async () => {
+  assert.equal((await verify({ action: 'a', probe: () => [], expect: expect.count(45) })).reason, 'empty');
+  assert.equal((await verify({ action: 'a', probe: () => { throw new Error('x'); }, expect: expect.count(45) })).reason, 'probe-error');
+  assert.equal((await verify({ action: 'a', probe: () => 3, expect: expect.count(45) })).reason, 'mismatch');
+});
+
+test('evidence は probe が返したものであって、再取得したとは名乗らない', async () => {
+  // 0.2.0 の CLI は何も読まない probe に対して "re-fetched: 45" と断言していた。
+  // genchi が知っているのは probe が何を返したかだけである。
+  const v = await verify({ action: 'a', probe: () => 45, expect: expect.count(45) });
+  assert.equal(v.evidence, '45');
+  const e = await verify({ action: 'a', probe: () => 3, expect: expect.count(45) });
+  assert.match(e.detail, /the probe returned/);
+  assert.doesNotMatch(e.detail, /re-fetched/);
+});

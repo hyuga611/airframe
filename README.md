@@ -24,7 +24,9 @@ When you hand real work to an agent, the scariest hallucination isn't a wrong se
 
 The cause is that *acting* and *checking* are the same step. The agent reads a tool's return value, generates the next sentence, and **claims completion without ever looking at the world it just changed.** Having never looked, it can't notice the failure either.
 
-`genchi` (現地現物 — *go and see the actual thing*) makes that structurally impossible. **An operation with side effects can only be reported as complete after a separate probe re-fetches real state and confirms it.**
+`genchi` (現地現物 — *go and see the actual thing*) separates the two. **An operation with side effects is not reported as complete until a separate probe has run and what it returned has been checked against an expectation.** Empty, error and mismatch are refusals, and the evidence shown is what the probe returned — never something the model said about it.
+
+What that does *not* do is guarantee the probe looked at anything. See [What this does not buy](#what-this-does-not-buy).
 
 ## This is not a linter — it works at runtime
 
@@ -65,9 +67,30 @@ if (!v.ok) {
 
 ### The design constraint that matters
 
-`verify` / `gate` **only accept a probe — a function that re-reads real state.** There is no API for passing the action's own return value as evidence, which means "I think I did it" is unwritable. Omit the probe and it throws `TypeError`.
+`verify` / `gate` **accept only a probe** — the evidence has to come from calling something, not from a value you hand in alongside the claim. Omit the probe and it throws `TypeError`. That puts the re-read in its own expression, written on purpose, at the moment the completion is asserted.
 
-Empty results, errors, and timeouts are never swallowed. If `probe` throws, it is reported **as-is** with `reason: 'probe-error'` — never imagined into a success. A re-fetched `count` of 0 (nothing landed) is incomplete too.
+Empty results, errors, and timeouts are never swallowed. If `probe` throws, it is reported **as-is** with `reason: 'probe-error'` — never imagined into a success. A returned `count` of 0 (nothing landed) is incomplete too.
+
+### What this does not buy
+
+**Whether the probe read anything.** A probe is a function, and there is no way in JavaScript to make a function do I/O. This passes:
+
+```js
+const result = await doTheInsert();                 // suppose nothing landed
+await verify({ action: 'insert 45 rows',
+               probe: () => result.inserted,        // the action's own return value
+               expect: expect.count(45) });         // → ok: true
+```
+
+Until 0.3.0 this README said that was "structurally impossible" and "unwritable". It is one line, and the CLI printed `re-fetched: 45` about a `--probe "echo 45"` that re-fetched nothing — this library asserting, in its own output, a thing it had not checked. That is the failure it exists to prevent, so the wording is now what it can actually stand behind: *the probe returned*.
+
+What remains true is worth having, and it is not nothing:
+
+- the re-read is a separate expression you have to write, rather than a field you fill in
+- empty, error and mismatch are refusals, not silently-passed successes
+- the evidence is the probe's own output, never a summary of it
+
+The rest is yours to keep: **point the probe at the thing that reads the real state.** `--probe "echo 45"` will pass, and it will have been your hand that wrote it.
 
 ### Built-in expectations
 
@@ -135,8 +158,8 @@ genchi is the version of that contract enforced **by machinery instead of good i
 ## Design principles
 
 - Zero dependencies, framework-agnostic, and no LLM or API key at runtime
-- Never fabricate evidence — `evidence` always mirrors the state actually re-fetched
-- Require a probe, making "claim done from the action's return value" structurally impossible
+- Never fabricate evidence — `evidence` is always what the probe returned, verbatim
+- Require a probe, so the re-read is an expression somebody wrote on purpose rather than a field filled in beside the claim — and say plainly that this is a separation to keep, not one that can be enforced
 
 ## Related tools
 
