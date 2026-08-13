@@ -386,6 +386,51 @@ function cmdLedger(cmd, args) {
  * The boundary is structural, not guessed. A new prompt_id means the user spoke in
  * between; repeated writes under the same one are the agent still working.
  */
+/**
+ * PostToolUse, on every tool: bring the stored hash back in line with disk.
+ *
+ * `hookPre` decides "a person did this" from the file no longer matching what was
+ * last written, plus a turn boundary. The turn boundary rules out the agent still
+ * working inside one prompt. It does *not* rule out the agent, in an earlier turn,
+ * editing the file by some route that is not Write or Edit — `sed -i`, a heredoc, a
+ * formatter, a codemod, a subagent. All of those land outside `EDIT_TOOLS`, the
+ * record goes stale, and the next Write is told the user reached in by hand.
+ *
+ * That is not a cosmetic misattribution. `hookPre` files the diff as a correction,
+ * corrections become rules, and rules are injected into every later session — so
+ * the agent's own shell command comes back as a preference the user never expressed.
+ *
+ * Nothing in a hook payload says who wrote a file. What *is* knowable is that a tool
+ * just ran, so any change to a tracked file belongs to the agent. Recording it here
+ * leaves hand edits as what they actually are: changes that appear when no tool ran.
+ *
+ * Only files already tracked are hashed, and only those touched this session, so this
+ * is a few `stat`s on the hot path rather than a walk of the store.
+ */
+export function hookSync(payload) {
+  if (EDIT_TOOLS.test(payload?.tool_name || '')) return null; // hookPost already owns these
+  const session = payload?.session_id;
+  if (!session) return null;
+  for (const rec of sessionRecords(session)) {
+    const cur = readFileSafe(rec.file);
+    if (!cur || cur.hash === rec.hash) continue;
+    const keepBody = !cur.tooBig && mayStoreBody(rec.file);
+    saveRecord(rec.file, {
+      ...rec,
+      hash: cur.hash,
+      text: keepBody ? cur.text : null,
+      size: cur.size,
+      writtenAt: nowIso(),
+      promptId: payload.prompt_id || null,
+      // Kept so `narai doctor` can show how often this path is the one doing the
+      // writing. A store full of these means the agent is not using Write at all.
+      tool: payload.tool_name || null,
+      viaSync: true,
+    });
+  }
+  return null;
+}
+
 export function hookPost(payload) {
   if (!EDIT_TOOLS.test(payload?.tool_name || '')) return null;
   const file = filePathOf(payload);
@@ -533,8 +578,13 @@ export function hookPre(payload) {
   if (rec.promptId && payload.prompt_id && rec.promptId === payload.prompt_id) return null;
 
   const head = [
-    `narai: ${basename(rec.file)} was edited after you last wrote it (${rec.writtenAt}).`,
-    'Someone — most likely the user — changed it by hand.',
+    `narai: ${basename(rec.file)} is not what you last wrote (${rec.writtenAt}).`,
+    // The premise is stated with the conclusion so a reader can see when it fails.
+    // It fails if `hook sync` is not installed, and then this sentence is wrong —
+    // which is better than the sentence it replaced, which asserted the conclusion
+    // and hid the premise entirely.
+    'Nothing you did through a tool accounts for the difference, so it came from',
+    'outside this agent — most likely the user, by hand.',
     '',
   ];
 
@@ -708,6 +758,17 @@ export function listSignals() {
 /** Where the per-file records live. `narai prune` needs the filenames, not just the contents. */
 export function artifactsDir() {
   return ARTIFACTS();
+}
+
+/**
+ * The records written during one session, which is the set {@link hookSync} has to
+ * re-check after a tool runs. Scoped to the session on purpose: the store accumulates
+ * every file ever written on this machine, and hashing all of them after every Bash
+ * call would put a growing cost on the hot path for no gain — a file last written
+ * three weeks ago is not one this agent is about to be told a lie about.
+ */
+function sessionRecords(session) {
+  return listArtifacts().filter((r) => r && r.session === session && r.file);
 }
 
 /** The per-file records the hooks keep. Read by `narai doctor`; nothing else needs them. */
@@ -898,6 +959,7 @@ export function main(argv) {
     }
     try {
       if (sub === 'post') hookPost(payload);
+      else if (sub === 'sync') hookSync(payload);
       else if (sub === 'pre') emit('PreToolUse', hookPre(payload));
       else if (sub === 'denied') recordSignal('denial', payload);
       else if (sub === 'failed') recordSignal('failure', payload);
@@ -977,13 +1039,19 @@ export function main(argv) {
 
   Turning corrections into rules is the narai-learn skill's job — no API key involved.
 
-  Install as hooks, in your Claude Code settings.json. The first two are the product; the
+  Install as hooks, in your Claude Code settings.json. The first three are the product; the
   rest are what makes it learn rather than only warn:
 
     "PostToolUse":       [{ "matcher": "Write|Edit", "hooks": [
-      { "type": "command", "command": "npx @hyuga/narai hook post", "timeout": 10 }]}],
+      { "type": "command", "command": "npx @hyuga/narai hook post", "timeout": 10 }]},
+                          { "hooks": [
+      { "type": "command", "command": "npx @hyuga/narai hook sync", "timeout": 10 }]}],
     "PreToolUse":        [{ "matcher": "Write|Edit", "hooks": [
       { "type": "command", "command": "npx @hyuga/narai hook pre",  "timeout": 10 }]}],
+
+  The unmatched "hook sync" is not optional. Without it, an agent that edits a file
+  through the shell instead of Write is reported to itself as the user editing by
+  hand — and filed as a correction you never made.
     "SessionStart":      [{ "hooks": [
       { "type": "command", "command": "npx @hyuga/narai hook session", "timeout": 10 }]}],
     "SubagentStart":     [{ "hooks": [

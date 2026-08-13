@@ -9,7 +9,7 @@ const HOME = mkdtempSync(join(tmpdir(), 'narai-home-'));
 process.env.NARAI_HOME = HOME;
 
 const {
-  hookPost, hookPre, lineDiff, formatDiff, mayStoreBody, listCorrections, filePathOf,
+  hookPost, hookPre, hookSync, lineDiff, formatDiff, mayStoreBody, listCorrections, filePathOf,
   recordSignal, summarizeToolInput, listSignals, hookSubagent,
   hookSession, distillNudge, undistilled, errorTextOf, listArtifacts, looksSecret,
   namedForCredential, storableLines, reasonOf, STORE,
@@ -173,7 +173,7 @@ test('hookPre reports the diff once a human has edited the file', () => {
     writeFileSync(f, '## Monthly figures\nsomething shared\n');
     const msg = hookPre(payload(f));
     assert.ok(msg, 'expected narai to notice the hand edit');
-    assert.match(msg, /was edited after you last wrote it/);
+    assert.match(msg, /is not what you last wrote/);
     assert.match(msg, /- ## Great news everyone/);
     assert.match(msg, /\+ ## Monthly figures/);
     assert.match(msg, /do not quietly revert it/);
@@ -207,7 +207,89 @@ test('the same change across a turn boundary is a hand edit', () => {
     writeFileSync(f, 'the version the human replaced it with\n');
     const msg = hookPre({ ...payload(f), prompt_id: 'P2' });
     assert.ok(msg, 'a turn passed, so someone could have edited it');
-    assert.match(msg, /was edited after you last wrote it/);
+    assert.match(msg, /is not what you last wrote/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * The hole `hookPre` had until 0.4.0, found by driving the published package rather
+ * than by reading it.
+ *
+ * The turn boundary rules out the agent still working inside one prompt. It does not
+ * rule out the agent editing the file in an *earlier* turn by a route that is not
+ * Write or Edit — `sed -i`, a heredoc, a formatter, a subagent. That crosses a
+ * boundary, so it was reported to the agent as the user reaching in by hand, and then
+ * filed as a correction. Corrections become rules and rules are injected into every
+ * later session, so the agent's own shell command came back as a preference the user
+ * had never expressed.
+ *
+ * `hookSync` is the fix: after any other tool runs, a change to a tracked file is the
+ * agent's, because a tool of the agent's just ran.
+ */
+test('the agent editing through the shell is not reported back as a hand edit', () => {
+  const dir = work();
+  const before = listCorrections().length;
+  try {
+    const f = join(dir, 'viashell.md');
+    writeFileSync(f, 'line one\nline two\n');
+    hookPost({ ...payload(f), prompt_id: 'P1' });
+
+    // turn 2 — the agent rewrites it with a shell command. PostToolUse fires with a
+    // tool that is not Write/Edit, which is what `hook sync` is matched on.
+    writeFileSync(f, 'line one\nline two, rewritten by its own sed\n');
+    hookSync({ tool_name: 'Bash', session_id: 's', prompt_id: 'P2', tool_input: { command: 'sed -i ...' } });
+
+    // turn 3 — it writes the file again.
+    assert.equal(
+      hookPre({ ...payload(f), prompt_id: 'P3' }), null,
+      'a tool of the agent\'s accounts for the change, so no human did it',
+    );
+    assert.equal(listCorrections().length, before, 'and nothing was filed as a correction');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('sync does not swallow a real hand edit — no tool ran between the two writes', () => {
+  const dir = work();
+  try {
+    const f = join(dir, 'realedit.md');
+    writeFileSync(f, 'line one\nline two\n');
+    hookPost({ ...payload(f), prompt_id: 'P1' });
+
+    // A tool runs, but it changes nothing on disk. The baseline must not move.
+    hookSync({ tool_name: 'Bash', session_id: 's', prompt_id: 'P2', tool_input: { command: 'ls' } });
+
+    writeFileSync(f, 'line one\nline two, as the human wants it\n');
+    const msg = hookPre({ ...payload(f), prompt_id: 'P3' });
+    assert.ok(msg, 'nothing the agent did explains this one');
+    assert.match(msg, /most likely the user/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('sync leaves Write and Edit alone — hookPost already owns them', () => {
+  assert.equal(hookSync({ tool_name: 'Write', session_id: 's', tool_input: { file_path: '/x/a.md' } }), null);
+  assert.equal(hookSync({ tool_name: 'Edit', session_id: 's', tool_input: { file_path: '/x/a.md' } }), null);
+  assert.equal(hookSync({ tool_name: 'Bash', tool_input: {} }), null, 'and needs a session to scope to');
+});
+
+test('sync only touches this session, not every file ever recorded', () => {
+  const dir = work();
+  try {
+    const f = join(dir, 'othersession.md');
+    writeFileSync(f, 'written in an old session\n');
+    hookPost({ tool_name: 'Write', session_id: 'OLD', prompt_id: 'P1', tool_input: { file_path: f } });
+    writeFileSync(f, 'changed by the user since\n');
+
+    hookSync({ tool_name: 'Bash', session_id: 'NEW', prompt_id: 'P2', tool_input: { command: 'ls' } });
+
+    const rec = listArtifacts().find((r) => r.file === resolve(f));
+    assert.equal(rec.session, 'OLD');
+    assert.ok(!rec.viaSync, 'a different session must not adopt this change as its own');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -950,7 +1032,7 @@ test('prune 済みのファイルを書き直しても、警告は出せる（�
     writeFileSync(f, 'someone changed it by hand\n');
     const msg = hookPre(payload(f));
     assert.ok(msg, '本文が無くても、変わったことは検出できる');
-    assert.match(msg, /was edited after you last wrote it/);
+    assert.match(msg, /is not what you last wrote/);
     assert.match(msg, /Read the file as it stands now/);
     // 理由を取り違えると、自分のリポジトリについて誤った警告を出すことになる
     assert.match(msg, /narai prune/, 'prune が落としたと正しく言う');

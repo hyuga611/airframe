@@ -4,8 +4,9 @@
 writes that file, it writes its version again and your fix is gone. `narai` closes that loop.
 
 ```
-narai: report.md was edited after you last wrote it (2026-07-31T03:06:27Z).
-Someone — most likely the user — changed it by hand.
+narai: report.md is not what you last wrote (2026-07-31T03:06:27Z).
+Nothing you did through a tool accounts for the difference, so it came from
+outside this agent — most likely the user, by hand.
 
 What you wrote → what is there now:
 - ## 🎉 Great news everyone
@@ -17,7 +18,15 @@ That edit was deliberate. Read it before writing, and do not quietly revert it.
 If you believe it should be undone, say why and ask first.
 ```
 
-That text is injected into the agent's context *before* it writes, so the revert never happens.
+That text reaches the agent *before* it writes, rather than after — which is the
+whole difference between a warning it can act on and a report of what it already did.
+
+**It does not stop the write.** narai returns context, not a permission decision; it
+never denies the tool call. Whether the revert happens is still up to the model, and
+sometimes it will revert anyway. What changes is that it can no longer do so *without
+knowing* — the diff and the instruction are in front of it at the moment it decides.
+Until 0.4.0 this paragraph said "so the revert never happens", which was a claim about
+a mechanism that does not exist.
 
 ## Corrections come in two shapes
 
@@ -27,8 +36,17 @@ catches both.
 
 | What you did | How it is detected |
 |---|---|
-| edited the file yourself | the file no longer matches what the agent last wrote |
+| edited the file yourself | the file no longer matches what the agent last wrote, **and no tool call of the agent's accounts for it** |
 | told the agent to change it | the agent rewrote its own output **across a turn boundary** |
+
+That second clause on the first row is load-bearing, and until 0.4.0 it was not
+there. An agent edits files by routes that are not `Write` — `sed -i`, a heredoc, a
+formatter, a codemod, a subagent — and every one of those left the record stale, so
+the next write was told *the user reached in by hand*. The diff was then filed as a
+correction, and corrections become rules: the agent's own shell command came back in
+a later session as a preference you never expressed. The `hook sync` entry in the
+install block below is what closes it, by re-reading tracked files after any tool
+runs. It is not optional.
 
 The second is the stronger signal: it comes with *your reason, in your own words*. The turn
 boundary is structural, not guessed — a rewrite under the same `prompt_id` is the agent still
@@ -50,7 +68,8 @@ Hooks only. No daemon, no watcher, no LLM in the hot path.
 | Hook | When | What it does |
 |---|---|---|
 | `PostToolUse` on `Write`/`Edit` | right after the agent writes | records hash and contents; notices a cross-turn rewrite of its own output |
-| `PreToolUse` on `Write`/`Edit` | right before it writes again | compares against disk. Different? You edited it. Show the diff. |
+| `PostToolUse` on **everything else** | after any other tool | re-reads the tracked files. A change here belongs to the agent, so it never gets reported back as yours |
+| `PreToolUse` on `Write`/`Edit` | right before it writes again | compares against disk. Different, and no tool of the agent's explains it? You edited it. Show the diff. |
 | `PermissionDenied` | a call was blocked | records what was refused (program name only, never arguments) |
 | `PostToolUseFailure` | a call failed | records the shape of the failure |
 | `SubagentStart` | a subagent spawns | hands it what has been learned, so it doesn't repeat what you already corrected |
@@ -74,14 +93,16 @@ The package is scoped; `narai` is only the bin name. Bare `npx narai` looks up a
 package that does not exist and 404s — npm refuses the unscoped name as too close
 to an existing one.
 
-Then add the hooks to your Claude Code `settings.json`. The first two are the product; the
+Then add the hooks to your Claude Code `settings.json`. The first three are the product; the
 rest are what makes it learn rather than only warn:
 
 ```json
 {
   "hooks": {
     "PostToolUse": [{ "matcher": "Write|Edit", "hooks": [
-      { "type": "command", "command": "npx @hyuga/narai hook post", "timeout": 10 }]}],
+      { "type": "command", "command": "npx @hyuga/narai hook post", "timeout": 10 }]},
+                    { "hooks": [
+      { "type": "command", "command": "npx @hyuga/narai hook sync", "timeout": 10 }]}],
     "PreToolUse":  [{ "matcher": "Write|Edit", "hooks": [
       { "type": "command", "command": "npx @hyuga/narai hook pre",  "timeout": 10 }]}],
     "SessionStart": [{ "hooks": [
