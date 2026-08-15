@@ -387,7 +387,30 @@ The identity that does mean something is `applyConnection`: a database account t
 proposing side has no password for. That is the same answer as everywhere else on
 this page — put the boundary below this code, where it survives our mistakes.
 
-There is a longer write-up of this idea, covering how the other tools in this space answer the same question: **[Which layer is actually stopping it?](https://github.com/hyuga611/llm-safe-sql/discussions/3)**
+### A guard can be dead without being wrong
+
+All of the above depends on the question underneath a guard being able to come
+back unanswered. `information_schema.TRIGGERS` is the case that taught it: MySQL
+filters that view by the TRIGGER privilege, so a credential without it gets `0`
+rows — the same well-formed answer as a table that genuinely has no triggers. Not
+an error. A zero.
+
+The general shape is worth more than the instance. A guard written to catch
+"could not tell" never runs if anything between the channel and the guard turns
+the missing answer into an ordinary value first. MySQL's privilege filter does it
+in the server. In shell, `printf '%.2f' ""` does it two lines above the
+`[ -z "$x" ]` that was supposed to catch it. The check still reads correctly on
+the page. It just cannot fail.
+
+That is why `CASCADES_UNKNOWN` and `AUTO_COLUMNS_UNKNOWN` are refusal reasons of
+their own rather than folded into "no triggers", and why `check` reports that it
+could not establish an answer in those words rather than staying quiet.
+
+The shape was named in [discussion #3](https://github.com/hyuga611/llm-safe-sql/discussions/3)
+by [@joeyycli](https://github.com/joeyycli), who ran the same test against a
+system of their own, confirmed both paths this side predicted, and found a third
+that the prediction had missed. That thread is also a longer write-up of the
+layer question above, covering how the other tools in this space answer it.
 
 ## Measured, not assumed
 
