@@ -42,6 +42,7 @@ export type RefusalCode =
   | 'NOT_TRANSACTIONAL'
   | 'CASCADE_SIDE_EFFECTS'
   | 'CASCADES_UNKNOWN'
+  | 'TRIGGER_SIDE_EFFECT'
   | 'UNREADABLE_COLUMN'
   | 'ADAPTER_UNUSABLE';
 
@@ -494,11 +495,42 @@ export class Engine {
         );
       }
 
+      // A trigger can write rows in this same table, and nothing else here sees it.
+      // The driver's affected-row count excludes work done by triggers, and the
+      // before/after images are taken over the pre-selected keys only, so a trigger
+      // that deletes some other row leaves no trace in either. Measured on SQLite:
+      //   AFTER DELETE ON orders -> DELETE FROM orders WHERE id = 2
+      //   DELETE FROM orders WHERE id = 1
+      //   -> a card reading "1 row would be deleted", listing id 1, after which
+      //      both 1 and 2 are gone and the apply still reports "1 row(s)".
+      // Counting the table on both sides of the statement catches it. Measured,
+      // not predicted — the same claim the rest of this file makes. The cost is
+      // paid only where the risk is: a table with no trigger runs neither query.
+      const watchSideEffects = shape.triggersVisible && shape.triggerCount > 0;
+      const netBefore = watchSideEffects ? await this.countAll(q, table) : 0;
+
       attempted = true;
       const res = await this.adapter.execute(stmt.sql);
       matched = res.rowsMatched;
       changedReported = res.rowsChanged;
       changedMeaningful = res.changedIsMeaningful;
+
+      if (watchSideEffects) {
+        const netAfter = await this.countAll(q, table);
+        const expected = op === 'DELETE' ? -before.length : 0;
+        const actual = netAfter - netBefore;
+        if (actual !== expected) {
+          const extra = Math.abs(actual - expected);
+          throw new PlanRefused(
+            'TRIGGER_SIDE_EFFECT',
+            `A trigger on \`${table}\` changed ${extra} more row(s) than this statement names. ` +
+              `The dry run counted ${Math.abs(actual)} row(s) added or removed where the statement ` +
+              `accounts for ${Math.abs(expected)}. Those rows cannot be shown on the card, so approving ` +
+              'it would mean agreeing to a change nobody has seen. Disable the trigger, or write a ' +
+              'statement that names every row it touches.',
+          );
+        }
+      }
 
       if (op === 'UPDATE') {
         const { sql: pred, params } = keyPredicate(pk, before, q, this.adapter.dialect);
@@ -876,9 +908,16 @@ export class Engine {
     // the right place for it: the operator reading this is the person who can
     // decide whether they know what the trigger does.
     if (!shape.autoColumnsKnown && shape.triggersVisible) {
+      // The old wording named "other tables" only, which reads as a promise that
+      // same-table effects are covered. They were not: a trigger deleting another
+      // row of this table produced a card saying "1 row would be deleted" while two
+      // went. The count check above now refuses that case outright, so what is left
+      // to disclose is what counting cannot see — values written to rows this
+      // statement does not name, and anything in another table.
       warnings.push(
-        `\`${table}\` has ${shape.triggerCount} trigger(s). Rows they write in other tables are not measured ` +
-          'by the dry run and are not shown above; only their effect on the rows listed here is.',
+        `\`${table}\` has ${shape.triggerCount} trigger(s). The dry run counts rows added or removed in ` +
+          `\`${table}\` and refuses if they exceed this statement, but it does not show values a trigger ` +
+          'writes to rows not listed above, and it does not measure other tables at all.',
       );
     }
     // Whatever this engine cannot guarantee is said here, on the card, every
@@ -899,6 +938,12 @@ export class Engine {
       impact,
       warnings,
     };
+  }
+
+  /** Rows in the whole table, inside the current transaction. Used to see trigger work. */
+  private async countAll(q: (s: string) => string, table: string): Promise<number> {
+    const r = await this.adapter.query<Row>(`SELECT COUNT(*) AS c FROM ${qname(q, table)}`);
+    return Number(Object.values(r[0] ?? { c: 0 })[0] ?? 0);
   }
 
   /** D8 — declared beats detected, and "unknown" is never silently read as "none". */

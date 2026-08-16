@@ -4,6 +4,52 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-08-16
+
+### Fixed
+
+- **A trigger could delete rows nobody approved, and the card said one row.**
+  The affected-row count a driver reports excludes work done by triggers, and the
+  before/after images are taken over the pre-selected keys only — so a trigger
+  writing another row of the *same* table left no trace in either. Measured on
+  SQLite:
+
+  ```
+  AFTER DELETE ON orders -> DELETE FROM orders WHERE id = 2
+  DELETE FROM orders WHERE id = 1
+
+  card   : "1 row would be deleted outright", listing id 1
+  apply  : "Applied: DELETE on orders, 1 row(s)"
+  reality: ids 1 and 2 are both gone
+  ```
+
+  The dry run now counts the table on both sides of the statement and refuses
+  (`TRIGGER_SIDE_EFFECT`) when more rows moved than the statement accounts for.
+  Counting, not parsing: a trigger body is arbitrary code on PostgreSQL and MySQL
+  and cannot be read to find out what it writes. The cost is paid only where the
+  risk is — a table with no trigger runs neither query.
+
+- **The apply compared trigger counts, and a count does not change when a trigger
+  is replaced.** Dropping one trigger and creating a materially different one
+  passed the schema-drift check; the apply then committed a deletion that appeared
+  on no card and reported it as "1 row(s)". The apply now makes the same count
+  measurement as the dry run and rolls everything back on a mismatch.
+
+- **`strftime('%Y-%m-%d','now')` reached planning.** `random()` was refused as
+  volatile but SQLite's date functions were not on the list, so a value that
+  changes between the measured run and the real one got through and was caught
+  only after the write by the result comparison. These functions are volatile only
+  when handed `'now'` — `date(created_at)` is ordinary — so the argument is
+  examined rather than the name, and deterministic uses still plan.
+
+### Changed
+
+- The trigger note on the card described only "rows they write in other tables",
+  which reads as a promise that same-table effects are covered. They were not. It
+  now says what is measured (rows added or removed in this table, which are
+  refused if they exceed the statement) and what is not (values written to rows
+  the statement does not name, and other tables entirely).
+
 ## [0.7.0] — 2026-08-13
 
 The second hole found the same way as the first: by installing the published
@@ -1765,6 +1811,7 @@ produced a plan describing something other than what would happen:
 - No runtime dependencies. Drivers are optional peers; the MCP server implements
   the wire protocol directly.
 
+[0.8.0]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.8.0
 [0.7.0]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.7.0
 [0.6.0]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.6.0
 [0.5.2]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.5.2

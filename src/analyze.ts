@@ -155,6 +155,33 @@ const VOLATILE = new Set([
   'found_rows', 'row_count',
 ]);
 
+/**
+ * SQLite's date functions, which are volatile only when handed `'now'`.
+ *
+ * `date(created_at)` is deterministic and ordinary; `date('now')` is not. Putting
+ * these in VOLATILE outright would refuse the first kind too, so the argument has
+ * to be looked at. Without this, `SET status = strftime('%Y-%m-%d','now')` reached
+ * planning and was caught only after the write by the result comparison — a
+ * refusal that arrives after the fact reads as a bug in the tool, not as a bad
+ * statement.
+ */
+const VOLATILE_WITH_NOW = new Set(['strftime', 'datetime', 'date', 'time', 'julianday', 'unixepoch']);
+
+/** True if the call starting at `open` passes a `'now'` string literal. */
+function callTakesNow(toks: readonly Token[], open: number): boolean {
+  let depth = 0;
+  for (let i = open; i < toks.length; i++) {
+    const t = toks[i];
+    if (t === undefined) continue;
+    if (t.kind === 'punct' && t.value === '(') depth++;
+    else if (t.kind === 'punct' && t.value === ')') {
+      depth--;
+      if (depth === 0) return false;
+    } else if (t.kind === 'string' && lower(t.value).trim() === 'now') return true;
+  }
+  return false;
+}
+
 /** Volatile function names used by this statement, in the order they appear. */
 export function volatileCalls(tokens: readonly Token[]): string[] {
   const out: string[] = [];
@@ -163,6 +190,11 @@ export function volatileCalls(tokens: readonly Token[]): string[] {
     const t = toks[i];
     if (t === undefined || t.kind !== 'ident') continue;
     const name = lower(t.value);
+    if (VOLATILE_WITH_NOW.has(name)) {
+      const open = toks[i + 1];
+      if (open?.kind === 'punct' && open.value === '(' && callTakesNow(toks, i + 1)) out.push(name);
+      continue;
+    }
     if (!VOLATILE.has(name)) continue;
     // `CURRENT_TIMESTAMP` is legal with or without parentheses; the others need
     // them, and a column happening to be called "now" is not a call.

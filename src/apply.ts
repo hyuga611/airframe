@@ -508,8 +508,32 @@ export class Applier {
         }
       }
 
+      // The trigger check above compares counts, and a count is not a definition:
+      // dropping one trigger and creating a different one leaves it unchanged.
+      // Measured on SQLite — a benign AFTER UPDATE trigger was swapped for one
+      // deleting an unrelated row, the count check passed, and the apply committed
+      // a deletion that appeared on no card and was reported as "1 row(s)".
+      // Counting the table on both sides is the same measurement the dry run makes,
+      // and it holds whatever the trigger turned into. Only run where a trigger is.
+      const watchSideEffects = (plan.triggerCount ?? 0) > 0;
+      const netBefore = watchSideEffects ? await this.countAll(q, table) : 0;
+
       const res = await this.adapter.execute(sql);
       rowsAffected = res.rowsMatched;
+
+      if (watchSideEffects) {
+        const netAfter = await this.countAll(q, table);
+        const expected = plan.op === 'DELETE' ? -plan.rows.length : 0;
+        const actual = netAfter - netBefore;
+        if (actual !== expected) {
+          throw new ApplyRefused(
+            'RESULT_MISMATCH',
+            `A trigger on \`${table}\` added or removed ${Math.abs(actual)} row(s) where the approved plan ` +
+              `accounts for ${Math.abs(expected)}. Those rows are on no card and nobody approved them. ` +
+              'Everything has been rolled back.',
+          );
+        }
+      }
 
       // A5 — hold the real run to the numbers the trial produced.
       if (res.rowsMatched !== plan.rowsMatched) {
@@ -611,6 +635,12 @@ export class Applier {
     }
 
     return { planId: id, table, op: plan.op, rowsAffected, appliedAt, actor, warnings };
+  }
+
+  /** Rows in the whole table, inside the current transaction. Used to see trigger work. */
+  private async countAll(q: (s: string) => string, table: string): Promise<number> {
+    const r = await this.adapter.query<Row>(`SELECT COUNT(*) AS c FROM ${qname(q, table)}`);
+    return Number(Object.values(r[0] ?? { c: 0 })[0] ?? 0);
   }
 
   private async mustLoad(id: string): Promise<StoredPlan> {

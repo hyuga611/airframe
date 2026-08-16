@@ -345,6 +345,87 @@ describe('sqlite', { skip }, () => {
     assert.equal(await qtyOf(1), 15, 'the row must not move a second time');
   });
 
+  // =====================================================================
+  // Triggers writing rows this statement never names (audit 2026-08)
+  //
+  // The affected-row count a driver reports excludes work done by triggers, and
+  // the before/after images are taken over the pre-selected keys only. So a
+  // trigger touching another row of the same table left no trace in either, and
+  // the card said "1 row" while two moved. Counting the table on both sides of
+  // the statement is the same kind of measurement the rest of the engine makes.
+  // =====================================================================
+
+  const ids = async (): Promise<number[]> => {
+    const rows = await bookkeeping.query<Row>('SELECT id FROM orders ORDER BY id');
+    return rows.map((r) => Number(r['id']));
+  };
+
+  test('a DELETE trigger that removes another row of the same table is refused, not carded', async () => {
+    await bookkeeping.query(
+      'CREATE TRIGGER t_extra AFTER DELETE ON orders BEGIN DELETE FROM orders WHERE id = 2; END',
+    );
+    try {
+      const e = new Engine({ adapter: planning, policy, autoColumns: { orders: [] } });
+      await assert.rejects(
+        () => e.plan('DELETE FROM orders WHERE id = 1'),
+        (err: unknown) => err instanceof PlanRefused && err.code === 'TRIGGER_SIDE_EFFECT',
+      );
+      assert.deepEqual(await ids(), [1, 2, 3], 'the refused trial must leave every row in place');
+    } finally {
+      await bookkeeping.query('DROP TRIGGER t_extra');
+    }
+  });
+
+  test('a trigger swapped between plan and apply is caught, and nothing commits', async () => {
+    // The apply compared trigger *counts*, and a count does not change when one
+    // trigger is dropped and a materially different one is created.
+    await bookkeeping.query(
+      "CREATE TRIGGER t_benign AFTER UPDATE ON orders BEGIN UPDATE orders SET note = 'touched' WHERE id = NEW.id; END",
+    );
+    const e = new Engine({ adapter: planning, policy, autoColumns: { orders: ['note'] } });
+    const plan = await e.plan('UPDATE orders SET qty = qty + 5 WHERE id = 1');
+    const rec = await applier.record(plan, 'assistant');
+    await applier.approve(rec.id, 'alice');
+
+    await bookkeeping.query('DROP TRIGGER t_benign');
+    await bookkeeping.query(
+      'CREATE TRIGGER t_evil AFTER UPDATE ON orders BEGIN DELETE FROM orders WHERE id = 3; END',
+    );
+    try {
+      await assert.rejects(() => applier.apply(rec.id, 'alice'));
+      assert.deepEqual(await ids(), [1, 2, 3], 'the unapproved deletion must be rolled back');
+      assert.equal(await qtyOf(1), 10, 'the approved change must not commit either');
+    } finally {
+      await bookkeeping.query('DROP TRIGGER t_evil');
+    }
+  });
+
+  test('a trigger that stays within the rows named is still plannable', async () => {
+    // The check must not turn into "refuse every trigger": an updated_at trigger
+    // touching only the row being written is the ordinary case this tool exists for.
+    await bookkeeping.query(
+      "CREATE TRIGGER t_stamp AFTER UPDATE ON orders BEGIN UPDATE orders SET note = 'stamped' WHERE id = NEW.id; END",
+    );
+    try {
+      const e = new Engine({ adapter: planning, policy, autoColumns: { orders: ['note'] } });
+      const plan = await e.plan('UPDATE orders SET qty = qty + 5 WHERE id = 1');
+      assert.equal(plan.rows.length, 1);
+    } finally {
+      await bookkeeping.query('DROP TRIGGER t_stamp');
+    }
+  });
+
+  test("SQLite's date functions are volatile with 'now' and ordinary without it", async () => {
+    await assert.rejects(
+      () => engine.plan("UPDATE orders SET ref = strftime('%Y-%m-%d','now') WHERE id = 1"),
+      (err: unknown) => err instanceof PlanRefused && err.code === 'VOLATILE',
+    );
+    // date() over a fixed argument is deterministic; refusing it too would be a
+    // false alarm, and the whole point of looking at the argument rather than the name.
+    const plan = await engine.plan("UPDATE orders SET ref = date('2026-01-01') WHERE id = 1");
+    assert.equal(plan.rows.length, 1);
+  });
+
   test('A: a plan nobody approved cannot be applied', async () => {
     const plan = await engine.plan('UPDATE orders SET qty = qty + 5 WHERE id = 1');
     const rec = await applier.record(plan, 'assistant');
