@@ -24,7 +24,16 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { verify, expect as X } from './index.mjs';
 
-const VERSION = '0.3.0';
+// package.json から読む。定数にしていたせいで、このCLIが1リリース分ずれた番号を
+// 答えていたことがある（reflint 0.10.0 の CHANGELOG が名指ししているのがそれ）。
+// 定数はリリースのたびに人が思い出す必要がある場所で、しかも古びても誰も気づかない。
+const VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+  } catch {
+    return 'unknown';
+  }
+})();
 
 function parse(argv) {
   const out = { _: [], flags: {} };
@@ -40,13 +49,51 @@ function parse(argv) {
   return out;
 }
 
+// verify が受け付けるフラグ。ここに無いものは黙って無視せず、使い方の誤りとして落とす。
+const VERIFY_FLAGS = new Set(['probe', 'action', 'json', 'nonempty', 'count', 'at-least', 'contains', 'equals', 'matches']);
+
+/** 使い方の誤りで即座に落ちる。ゲートが「たぶんこう」で動くと、止めるべきものを止めない。 */
+function usage(msg) {
+  process.stderr.write(`genchi: ${msg}\n`);
+  process.exit(64);
+}
+
+/**
+ * 未知のフラグを拒否する。
+ *
+ * `--bogus value` を渡すと、どの期待にも当たらず既定の nonempty に落ちていた。
+ * つまり CI 設定のタイプミスひとつで、`--count 45` のつもりのゲートが
+ * 「何か出力があればOK」に化ける。reflint 0.10.0 で潰したのと同じ形——
+ * それらしいが違うフラグがチェックを黙らせ、緑のまま残るのが一番長く生き延びる。
+ */
+function rejectUnknownFlags(flags, known, cmd) {
+  const bad = Object.keys(flags).filter((k) => !known.has(k));
+  if (bad.length > 0) usage(`unknown option${bad.length === 1 ? '' : 's'} for ${cmd}: ${bad.map((b) => `--${b}`).join(', ')}`);
+}
+
+/** 値を伴うべきフラグが裸で置かれていないか。`--count` だけだと Number(true)===1 になっていた。 */
+function flagValue(flags, key) {
+  const v = flags[key];
+  if (v === true) usage(`--${key} needs a value`);
+  return String(v);
+}
+
+/** 件数のしきい値。NaN や負数は、比較としては成立しても意図ではありえない。 */
+function threshold(flags, key) {
+  const raw = flagValue(flags, key);
+  const n = Number(raw);
+  if (!Number.isFinite(n)) usage(`--${key} needs a number, got "${raw}"`);
+  if (n < 0) usage(`--${key} cannot be negative, got ${n}`);
+  return n;
+}
+
 // フラグから expect 関数を1つ選ぶ（無ければ nonEmpty）
 function pickExpect(flags) {
-  if ('count' in flags) return { fn: X.count(Number(flags.count)), label: `count=${flags.count}` };
-  if ('at-least' in flags) return { fn: X.atLeast(Number(flags['at-least'])), label: `at-least=${flags['at-least']}` };
-  if ('contains' in flags) return { fn: X.contains(String(flags.contains)), label: `contains="${flags.contains}"` };
-  if ('equals' in flags) return { fn: X.equals(String(flags.equals)), label: `equals="${flags.equals}"` };
-  if ('matches' in flags) return { fn: X.matches(new RegExp(String(flags.matches))), label: `matches=/${flags.matches}/` };
+  if ('count' in flags) { const n = threshold(flags, 'count'); return { fn: X.count(n), label: `count=${n}` }; }
+  if ('at-least' in flags) { const n = threshold(flags, 'at-least'); return { fn: X.atLeast(n), label: `at-least=${n}` }; }
+  if ('contains' in flags) { const s = flagValue(flags, 'contains'); return { fn: X.contains(s), label: `contains="${s}"` }; }
+  if ('equals' in flags) { const s = flagValue(flags, 'equals'); return { fn: X.equals(s), label: `equals="${s}"` }; }
+  if ('matches' in flags) { const s = flagValue(flags, 'matches'); return { fn: X.matches(new RegExp(s)), label: `matches=/${s}/` }; }
   return { fn: X.nonEmpty(), label: 'nonempty' };
 }
 
@@ -64,7 +111,11 @@ function shellProbe(cmd) {
 }
 
 function expectFromSpec(spec) {
-  if (!spec || !spec.type) return X.nonEmpty();
+  // 期待を書いていない契約は契約ではない。以前はここで黙って nonempty に落ちていたので、
+  // `expect` を書き忘れた行が「出力が空でなければ達成」に化けて確認済みとして数えられた。
+  if (!spec || typeof spec !== 'object' || !spec.type) {
+    throw new Error('contract has no expect.type — a contract without an expectation confirms nothing');
+  }
   switch (spec.type) {
     case 'nonempty': return X.nonEmpty();
     case 'count': return X.count(Number(spec.value));
@@ -77,6 +128,7 @@ function expectFromSpec(spec) {
 }
 
 async function cmdVerify(p) {
+  rejectUnknownFlags(p.flags, VERIFY_FLAGS, 'verify');
   const cmd = p.flags.probe;
   if (!cmd || cmd === true) {
     process.stderr.write('genchi verify: --probe "<command that re-fetches real state>" is required\n');
@@ -111,12 +163,27 @@ async function cmdGuard(p) {
     process.stderr.write(`genchi guard: cannot read ${file}: ${e.message}\n`);
     process.exit(64);
   }
+  // 契約が1件も無いファイルを「全件確認済み」と言わない。
+  // 空ファイル・空白だけのファイル・書き出す前のファイルは、どれも exit 0 になっていた。
+  // 何も確認していないことを確認済みとして報告するのは、このゲートが防ぐための形そのもの。
+  if (lines.length === 0) {
+    process.stderr.write(
+      `✗ genchi guard: ${file} holds no contracts — nothing was checked, so nothing can be reported as done.\n` +
+        '  Write one contract per line, or do not run the gate at all.\n',
+    );
+    process.exit(2);
+  }
   const failures = [];
   for (const line of lines) {
     let c;
     try { c = JSON.parse(line); } catch { failures.push({ action: line.slice(0, 40), reason: 'bad-json', evidence: line }); continue; }
     if (!c.probe) { failures.push({ action: c.action || '(no action)', reason: 'no-probe', evidence: '' }); continue; }
-    const v = await verify({ action: c.action || c.probe, probe: shellProbe(String(c.probe)), expect: expectFromSpec(c.expect) });
+    let expectFn;
+    try { expectFn = expectFromSpec(c.expect); } catch (e) {
+      failures.push({ action: c.action || '(no action)', reason: 'bad-expect', detail: e.message, evidence: '' });
+      continue;
+    }
+    const v = await verify({ action: c.action || c.probe, probe: shellProbe(String(c.probe)), expect: expectFn });
     if (!v.ok) failures.push(v);
   }
   if (failures.length === 0) {

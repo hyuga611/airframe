@@ -35,6 +35,22 @@ function errText(e) {
   try { return String(e); } catch { return '(unstringifiable error)'; }
 }
 
+/**
+ * 数の期待のために値を数に読む。読めなければ NaN。
+ *
+ * `Number('')` も `Number('   ')` も 0 を返すので、何も返さなかった probe が
+ * `--count 0` と `--at-least 0`（さらに負のしきい値）を満たしていた。**測っていない**を
+ * **0件だった**として通すのは、このツールが存在する理由そのものの裏返し。
+ *
+ * 文字列 '0' や数値 0 は本物の測定結果なので通す——判定は比較側の仕事。
+ * 文字列以外の従来の型変換（配列など）は変えない。
+ */
+function asNumber(s) {
+  if (s == null) return NaN;
+  if (typeof s === 'string' && s.trim() === '') return NaN;
+  return Number(s);
+}
+
 function valueText(s) {
   if (typeof s === 'string') return JSON.stringify(s.length > 200 ? s.slice(0, 200) + '…' : s);
   if (typeof s === 'number' || typeof s === 'boolean' || s == null) return String(s);
@@ -138,12 +154,14 @@ export const expect = {
   nonEmpty: () => (s) => (!isEmpty(s) ? true : { ok: false, detail: `the probe returned nothing: ${valueText(s)}` }),
   /** 数として n と一致（例：投入件数） */
   count: (n) => (s) => {
-    const got = Number(s);
+    const got = asNumber(s);
+    if (Number.isNaN(got)) return { ok: false, detail: `expected a count of ${n}, but nothing countable came back: ${valueText(s)}` };
     return got === n ? true : { ok: false, detail: `expected a count of ${n}, the probe returned ${valueText(s)}` };
   },
   /** 数として n 以上 */
   atLeast: (n) => (s) => {
-    const got = Number(s);
+    const got = asNumber(s);
+    if (Number.isNaN(got)) return { ok: false, detail: `expected at least ${n}, but nothing countable came back: ${valueText(s)}` };
     return got >= n ? true : { ok: false, detail: `expected at least ${n}, the probe returned ${valueText(s)}` };
   },
   /** 文字列として sub を含む（例：再取得したURLが 200 を返す本文に含む語） */

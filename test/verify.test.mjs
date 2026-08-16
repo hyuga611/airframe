@@ -174,3 +174,32 @@ test('evidence は probe が返したものであって、再取得したとは�
   assert.match(e.detail, /the probe returned/);
   assert.doesNotMatch(e.detail, /re-fetched/);
 });
+
+// ---- 何も測っていないものを「0件だった」として通さない（2026-08 の監査） ----
+// Number('') も Number('   ') も 0 なので、空を返した probe が --count 0 と
+// --at-least 0（さらに負のしきい値）を満たしていた。測っていないことを測定結果
+// として通すのは、このツールが存在する理由そのものの裏返し。
+
+test('count/atLeast: 空の出力は 0 件の測定結果ではない', async () => {
+  for (const empty of ['', '   ', null, undefined]) {
+    const c = await verify({ action: 'a', probe: () => empty, expect: expect.count(0) });
+    assert.equal(c.ok, false, `count(0) が ${JSON.stringify(empty)} を通した`);
+    const a = await verify({ action: 'a', probe: () => empty, expect: expect.atLeast(0) });
+    assert.equal(a.ok, false, `atLeast(0) が ${JSON.stringify(empty)} を通した`);
+  }
+});
+
+test('count/atLeast: 本物の 0 は測定結果なので通る', async () => {
+  const c = await verify({ action: 'a', probe: () => '0', expect: expect.count(0) });
+  assert.equal(c.ok, true, '文字列の "0" は測った結果');
+  const a = await verify({ action: 'a', probe: () => '0', expect: expect.atLeast(0) });
+  assert.equal(a.ok, true);
+  const n = await verify({ action: 'a', probe: () => '3', expect: expect.atLeast(3) });
+  assert.equal(n.ok, true);
+});
+
+test('count: 数として読めない出力は不一致として扱う', async () => {
+  const v = await verify({ action: 'a', probe: () => 'done', expect: expect.count(1) });
+  assert.equal(v.ok, false);
+  assert.match(v.detail, /nothing countable/);
+});
