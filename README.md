@@ -121,6 +121,25 @@ rendering — all of them are non-empty and well-formed, and no general gate kno
 was supposed to show. Encoding that stays yours; the gate's job is to stop the weak question from
 passing as a strong one in the output.
 
+### Make the evidence assertable
+
+An expectation is only as strong as what the probe hands back. Return the artifact and the only
+question available is "did something come back". Return a **measurement of** the artifact and you
+can ask a real one:
+
+```js
+// weak: the file is there, so this passes — including at 40×30 pixels
+await gate({ action: 'capture', probe: () => existsSync(shot), expect: expect.nonEmpty() });
+
+// stronger: the probe returns a number, so the expectation can be about legibility
+await gate({ action: 'capture', probe: () => imageSize(shot).width, expect: expect.atLeast(1200) });
+```
+
+The same move works for a log tail (probe the line count, not the text) and for a page (probe for
+the element that only exists after render, not the HTML length). It does not generalise into the
+gate — "was this readable" is domain knowledge the caller has and the library doesn't — but where
+the evidence has a number attached, that number is what the probe should return.
+
 You can write your own: return `true` / `{ok:true}` to pass, `{ok:false, detail}` to fail with a reason.
 
 ## Use from the shell
