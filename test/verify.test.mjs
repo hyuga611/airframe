@@ -203,3 +203,47 @@ test('count: 数として読めない出力は不一致として扱う', async (
   assert.equal(v.ok, false);
   assert.match(v.detail, /nothing countable/);
 });
+
+// --- 0.4.1: 何を訊いたかを verdict に載せる ---
+// 「空でなければ通る」で通った verdict と count(45) で通った verdict が、出力上
+// 見分けられなかった。考えずに済ませた確認が、考えて書いた確認と同じ顔で並ぶ形。
+
+test('verdict は何を訊いたかを名乗る（成功・失敗の両方で）', async () => {
+  const ok = await verify({ action: 'a', probe: () => '45', expect: expect.count(45) });
+  assert.equal(ok.expectation, 'count(45)');
+  const ng = await verify({ action: 'a', probe: () => '44', expect: expect.count(45) });
+  assert.equal(ng.expectation, 'count(45)');
+  const err = await verify({ action: 'a', probe: () => { throw new Error('x'); }, expect: expect.count(45) });
+  assert.equal(err.expectation, 'count(45)');
+});
+
+test('expect 未指定は「既定である」ことまで名乗る（nonEmpty そのものと区別する）', async () => {
+  const implicit = await verify({ action: 'a', probe: () => 'anything' });
+  assert.equal(implicit.expectation, 'nonEmpty (default)');
+  const explicit = await verify({ action: 'a', probe: () => 'anything', expect: expect.nonEmpty() });
+  assert.equal(explicit.expectation, 'nonEmpty');
+  // どちらも ok なのは変わらない。変わるのは「何を訊いたか」が見えること。
+  assert.equal(implicit.ok, true);
+  assert.equal(explicit.ok, true);
+});
+
+test('組み込みの期待はすべて名札を持つ／自前の述語は custom', async () => {
+  const labels = [
+    [expect.atLeast(3), 'atLeast(3)'],
+    [expect.contains('200'), 'contains("200")'],
+    [expect.matches(/ok/), 'matches(/ok/)'],
+  ];
+  for (const [fn, label] of labels) {
+    const v = await verify({ action: 'a', probe: () => '200 ok 3', expect: fn });
+    assert.equal(v.expectation, label);
+  }
+  const custom = await verify({ action: 'a', probe: () => 'x', expect: () => true });
+  assert.equal(custom.expectation, 'custom');
+});
+
+test('GenchiIncomplete のメッセージにも何を訊いたかが載る', async () => {
+  await assert.rejects(
+    () => gate({ action: 'insert', probe: () => '44', expect: expect.count(45) }),
+    (e) => e.name === 'GenchiIncomplete' && /the expectation was: count\(45\)/.test(e.message),
+  );
+});

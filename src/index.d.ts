@@ -6,10 +6,11 @@ export type VerdictReason = 'empty' | 'mismatch' | 'probe-error';
 /** Result of verifying a completion contract. Never fabricated: `evidence` always
  * reflects the actually re-fetched state (or the probe error). */
 export type Verdict<T = unknown> =
-  | { ok: true; action: string; state: T; evidence: string }
+  | { ok: true; action: string; expectation: string; state: T; evidence: string }
   | {
       ok: false;
       action: string;
+      expectation: string;
       reason: VerdictReason;
       state?: T;
       error?: unknown;
@@ -39,6 +40,12 @@ export interface Contract<T = unknown> {
 
 /** Treats 0, NaN, '', [], {}, Map/Set(size 0), false, null, undefined as "nothing there". */
 export function isEmpty(v: unknown): boolean;
+
+/** Names the question a contract asked: `count(45)`, `contains("200")`, `nonEmpty`,
+ * `custom` for a hand-written predicate, or `nonEmpty (default)` when `expect` was
+ * omitted. Present on every Verdict as `expectation`, so a pass under the weakest
+ * expectation is distinguishable from a pass under a real one. */
+export function expectationLabel(contract: { expect?: unknown } | null | undefined): string;
 
 /** Thrown by `gate()` when the re-fetched state cannot confirm completion. */
 export class GenchiIncomplete extends Error {
@@ -70,6 +77,7 @@ declare const _default: {
   gate: typeof gate;
   expect: typeof expect;
   isEmpty: typeof isEmpty;
+  expectationLabel: typeof expectationLabel;
   GenchiIncomplete: typeof GenchiIncomplete;
 };
 export default _default;

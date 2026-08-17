@@ -65,14 +65,34 @@ function defaultDescribe(state) {
 }
 
 /**
+ * 期待に「何を訊いたか」の名札を付ける。
+ *
+ * 合否だけを返していたので、`nonEmpty`（＝何か出ていれば通る、最も弱い問い）で通った
+ * verdict と `count(45)` で通った verdict が、出力上まったく同じに見えていた。
+ * **考えずに済ませた確認が、考えて書いた確認と同じ顔で並ぶ**のはこのツールが
+ * 潰すべき形そのもの（0.4.0 の「拒否せずに静かに退化する」の残り）。
+ * verdict.expectation としてそのまま出すので、CLI の --json も自動化も区別できる。
+ */
+function labelled(label, fn) {
+  return Object.defineProperty(fn, 'genchiLabel', { value: label, enumerable: false });
+}
+
+/** contract から「何を訊いたか」を読む。未指定なら既定であることまで含めて名乗る。 */
+export function expectationLabel(contract) {
+  if (!contract || typeof contract.expect !== 'function') return 'nonEmpty (default)';
+  return contract.expect.genchiLabel || 'custom';
+}
+
+/**
  * 完了を名乗れないときに throw されるエラー。verdict に再取得の生証拠を保持する。
  */
 export class GenchiIncomplete extends Error {
   constructor(verdict) {
     const d = verdict.detail ? `: ${verdict.detail}` : '';
+    const x = verdict.expectation ? `\n  the expectation was: ${verdict.expectation}` : '';
     super(
       `genchi: "${verdict.action}" cannot be reported as done — ${verdict.reason}${d}\n` +
-      `  the probe returned: ${verdict.evidence}`
+      `  the probe returned: ${verdict.evidence}${x}`
     );
     this.name = 'GenchiIncomplete';
     /** @type {Verdict} */
@@ -96,12 +116,14 @@ export async function verify(contract) {
     );
   }
 
+  const expectation = expectationLabel(contract);
+
   let state;
   try {
     state = await contract.probe();
   } catch (error) {
     // probe が失敗＝実状態を確かめられなかった。想像で成功にしない。
-    return { ok: false, action, reason: 'probe-error', error, evidence: `probe failed: ${errText(error)}` };
+    return { ok: false, action, expectation, reason: 'probe-error', error, evidence: `probe failed: ${errText(error)}` };
   }
 
   const describe = (contract.describeState) ? contract.describeState : defaultDescribe;
@@ -113,9 +135,9 @@ export async function verify(contract) {
   // expect 未指定 → 既定は「何かが実在すること（非empty）」
   if (typeof contract.expect !== 'function') {
     if (empty && !contract.allowEmpty) {
-      return { ok: false, action, reason: 'empty', state, evidence };
+      return { ok: false, action, expectation, reason: 'empty', state, evidence };
     }
-    return { ok: true, action, state, evidence };
+    return { ok: true, action, expectation, state, evidence };
   }
 
   // expect 指定 → それを唯一の合否基準にする（明示 expect は emptiness より優先）
@@ -123,15 +145,15 @@ export async function verify(contract) {
   try {
     res = await contract.expect(state);
   } catch (error) {
-    return { ok: false, action, reason: 'probe-error', state, error, evidence: `expect failed: ${errText(error)}` };
+    return { ok: false, action, expectation, reason: 'probe-error', state, error, evidence: `expect failed: ${errText(error)}` };
   }
 
   const ok = res === true || (res && typeof res === 'object' && res.ok === true);
-  if (ok) return { ok: true, action, state, evidence };
+  if (ok) return { ok: true, action, expectation, state, evidence };
 
   const detail = (res && typeof res === 'object' && res.detail) ? String(res.detail) : undefined;
   const reason = empty ? 'empty' : 'mismatch';
-  return { ok: false, action, reason, state, evidence, detail };
+  return { ok: false, action, expectation, reason, state, evidence, detail };
 }
 
 /**
@@ -150,29 +172,29 @@ export async function gate(contract) {
  * true か {ok:true} で合格、{ok:false, detail} で不合格（理由つき）。
  */
 export const expect = {
-  /** 実状態が何か存在する（非empty） */
-  nonEmpty: () => (s) => (!isEmpty(s) ? true : { ok: false, detail: `the probe returned nothing: ${valueText(s)}` }),
+  /** 実状態が何か存在する（非empty）。最も弱い問いなので、通っても名札でそう分かる。 */
+  nonEmpty: () => labelled('nonEmpty', (s) => (!isEmpty(s) ? true : { ok: false, detail: `the probe returned nothing: ${valueText(s)}` })),
   /** 数として n と一致（例：投入件数） */
-  count: (n) => (s) => {
+  count: (n) => labelled(`count(${n})`, (s) => {
     const got = asNumber(s);
     if (Number.isNaN(got)) return { ok: false, detail: `expected a count of ${n}, but nothing countable came back: ${valueText(s)}` };
     return got === n ? true : { ok: false, detail: `expected a count of ${n}, the probe returned ${valueText(s)}` };
-  },
+  }),
   /** 数として n 以上 */
-  atLeast: (n) => (s) => {
+  atLeast: (n) => labelled(`atLeast(${n})`, (s) => {
     const got = asNumber(s);
     if (Number.isNaN(got)) return { ok: false, detail: `expected at least ${n}, but nothing countable came back: ${valueText(s)}` };
     return got >= n ? true : { ok: false, detail: `expected at least ${n}, the probe returned ${valueText(s)}` };
-  },
+  }),
   /** 文字列として sub を含む（例：再取得したURLが 200 を返す本文に含む語） */
-  contains: (sub) => (s) => (String(s).includes(sub) ? true : { ok: false, detail: `does not contain "${sub}": ${valueText(s)}` }),
+  contains: (sub) => labelled(`contains(${JSON.stringify(String(sub))})`, (s) => (String(s).includes(sub) ? true : { ok: false, detail: `does not contain "${sub}": ${valueText(s)}` })),
   /** 値が一致（文字列は trim 比較） */
-  equals: (v) => (s) => {
+  equals: (v) => labelled(`equals(${valueText(v)})`, (s) => {
     const eq = (typeof s === 'string') ? s.trim() === String(v).trim() : s === v;
     return eq ? true : { ok: false, detail: `expected ${valueText(v)}, the probe returned ${valueText(s)}` };
-  },
+  }),
   /** 正規表現に一致 */
-  matches: (re) => (s) => (re.test(String(s)) ? true : { ok: false, detail: `does not match ${re}: ${valueText(s)}` }),
+  matches: (re) => labelled(`matches(${String(re)})`, (s) => (re.test(String(s)) ? true : { ok: false, detail: `does not match ${re}: ${valueText(s)}` })),
 };
 
-export default { verify, gate, expect, isEmpty, GenchiIncomplete };
+export default { verify, gate, expect, isEmpty, expectationLabel, GenchiIncomplete };

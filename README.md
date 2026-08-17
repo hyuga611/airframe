@@ -103,6 +103,24 @@ The rest is yours to keep: **point the probe at the thing that reads the real st
 | `expect.equals(v)` | it equals `v` (strings compared trimmed) |
 | `expect.matches(re)` | it matches the regex |
 
+Every verdict names the question it asked, as `expectation` — `count(45)`, `contains("200")`,
+`custom` for your own predicate, or `nonEmpty (default)` when you passed no expectation at all.
+That last one is the weakest question there is: **anything non-empty passes it.** A pass under it
+is not the same evidence as a pass under `count(45)`, so it no longer looks the same in the CLI,
+in `--json`, or in the `GenchiIncomplete` message.
+
+```
+$ genchi verify --probe "curl -s $URL"
+✓ verified [nonEmpty (default)] — the probe returned: "…"
+  Note: no expectation was given, so any non-empty output passes. Pass --count/--contains/--matches to ask a real question.
+```
+
+What that does not do is tell you whether the expectation was the *right* question. A screenshot
+that arrived downscaled past legibility, a truncated log tail, a page fetched before it finished
+rendering — all of them are non-empty and well-formed, and no general gate knows what the evidence
+was supposed to show. Encoding that stays yours; the gate's job is to stop the weak question from
+passing as a strong one in the output.
+
 You can write your own: return `true` / `{ok:true}` to pass, `{ok:false, detail}` to fail with a reason.
 
 ## Use from the shell

@@ -87,14 +87,17 @@ function threshold(flags, key) {
   return n;
 }
 
-// フラグから expect 関数を1つ選ぶ（無ければ nonEmpty）
+// フラグから expect 関数を1つ選ぶ。名札は関数自身が持つので、ここでは組み立てない
+// （CLI の表示と --json の verdict.expectation が食い違うのを避ける）。
+// 期待フラグが1つも無いときは expect を渡さない＝「期待は指定されなかった」を
+// verify に正しく伝える。verdict は nonEmpty (default) と名乗る。
 function pickExpect(flags) {
-  if ('count' in flags) { const n = threshold(flags, 'count'); return { fn: X.count(n), label: `count=${n}` }; }
-  if ('at-least' in flags) { const n = threshold(flags, 'at-least'); return { fn: X.atLeast(n), label: `at-least=${n}` }; }
-  if ('contains' in flags) { const s = flagValue(flags, 'contains'); return { fn: X.contains(s), label: `contains="${s}"` }; }
-  if ('equals' in flags) { const s = flagValue(flags, 'equals'); return { fn: X.equals(s), label: `equals="${s}"` }; }
-  if ('matches' in flags) { const s = flagValue(flags, 'matches'); return { fn: X.matches(new RegExp(s)), label: `matches=/${s}/` }; }
-  return { fn: X.nonEmpty(), label: 'nonempty' };
+  if ('count' in flags) return X.count(threshold(flags, 'count'));
+  if ('at-least' in flags) return X.atLeast(threshold(flags, 'at-least'));
+  if ('contains' in flags) return X.contains(flagValue(flags, 'contains'));
+  if ('equals' in flags) return X.equals(flagValue(flags, 'equals'));
+  if ('matches' in flags) return X.matches(new RegExp(flagValue(flags, 'matches')));
+  return undefined;
 }
 
 // シェルコマンドを実行して stdout を返す probe。非ゼロ終了は throw（＝probe失敗として扱う）。
@@ -134,15 +137,18 @@ async function cmdVerify(p) {
     process.stderr.write('genchi verify: --probe "<command that re-fetches real state>" is required\n');
     process.exit(64);
   }
-  const { fn, label } = pickExpect(p.flags);
+  const fn = pickExpect(p.flags);
   const action = p.flags.action ? String(p.flags.action) : cmd;
   const v = await verify({ action, probe: shellProbe(String(cmd)), expect: fn });
+  const label = v.expectation;
 
   if (p.flags.json) {
     const { error, ...rest } = v;
     process.stdout.write(JSON.stringify(error ? { ...rest, error: String(error.message || error) } : rest) + '\n');
   } else if (v.ok) {
-    process.stdout.write(`✓ verified [${label}] — the probe returned: ${v.evidence}\n`);
+    // 期待を選ばなかったときは、通ったことより「何を訊かなかったか」の方が重要。
+    const weak = !fn ? '\n  Note: no expectation was given, so any non-empty output passes. Pass --count/--contains/--matches to ask a real question.' : '';
+    process.stdout.write(`✓ verified [${label}] — the probe returned: ${v.evidence}${weak}\n`);
   } else if (v.reason === 'probe-error') {
     process.stderr.write(`✗ probe failed — ${v.evidence}\n  Real state could not be read, so this cannot be reported as done.\n`);
   } else {
@@ -174,6 +180,7 @@ async function cmdGuard(p) {
     process.exit(2);
   }
   const failures = [];
+  let weakOnly = 0; // 「空でなければ通る」だけを訊いた契約の数
   for (const line of lines) {
     let c;
     try { c = JSON.parse(line); } catch { failures.push({ action: line.slice(0, 40), reason: 'bad-json', evidence: line }); continue; }
@@ -183,16 +190,23 @@ async function cmdGuard(p) {
       failures.push({ action: c.action || '(no action)', reason: 'bad-expect', detail: e.message, evidence: '' });
       continue;
     }
+    if (expectFn.genchiLabel === 'nonEmpty') weakOnly++;
     const v = await verify({ action: c.action || c.probe, probe: shellProbe(String(c.probe)), expect: expectFn });
     if (!v.ok) failures.push(v);
   }
+  // 「全件確認済み」の中身を黙って均さない。nonempty だけの契約は
+  // 「何か出力があった」以上を確かめていないので、件数をそのまま言う。
+  const weakNote = weakOnly
+    ? ` (${weakOnly} of them only asked for non-empty output — that confirms something ran, not that it was right)`
+    : '';
   if (failures.length === 0) {
-    process.stderr.write(`✓ genchi guard: all ${lines.length} contract${lines.length === 1 ? '' : 's'} confirmed against real state\n`);
+    process.stderr.write(`✓ genchi guard: all ${lines.length} contract${lines.length === 1 ? '' : 's'} confirmed against real state${weakNote}\n`);
     process.exit(0);
   }
-  process.stderr.write(`✗ genchi guard: ${failures.length}/${lines.length} contracts unmet — blocking completion\n`);
+  process.stderr.write(`✗ genchi guard: ${failures.length}/${lines.length} contracts unmet — blocking completion${weakNote}\n`);
   for (const f of failures) {
-    process.stderr.write(`  - "${f.action}" — ${f.reason}${f.detail ? ': ' + f.detail : ''}\n    the probe returned: ${f.evidence ?? ''}\n`);
+    const x = f.expectation ? ` [${f.expectation}]` : '';
+    process.stderr.write(`  - "${f.action}"${x} — ${f.reason}${f.detail ? ': ' + f.detail : ''}\n    the probe returned: ${f.evidence ?? ''}\n`);
   }
   process.exit(2); // Claude Code hook: exit 2 で stop をブロック
 }
