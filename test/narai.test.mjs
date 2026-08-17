@@ -214,6 +214,50 @@ test('the same change across a turn boundary is a hand edit', () => {
 });
 
 /**
+ * The turn boundary settles authorship only while the coverage holds, and `hook sync`
+ * covers one session: it walks the files *this* session has touched. A file last written
+ * in an earlier session has had nothing watching it in between, so `npm version`, the host
+ * rewriting its own settings, or a release script all arrive looking exactly like a person.
+ * On the machine this was found on, 28 records had this shape and none was a hand edit.
+ */
+test('a change since an earlier session is warned about but not filed as a correction', () => {
+  const dir = work();
+  try {
+    const f = join(dir, 'across.md');
+    writeFileSync(f, 'the version the agent wrote\n');
+    hookPost({ ...payload(f), session_id: 'session-1', prompt_id: 'P1' });
+    writeFileSync(f, 'the version a release script produced\n');
+    const before = listCorrections().length;
+    const msg = hookPre({ ...payload(f), session_id: 'session-2', prompt_id: 'P2' });
+    assert.ok(msg, 'the agent still needs telling that the file moved under it');
+    assert.match(msg, /earlier session/);
+    assert.doesNotMatch(msg, /most likely the user, by hand/,
+      'nothing here identifies a person, so do not name one');
+    assert.equal(listCorrections().length, before,
+      'unattributable, so it must not become citable evidence');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a hand edit inside one session is still filed', () => {
+  const dir = work();
+  try {
+    const f = join(dir, 'within.md');
+    writeFileSync(f, 'the version the agent wrote\n');
+    hookPost({ ...payload(f), session_id: 'session-9', prompt_id: 'P1' });
+    writeFileSync(f, 'the version the human replaced it with\n');
+    const before = listCorrections().length;
+    const msg = hookPre({ ...payload(f), session_id: 'session-9', prompt_id: 'P2' });
+    assert.match(msg, /most likely the user, by hand/);
+    assert.equal(listCorrections().length, before + 1,
+      'inside one session the coverage holds, so this one is attributable');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
  * The hole `hookPre` had until 0.4.0, found by driving the published package rather
  * than by reading it.
  *

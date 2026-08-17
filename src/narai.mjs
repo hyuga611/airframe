@@ -577,16 +577,36 @@ export function hookPre(payload) {
   // change that spans a turn boundary can be attributed to a person.
   if (rec.promptId && payload.prompt_id && rec.promptId === payload.prompt_id) return null;
 
-  const head = [
-    `narai: ${basename(rec.file)} is not what you last wrote (${rec.writtenAt}).`,
-    // The premise is stated with the conclusion so a reader can see when it fails.
-    // It fails if `hook sync` is not installed, and then this sentence is wrong —
-    // which is better than the sentence it replaced, which asserted the conclusion
-    // and hid the premise entirely.
-    'Nothing you did through a tool accounts for the difference, so it came from',
-    'outside this agent — most likely the user, by hand.',
-    '',
-  ];
+  // The turn boundary only settles it while the coverage holds, and the coverage is one
+  // session wide. `hook sync` walks `sessionRecords(session)` — the files *this* session has
+  // touched — so a file last written in an earlier session has had no tool coverage at all in
+  // between. `npm version` rewriting a version line, the host rewriting settings.json, a
+  // release script, a second agent: from here every one of those is indistinguishable from a
+  // person. Measured on this machine before the guard existed: 28 records of this shape, and
+  // not one of them was a hand edit.
+  //
+  // The warning is still worth making — do not write over a change you have not read — so it
+  // stays. What stops is the claim about who made it, and the corpus entry built on that claim.
+  const sameSession = Boolean(rec.session && payload.session_id && rec.session === payload.session_id);
+
+  const head = sameSession
+    ? [
+        `narai: ${basename(rec.file)} is not what you last wrote (${rec.writtenAt}).`,
+        // The premise is stated with the conclusion so a reader can see when it fails.
+        // It fails if `hook sync` is not installed, and then this sentence is wrong —
+        // which is better than the sentence it replaced, which asserted the conclusion
+        // and hid the premise entirely.
+        'Nothing you did through a tool accounts for the difference, so it came from',
+        'outside this agent — most likely the user, by hand.',
+        '',
+      ]
+    : [
+        `narai: ${basename(rec.file)} is not what you last wrote (${rec.writtenAt}).`,
+        'That write was in an earlier session, and nothing has been watching this file since,',
+        'so a script or a release step accounts for the difference as well as a person does.',
+        'Read it before writing over it. Who changed it is not being claimed.',
+        '',
+      ];
 
   let body;
   if (rec.text == null || cur.text == null) {
@@ -606,21 +626,32 @@ export function hookPre(payload) {
       'What you wrote → what is there now:',
       formatDiff(d),
       '',
-      'That edit was deliberate. Read it before writing, and do not quietly revert it.',
-      'If you believe it should be undone, say why and ask first.',
+      ...(sameSession
+        ? [
+            'That edit was deliberate. Read it before writing, and do not quietly revert it.',
+            'If you believe it should be undone, say why and ask first.',
+          ]
+        : [
+            'Read it before writing, and do not quietly revert it. If you believe it should be',
+            'undone, say why and ask first.',
+          ]),
     ];
-    // keep it as material to learn from
-    recordCorrection({
-      file: rec.file,
-      writtenAt: rec.writtenAt,
-      detectedAt: nowIso(),
-      session: payload.session_id || null,
-      promptId: payload.prompt_id || null,
-      removed: storableLines(d.removed),
-      added: storableLines(d.added),
-      removedCount: d.removed.length,
-      addedCount: d.added.length,
-    });
+    // Only material narai can actually attribute becomes material to learn from. A rule is
+    // meant to be citable back to corrections the user really made; an entry sourced from a
+    // release script would be fabricated evidence wearing the same id.
+    if (sameSession) {
+      recordCorrection({
+        file: rec.file,
+        writtenAt: rec.writtenAt,
+        detectedAt: nowIso(),
+        session: payload.session_id || null,
+        promptId: payload.prompt_id || null,
+        removed: storableLines(d.removed),
+        added: storableLines(d.added),
+        removedCount: d.removed.length,
+        addedCount: d.added.length,
+      });
+    }
   }
 
   return head.concat(body).join('\n');
