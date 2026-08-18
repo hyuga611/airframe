@@ -13,31 +13,11 @@
 // 契約1行の形（.genchi/pending.jsonl）:
 //   {"action":"45件を投入","probe":"psql -tAc 'select count(*) ...'","expect":{"type":"count","value":45}}
 
-import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { verify, expect as X } from '../../src/index.mjs';
+import { verify } from '../../src/index.mjs';
+import { checkContract } from '../../src/contract.mjs';
 
 const PENDING = process.env.GENCHI_PENDING || '.genchi/pending.jsonl';
-
-function expectFromSpec(spec) {
-  if (!spec || !spec.type) return X.nonEmpty();
-  switch (spec.type) {
-    case 'nonempty': return X.nonEmpty();
-    case 'count': return X.count(Number(spec.value));
-    case 'at-least': return X.atLeast(Number(spec.value));
-    case 'contains': return X.contains(String(spec.value));
-    case 'equals': return X.equals(String(spec.value));
-    case 'matches': return X.matches(new RegExp(String(spec.value)));
-    default: return X.nonEmpty();
-  }
-}
-
-const shellProbe = (cmd) => () => {
-  const r = spawnSync(cmd, { shell: true, encoding: 'utf8' });
-  if (r.error) throw r.error;
-  if (typeof r.status === 'number' && r.status !== 0) throw new Error(`exit ${r.status}${r.stderr ? ': ' + r.stderr.trim() : ''}`);
-  return (r.stdout ?? '').trim();
-};
 
 async function main() {
   if (!existsSync(PENDING)) process.exit(0); // 宣言された契約が無ければ何もしない
@@ -46,11 +26,8 @@ async function main() {
 
   const failures = [];
   for (const line of lines) {
-    let c;
-    try { c = JSON.parse(line); } catch { failures.push({ action: line.slice(0, 60), reason: 'bad-json', evidence: line }); continue; }
-    if (!c.probe) { failures.push({ action: c.action || '(no action)', reason: 'no-probe', evidence: '' }); continue; }
-    const v = await verify({ action: c.action || c.probe, probe: shellProbe(String(c.probe)), expect: expectFromSpec(c.expect) });
-    if (!v.ok) failures.push(v);
+    const f = await checkContract(line, verify);
+    if (f) failures.push(f);
   }
 
   if (failures.length === 0) {
@@ -61,10 +38,19 @@ async function main() {
   // Claude Code: stderr ＋ exit 2 で stop をブロックし、理由をエージェントに返す。
   let msg = `genchi: ${failures.length}/${lines.length} 件の完了契約が実状態で確認できませんでした。完了を主張する前に対処してください:\n`;
   for (const f of failures) {
-    msg += `  - "${f.action}" — ${f.reason}${f.detail ? ': ' + f.detail : ''}\n    再取得: ${f.evidence ?? ''}\n`;
+    const x = f.expectation ? ` [${f.expectation}]` : '';
+    msg += `  - "${f.action}"${x} — ${f.reason}${f.detail ? ': ' + f.detail : ''}\n    probe の出力: ${f.evidence ?? ''}\n`;
   }
   process.stderr.write(msg);
   process.exit(2);
 }
 
-main().catch((e) => { process.stderr.write(`genchi stop-hook error: ${e && e.message ? e.message : e}\n`); process.exit(0); });
+// フック自身が壊れたときに exit 0 で通すのは、確認できていないものを確認済みとして
+// 扱うことそのもの。ゲートが動かなかったなら、完了も名乗らせない。
+main().catch((e) => {
+  process.stderr.write(
+    `genchi stop-hook error: ${e && e.message ? e.message : e}\n` +
+      '完了契約を検証できませんでした。検証できていない以上、完了は確認されていません。\n',
+  );
+  process.exit(2);
+});

@@ -100,3 +100,83 @@ test('ちゃんと書かれた契約は通る', () => {
   const r = withContracts(JSON.stringify(c), (d) => run(['guard', 'contracts.jsonl'], d));
   assert.equal(r.code, 0, r.out);
 });
+
+/**
+ * Claude Code の Stop フック（adapters/）を実際に起動して確かめる。
+ *
+ * 0.4.1 で `genchi guard` の「黙って nonempty に落ちる」を潰したとき、同じ解釈が
+ * コピーされていたフック側は直っていなかった。README が配線しろと言っているのは
+ * フックの方なので、直っていない側が実際に使われる側だった。
+ * ここが無テストだったから2つのバージョンが別々に生きられた。
+ */
+const HOOK = resolve(HERE, '..', 'adapters', 'claude-code', 'genchi-stop-hook.mjs');
+
+function runHook(lines, dir) {
+  const file = join(dir, 'pending.jsonl');
+  writeFileSync(file, Array.isArray(lines) ? lines.map((l) => JSON.stringify(l)).join('\n') : lines);
+  return spawnSync(process.execPath, [HOOK], {
+    encoding: 'utf8',
+    env: { ...process.env, GENCHI_PENDING: file },
+  });
+}
+
+test('Stop フック: 知らない expect.type を「空でなければ通る」に読み替えない', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'genchi-hook-'));
+  try {
+    // probe は "0" を返す。cnt が nonempty に化けると "0" は非空なので通ってしまう。
+    const r = runHook([{ action: 'insert 45 rows', probe: 'echo 0', expect: { type: 'cnt', value: 45 } }], dir);
+    assert.equal(r.status, 2, '知らない期待は完了をブロックすること');
+    assert.match(r.stderr, /bad-expect/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Stop フック: expect を書き忘れた契約は確認済みにしない', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'genchi-hook-'));
+  try {
+    const r = runHook([{ action: 'insert 45 rows', probe: 'echo 0' }], dir);
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /expectation confirms nothing/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Stop フック: フック自身が壊れたら通さない（fail closed）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'genchi-hook-'));
+  try {
+    // pending がディレクトリなら readFileSync が EISDIR で throw する。
+    // 「検証できなかった」を「検証OK」として返すのが、このゲートが防ぐ形そのもの。
+    const r = spawnSync(process.execPath, [HOOK], {
+      encoding: 'utf8',
+      env: { ...process.env, GENCHI_PENDING: dir },
+    });
+    assert.equal(r.status, 2, 'フックが落ちたときに exit 0 で完了を通さないこと');
+    assert.match(r.stderr, /stop-hook error/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Stop フック: 満たされた契約は通し、未達はブロックする', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'genchi-hook-'));
+  try {
+    const ok = runHook([{ action: 'insert 45 rows', probe: 'echo 45', expect: { type: 'count', value: 45 } }], dir);
+    assert.equal(ok.status, 0);
+    const bad = runHook([{ action: 'insert 45 rows', probe: 'echo 0', expect: { type: 'count', value: 45 } }], dir);
+    assert.equal(bad.status, 2);
+    assert.match(bad.stderr, /\[count\(45\)\]/, '何を訊いたかを出すこと');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('契約の解釈は CLI とフックで同じモジュールを使う', async () => {
+  // 2つのコピーが別々に生きていたのが 0.4.1 の穴だった。
+  const { expectFromSpec } = await import('../src/contract.mjs');
+  assert.equal(expectFromSpec({ type: 'count', value: 45 }).genchiLabel, 'count(45)');
+  assert.equal(expectFromSpec({ type: 'nonEmpty' }).genchiLabel, 'nonEmpty', '大文字小文字は同じ期待として読む');
+  assert.throws(() => expectFromSpec({ type: 'nope' }), /unknown expect\.type/);
+  assert.throws(() => expectFromSpec(undefined), /confirms nothing/);
+});

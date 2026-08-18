@@ -52,10 +52,10 @@ await gate({
   probe: () => db.count({ where: { batch: 123 } }), // ← re-fetches real state
   expect: expect.count(45),
 });
-// reaching this line means the 45 rows are really there. Otherwise it threw.
+// reaching this line means the probe was called and returned 45. Otherwise it threw.
 ```
 
-`gate()` throws `GenchiIncomplete` unless real state passes, so **"done" is unreachable without the reality to back it**. If you want the verdict without the throw, use `verify()`:
+`gate()` throws `GenchiIncomplete` unless the probe's result passes, so **"done" is unreachable without something having been re-read and checked**. If you want the verdict without the throw, use `verify()`:
 
 ```js
 const v = await verify({ action: 'upload', probe: () => fetchStatus(url), expect: expect.contains('200') });
@@ -69,7 +69,7 @@ if (!v.ok) {
 
 `verify` / `gate` **accept only a probe** — the evidence has to come from calling something, not from a value you hand in alongside the claim. Omit the probe and it throws `TypeError`. That puts the re-read in its own expression, written on purpose, at the moment the completion is asserted.
 
-Empty results, errors, and timeouts are never swallowed. If `probe` throws, it is reported **as-is** with `reason: 'probe-error'` — never imagined into a success. A returned `count` of 0 (nothing landed) is incomplete too.
+Empty results and errors are never swallowed. If `probe` throws, it is reported **as-is** with `reason: 'probe-error'` — never imagined into a success. A returned `count` of 0 (nothing landed) is incomplete too. Note that genchi applies **no timeout of its own**: a probe that never settles hangs the gate rather than failing it, so put the timeout in the probe (`curl --max-time`, a statement timeout) where you need one.
 
 ### What this does not buy
 
@@ -83,6 +83,16 @@ await verify({ action: 'insert 45 rows',
 ```
 
 Until 0.3.0 this README said that was "structurally impossible" and "unwritable". It is one line, and the CLI printed `re-fetched: 45` about a `--probe "echo 45"` that re-fetched nothing — this library asserting, in its own output, a thing it had not checked. That is the failure it exists to prevent, so the wording is now what it can actually stand behind: *the probe returned*.
+
+**Whether the read was independent of the write.** A probe that genuinely re-fetches can still
+re-fetch through the same client, transaction, or cache that produced the misleading result in the
+first place. A transaction reading its own uncommitted writes, a cache in front of the store, a
+stale read replica, a bug in the client itself — in each case the read is real and still agrees with
+a write that did not land. Reading through an independent path *reduces* that: a different client,
+plain `curl` instead of the SDK, the database CLI instead of the ORM. It does not eliminate it —
+they may still share a backend, a replica, or the same credentials. genchi cannot enforce any of
+this: a probe is a function, and the library cannot see which connection it used. Treat path
+independence as a practice, and spend it where the write path is the part you doubt.
 
 What remains true is worth having, and it is not nothing:
 
@@ -144,7 +154,7 @@ You can write your own: return `true` / `{ok:true}` to pass, `{ok:false, detail}
 
 ## Use from the shell
 
-Agents and scripts that don't write JS can still hand a re-fetch command to genchi. **The raw probe output is always emitted as evidence — nothing is invented.**
+Agents and scripts that don't write JS can still hand a re-fetch command to genchi. **The probe's own output is what gets emitted as evidence — nothing is invented.** (Shell output is trimmed, and evidence is JSON-encoded and truncated at 200 characters for display; what it is never replaced with is a summary of it.)
 
 ```bash
 # inserted rows → count them again and check it equals 45
@@ -195,7 +205,7 @@ genchi is the version of that contract enforced **by machinery instead of good i
 ## Design principles
 
 - Zero dependencies, framework-agnostic, and no LLM or API key at runtime
-- Never fabricate evidence — `evidence` is always what the probe returned, verbatim
+- Never fabricate evidence — `evidence` always derives from what the probe returned (encoded, and truncated at 200 characters for display), never from a description of it
 - Require a probe, so the re-read is an expression somebody wrote on purpose rather than a field filled in beside the claim — and say plainly that this is a separation to keep, not one that can be enforced
 
 ## Related tools

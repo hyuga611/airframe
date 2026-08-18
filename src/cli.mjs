@@ -20,9 +20,9 @@
 //
 // 実行時に LLM もAPIキーも使わない。依存ゼロ。
 
-import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { verify, expect as X } from './index.mjs';
+import { shellProbe, expectFromSpec } from './contract.mjs';
 
 // package.json から読む。定数にしていたせいで、このCLIが1リリース分ずれた番号を
 // 答えていたことがある（reflint 0.10.0 の CHANGELOG が名指ししているのがそれ）。
@@ -98,36 +98,6 @@ function pickExpect(flags) {
   if ('equals' in flags) return X.equals(flagValue(flags, 'equals'));
   if ('matches' in flags) return X.matches(new RegExp(flagValue(flags, 'matches')));
   return undefined;
-}
-
-// シェルコマンドを実行して stdout を返す probe。非ゼロ終了は throw（＝probe失敗として扱う）。
-function shellProbe(cmd) {
-  return () => {
-    const r = spawnSync(cmd, { shell: true, encoding: 'utf8' });
-    if (r.error) throw r.error;
-    if (typeof r.status === 'number' && r.status !== 0) {
-      const err = new Error(`exit ${r.status}${r.stderr ? `: ${r.stderr.trim()}` : ''}`);
-      throw err;
-    }
-    return (r.stdout ?? '').trim();
-  };
-}
-
-function expectFromSpec(spec) {
-  // 期待を書いていない契約は契約ではない。以前はここで黙って nonempty に落ちていたので、
-  // `expect` を書き忘れた行が「出力が空でなければ達成」に化けて確認済みとして数えられた。
-  if (!spec || typeof spec !== 'object' || !spec.type) {
-    throw new Error('contract has no expect.type — a contract without an expectation confirms nothing');
-  }
-  switch (spec.type) {
-    case 'nonempty': return X.nonEmpty();
-    case 'count': return X.count(Number(spec.value));
-    case 'at-least': return X.atLeast(Number(spec.value));
-    case 'contains': return X.contains(String(spec.value));
-    case 'equals': return X.equals(String(spec.value));
-    case 'matches': return X.matches(new RegExp(String(spec.value)));
-    default: throw new Error(`unknown expect.type: ${spec.type}`);
-  }
 }
 
 async function cmdVerify(p) {
