@@ -131,10 +131,9 @@ export interface SealContext {
  *    mints seals, so it can seal anything. Symmetric or asymmetric makes no
  *    difference to this: whoever measures the plan is trusted to measure honestly.
  *  * **It does not cover `status` or `approved_by`.** Those change legitimately
- *    after the seal is minted, and sealing them would need the key at every
- *    transition. Someone who can write the plan table can still mark a plan
- *    approved by a name that never read it. What they cannot do is change what
- *    the plan says — which is the half that decides what gets written.
+ *    after the plan seal is minted, so they are sealed separately, when the
+ *    approval happens — see {@link approvalSeal}. This function covers what the
+ *    plan says; that one covers whether anybody agreed to it.
  */
 export function planSeal(plan: Plan, ctx: SealContext, key: string): string {
   const h = createHmac('sha256', key);
@@ -143,6 +142,51 @@ export function planSeal(plan: Plan, ctx: SealContext, key: string): string {
     ctx.id,
     ctx.createdBy,
     ...planParts(plan),
+  ]);
+  return h.digest('hex');
+}
+
+/** What an approval seal is bound to. */
+export interface ApprovalContext {
+  /** The row the approval belongs to. */
+  readonly id: string;
+  /** The plan's own seal, so an approval cannot be lifted onto a different plan. */
+  readonly planSeal: string;
+  /** The name recorded as having approved it — the field the whole seal exists to protect. */
+  readonly approvedBy: string;
+}
+
+/**
+ * The other half: proof that the approval itself happened.
+ *
+ * Sealing the plan stops the store credential changing *what* gets written, and
+ * leaves it able to change *whether anybody agreed to it*. `status` and
+ * `approved_by` are two ordinary columns; setting them to `'approved'` and a
+ * plausible name is one `UPDATE`, and the apply then commits a measured,
+ * correctly sealed plan that no human ever read. For a library whose entire
+ * subject is the gap between "the model proposed this" and "a person agreed to
+ * it", that is the more embarrassing of the two holes, and it was open until
+ * 0.9.0.
+ *
+ * Bound to the plan's own seal rather than to its id alone, so an approval cannot
+ * be lifted from one plan onto another, and so re-sealing the plan invalidates
+ * every approval of the version it replaced.
+ *
+ * The one thing it does not stop is a status rollback: `applied` set back to
+ * `approved` replays a genuine approval, and this seal still verifies because
+ * nothing about it is false. That replay is caught a layer down instead — the
+ * rows now hold the values the plan calls `after`, so the pre-apply comparison
+ * refuses with `ROW_CHANGED`, and a re-run `DELETE` refuses with `ROWS_MOVED`.
+ * Sealing a monotonic status chain would be the general answer and is out of
+ * proportion to what it adds over a measurement that already refuses.
+ */
+export function approvalSeal(ctx: ApprovalContext, key: string): string {
+  const h = createHmac('sha256', key);
+  absorb((s) => void h.update(s), [
+    'llm-safe-sql/approval/v1',
+    ctx.id,
+    ctx.planSeal,
+    ctx.approvedBy,
   ]);
   return h.digest('hex');
 }

@@ -11,7 +11,7 @@ import type { Adapter, Row } from './adapter.js';
 // the apply wrote '007' back over their edit and reported success. The digest in
 // `digest.ts` has always been strict here; only this comparison was not.
 import { sameValueAndType as same } from './compare.js';
-import { planDigest, planSeal, sealMatches } from './digest.js';
+import { approvalSeal, planDigest, planSeal, sealMatches } from './digest.js';
 import type { Plan, PlanRow, RefusalCode } from './engine.js';
 import { columnList } from './engine.js';
 import { keyOf, keyPredicate, qname } from './keys.js';
@@ -214,7 +214,15 @@ export class Applier {
     }
     assertNotSelfApproval(rec, approver, opts);
     this.verifyDigest(rec);
-    const moved = await this.store.transition(id, ['pending'], 'approved', approver);
+    const moved = await this.store.transition(id, ['pending'], 'approved', {
+      by: approver,
+      // `rec.seal` is non-null whenever a key is configured — `verifyDigest` above
+      // refuses the record otherwise — so this is the sealed path or no path.
+      seal: this.sealKey === undefined || rec.seal === null ? null : approvalSeal(
+        { id: rec.id, planSeal: rec.seal, approvedBy: approver },
+        this.sealKey,
+      ),
+    });
     if (!moved) {
       throw new ApplyRefused('NOT_APPROVED', `Plan ${id} changed state while being approved; nothing was done.`);
     }
@@ -294,6 +302,7 @@ export class Applier {
       );
     }
     this.verifyDigest(rec);
+    this.verifyApproval(rec);
 
     const plan = rec.plan;
     if (plan.dialect !== this.adapter.dialect) {
@@ -717,6 +726,59 @@ export class Applier {
         `Plan ${rec.id} does not match its seal. The record, the row it lives in, or the actor who proposed ` +
           'it has been changed by something holding the store credential but not the sealing key, so what ' +
           'it describes is not what was measured.',
+      );
+    }
+  }
+
+  /**
+   * Prove that the approval this plan claims actually happened.
+   *
+   * Sealing the plan stops the store credential changing what a plan says and
+   * leaves `status` and `approved_by` as two ordinary columns. Setting them is
+   * one `UPDATE`, and the apply then commits a correctly measured, correctly
+   * sealed plan that no human ever read — which, for a library whose whole
+   * subject is that gap, is the worse of the two holes.
+   *
+   * Both directions refuse, for the reasons `verifyDigest` gives: a deployment
+   * holding a key will not accept an approval with no proof, and one holding no
+   * key will not accept a proof it cannot check.
+   *
+   * What this cannot catch is a status rollback — `applied` set back to
+   * `approved` replays an approval that genuinely happened, and nothing here is
+   * false about it. That one is caught below instead: the rows now hold the
+   * values the plan calls `after`, so the pre-apply comparison refuses with
+   * `ROW_CHANGED`, and a repeated `DELETE` refuses with `ROWS_MOVED`.
+   */
+  private verifyApproval(rec: StoredPlan): void {
+    if (this.sealKey === undefined) {
+      if (rec.approvalSeal !== null) {
+        throw new ApplyRefused(
+          'PLAN_UNSEALED',
+          `Plan ${rec.id} carries a sealed approval and this process holds no key to check it. Set the ` +
+            'same key here; applying without it would take `approved_by` at its word, and that column is ' +
+            'writable by anything holding the store credential.',
+        );
+      }
+      return;
+    }
+    if (rec.approvalSeal === null || rec.seal === null) {
+      throw new ApplyRefused(
+        'PLAN_UNSEALED',
+        `Plan ${rec.id} is marked approved but carries no proof of it, and this deployment requires one. ` +
+          'Either it was approved before sealing was configured — approve it again — or `status` and ' +
+          '`approved_by` were written directly, which is what sealing the approval exists to catch.',
+      );
+    }
+    const expected = approvalSeal(
+      { id: rec.id, planSeal: rec.seal, approvedBy: rec.approvedBy ?? '' },
+      this.sealKey,
+    );
+    if (!sealMatches(expected, rec.approvalSeal)) {
+      throw new ApplyRefused(
+        'PLAN_TAMPERED',
+        `Plan ${rec.id} does not match the seal on its approval. The name recorded as having approved it, ` +
+          'or the plan that name approved, is not the one this proof was written for — so nobody has ' +
+          'agreed to what this would now write.',
       );
     }
   }

@@ -49,6 +49,15 @@ export interface StoredPlan {
   readonly status: PlanStatus;
   readonly createdBy: string;
   readonly approvedBy: string | null;
+  /**
+   * Proof that the approval in `approvedBy` happened, when sealing is configured.
+   *
+   * Sealing the plan leaves `status` and `approved_by` as two ordinary columns
+   * that one `UPDATE` can set — so a party holding the store credential could not
+   * change what a plan said and could still have it applied without anybody
+   * agreeing to it. Written by the approval, checked by the apply.
+   */
+  readonly approvalSeal: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -68,6 +77,21 @@ export class StoreUnavailable extends Refusal {
   }
 }
 
+/**
+ * Who approved, and the proof of it — one argument, because they must be written
+ * together or not at all.
+ *
+ * They were two independent parameters in the first draft of this, and that is a
+ * shape in which the name can be recorded without the seal that makes it mean
+ * anything. Passing them as a pair is not tidiness; it removes the state where
+ * `approved_by` says a human agreed and nothing attests to it.
+ */
+export interface Approval {
+  readonly by: string;
+  /** `null` when this deployment has no sealing key, which is the pre-0.9.0 behaviour. */
+  readonly seal: string | null;
+}
+
 export interface PlanStore {
   put(record: StoredPlan): Promise<void>;
   get(id: string): Promise<StoredPlan | undefined>;
@@ -77,7 +101,7 @@ export interface PlanStore {
    * Returns true only when exactly one row moved. Anything else — zero rows, or
    * more than one — must be treated as "somebody else got there first".
    */
-  transition(id: string, from: readonly PlanStatus[], to: PlanStatus, approvedBy?: string): Promise<boolean>;
+  transition(id: string, from: readonly PlanStatus[], to: PlanStatus, approval?: Approval): Promise<boolean>;
   audit(entry: AuditEntry): Promise<void>;
   list(opts?: { status?: PlanStatus; limit?: number }): Promise<StoredPlan[]>;
 }
@@ -105,6 +129,7 @@ export async function recordPlan(
     status: 'pending',
     createdBy,
     approvedBy: null,
+    approvalSeal: null,
     createdAt: at,
     updatedAt: at,
   };
@@ -149,14 +174,15 @@ export class MemoryPlanStore implements PlanStore {
     return this.plans.get(id);
   }
 
-  async transition(id: string, from: readonly PlanStatus[], to: PlanStatus, approvedBy?: string): Promise<boolean> {
+  async transition(id: string, from: readonly PlanStatus[], to: PlanStatus, approval?: Approval): Promise<boolean> {
     const cur = this.plans.get(id);
     if (cur === undefined || !from.includes(cur.status)) return false;
     this.plans.set(id, {
       ...cur,
       status: to,
       updatedAt: nowIso(),
-      approvedBy: approvedBy ?? cur.approvedBy,
+      approvedBy: approval?.by ?? cur.approvedBy,
+      approvalSeal: approval === undefined ? cur.approvalSeal : approval.seal,
     });
     return true;
   }
@@ -210,6 +236,7 @@ export function planStoreDdl(
          body        LONGTEXT     NOT NULL,
          created_by  VARCHAR(255) NOT NULL,
          approved_by VARCHAR(255) NULL,
+         approval_seal CHAR(64)   NULL,
          created_at  VARCHAR(32)  NOT NULL,
          updated_at  VARCHAR(32)  NOT NULL,
          PRIMARY KEY (id),
@@ -240,6 +267,7 @@ export function planStoreDdl(
        body        text NOT NULL,
        created_by  text NOT NULL,
        approved_by text,
+       approval_seal text,
        created_at  text NOT NULL,
        updated_at  text NOT NULL
      )`,
@@ -342,16 +370,16 @@ export class SqlPlanStore implements PlanStore {
     for (const sql of planStoreDdl(this.dialect, this.planTable, this.auditTable)) {
       await this.adapter.execute(sql);
     }
-    await this.addSealColumn();
+    await this.addSealColumns();
   }
 
   /**
-   * Add `seal` to a plan table created before 0.9.0.
+   * Add the columns 0.9.0 introduced to a plan table an earlier version created.
    *
    * `CREATE TABLE IF NOT EXISTS` does nothing to a table that already exists, so
-   * the column arrives here or not at all — and not at all is the bad kind of
-   * failure: `put` would throw on every plan, at the first write of a deployment
-   * that had just run `migrate` and been told it was ready.
+   * they arrive here or not at all — and not at all is the bad kind of failure:
+   * `put` would throw on every plan, at the first write of a deployment that had
+   * just run `migrate` and been told it was ready.
    *
    * Guarded by reading the catalogue rather than by catching the error, because
    * the three engines disagree about what they raise for a duplicate column and
@@ -359,19 +387,22 @@ export class SqlPlanStore implements PlanStore {
    * check that has to recognise three dialects' error text is a check that will
    * be wrong on the fourth.
    */
-  private async addSealColumn(): Promise<void> {
+  private async addSealColumns(): Promise<void> {
     const shape = await this.adapter.introspect(this.planTable);
-    if (shape.columns.some((c) => c.name.toLowerCase() === 'seal')) return;
+    const have = new Set(shape.columns.map((c) => c.name.toLowerCase()));
     const type = this.dialect === 'mysql' ? 'CHAR(64) NULL' : 'text';
-    await this.adapter.execute(`ALTER TABLE ${this.q(this.planTable)} ADD COLUMN seal ${type}`);
+    for (const column of ['seal', 'approval_seal']) {
+      if (have.has(column)) continue;
+      await this.adapter.execute(`ALTER TABLE ${this.q(this.planTable)} ADD COLUMN ${column} ${type}`);
+    }
   }
 
   async put(record: StoredPlan): Promise<void> {
     try {
       await this.adapter.execute(
         `INSERT INTO ${this.q(this.planTable)}
-         (id, status, digest, seal, body, created_by, approved_by, created_at, updated_at)
-       VALUES (${this.p(1)}, ${this.p(2)}, ${this.p(3)}, ${this.p(4)}, ${this.p(5)}, ${this.p(6)}, ${this.p(7)}, ${this.p(8)}, ${this.p(9)})`,
+         (id, status, digest, seal, body, created_by, approved_by, approval_seal, created_at, updated_at)
+       VALUES (${this.p(1)}, ${this.p(2)}, ${this.p(3)}, ${this.p(4)}, ${this.p(5)}, ${this.p(6)}, ${this.p(7)}, ${this.p(8)}, ${this.p(9)}, ${this.p(10)})`,
         [
           record.id,
           record.status,
@@ -380,6 +411,7 @@ export class SqlPlanStore implements PlanStore {
           encodePlan(record.plan),
           record.createdBy,
           record.approvedBy,
+          record.approvalSeal,
           record.createdAt,
           record.updatedAt,
         ],
@@ -391,7 +423,7 @@ export class SqlPlanStore implements PlanStore {
 
   async get(id: string): Promise<StoredPlan | undefined> {
     const rows = await this.adapter.query<Row>(
-      `SELECT id, status, digest, seal, body, created_by, approved_by, created_at, updated_at
+      `SELECT id, status, digest, seal, body, created_by, approved_by, approval_seal, created_at, updated_at
          FROM ${this.q(this.planTable)} WHERE id = ${this.p(1)}`,
       [id],
     );
@@ -399,15 +431,19 @@ export class SqlPlanStore implements PlanStore {
     return r === undefined ? undefined : this.hydrate(r);
   }
 
-  async transition(id: string, from: readonly PlanStatus[], to: PlanStatus, approvedBy?: string): Promise<boolean> {
-    const params: unknown[] = [to, nowIso(), approvedBy ?? null, id, ...from];
-    const inList = from.map((_, i) => this.p(5 + i)).join(', ');
+  async transition(id: string, from: readonly PlanStatus[], to: PlanStatus, approval?: Approval): Promise<boolean> {
+    const params: unknown[] = [to, nowIso(), approval?.by ?? null, approval?.seal ?? null, id, ...from];
+    const inList = from.map((_, i) => this.p(6 + i)).join(', ');
+    // COALESCE on both, so a transition that is not an approval — claiming,
+    // failing, cancelling — leaves the pair alone rather than clearing the proof
+    // of an approval that did happen.
     const res = await this.adapter.execute(
       `UPDATE ${this.q(this.planTable)}
           SET status = ${this.p(1)},
               updated_at = ${this.p(2)},
-              approved_by = COALESCE(${this.p(3)}, approved_by)
-        WHERE id = ${this.p(4)} AND status IN (${inList})`,
+              approved_by = COALESCE(${this.p(3)}, approved_by),
+              approval_seal = COALESCE(${this.p(4)}, approval_seal)
+        WHERE id = ${this.p(5)} AND status IN (${inList})`,
       params,
     );
     // Every transition changes `status`, so the row is different afterwards
@@ -432,7 +468,7 @@ export class SqlPlanStore implements PlanStore {
     const where = opts.status === undefined ? '' : `WHERE status = ${this.p(1)}`;
     const params = opts.status === undefined ? [] : [opts.status];
     const rows = await this.adapter.query<Row>(
-      `SELECT id, status, digest, seal, body, created_by, approved_by, created_at, updated_at
+      `SELECT id, status, digest, seal, body, created_by, approved_by, approval_seal, created_at, updated_at
          FROM ${this.q(this.planTable)} ${where}
         ORDER BY created_at DESC
         LIMIT ${limit}`,
@@ -450,6 +486,10 @@ export class SqlPlanStore implements PlanStore {
       status: String(r['status']) as PlanStatus,
       createdBy: String(r['created_by'] ?? ''),
       approvedBy: r['approved_by'] === null || r['approved_by'] === undefined ? null : String(r['approved_by']),
+      approvalSeal:
+        r['approval_seal'] === null || r['approval_seal'] === undefined || r['approval_seal'] === ''
+          ? null
+          : String(r['approval_seal']),
       createdAt: String(r['created_at'] ?? ''),
       updatedAt: String(r['updated_at'] ?? ''),
     };

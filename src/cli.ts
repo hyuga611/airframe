@@ -466,9 +466,10 @@ async function run(args: Args): Promise<number> {
           warn.push(
             `plans are not sealed, so anything that can write \`${s.store.planTable}\` can replace an approved ` +
               'plan with a different one, recompute its checksum, and the apply will commit what it finds — ' +
-              'with the card, the audit row and the approver all still naming the plan that was replaced. ' +
-              'Set `sealKey` to the same secret on the planning and applying sides, and keep it out of reach ' +
-              'of the store account.',
+              'with the card, the audit row and the approver all still naming the plan that was replaced. It ' +
+              'can also set `status` and `approved_by` by hand, so a plan nobody read is applied as an ' +
+              'approved one. Set `sealKey` to the same secret on the planning and applying sides, and keep ' +
+              'it out of reach of the store account.',
           );
         }
 
@@ -479,8 +480,8 @@ async function run(args: Args): Promise<number> {
           // server was asked for, and the seal is the first control here that
           // cannot be probed at all from one side.
           out(
-            `  + plans are sealed (configured, not probed) — writing \`${s.store.planTable}\` is no longer enough ` +
-              'to change what an approved plan says.',
+            `  + plans and approvals are sealed (configured, not probed) — writing \`${s.store.planTable}\` is no ` +
+              'longer enough to change what an approved plan says, or to record an approval that did not happen.',
           );
         }
         for (const w of warn) {

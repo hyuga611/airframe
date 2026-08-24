@@ -14,10 +14,16 @@
  * approved something else.
  *
  * The seal closes that by keying the same bytes with a secret the store
- * credential does not carry. It does not defend against a compromised planning
- * process — that process must be able to mint seals — and it does not cover
- * `status` or `approved_by`, which change legitimately after sealing. Both limits
- * are pinned below rather than left to be discovered.
+ * credential does not carry, and the approval seal closes the other half: with
+ * only the plan sealed, that same party could not change what a plan said and
+ * could still set `status` and `approved_by` by hand and have it applied with
+ * nobody having read it.
+ *
+ * What remains, pinned below rather than left to be discovered: it does not
+ * defend against a compromised planning process, which must be able to mint
+ * seals; and it does not see a status rollback, because replaying a real
+ * approval makes no false claim — that one is refused a layer down, by the
+ * measurement, when the rows turn out to have moved on.
  */
 import { describe, test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -271,11 +277,11 @@ describe('the plan seal', { skip }, () => {
     assert.equal(await qtyOf(1), 9999, 'the unsealed default cannot stop this, and `check` says so');
   });
 
-  test('the seal does not cover the approval — a forged approved_by still passes', async () => {
-    // Honest limit. `status` and `approved_by` change after the seal is minted, so
-    // sealing them would need the key at every transition. Someone who can write
-    // the plan table can still mark an untouched plan approved by a name that
-    // never saw it; what they cannot do is change what that plan says.
+  test('an approval written straight into the row is refused', async () => {
+    // The other half. Sealing the plan leaves `status` and `approved_by` as two
+    // ordinary columns, and setting them is one UPDATE — so until 0.9.0 the store
+    // credential could not change what a plan said and could still have it applied
+    // with nobody having read it.
     const applier = new Applier({ adapter: writing, policy, store, sealKey: KEY });
     const plan = await engine.plan('UPDATE orders SET qty = 11 WHERE id = 1');
     const rec = await recordPlan(store, plan, 'model', KEY);
@@ -285,7 +291,120 @@ describe('the plan seal', { skip }, () => {
       [rec.id],
     );
 
-    const res = await applier.apply(rec.id, 'a-worker');
-    assert.equal(res.rowsAffected, 1, 'documented gap: the approval itself is not sealed');
+    await assert.rejects(
+      () => applier.apply(rec.id, 'a-worker'),
+      (e: unknown) => e instanceof ApplyRefused && e.code === 'PLAN_UNSEALED',
+    );
+    assert.equal(await qtyOf(1), 10, 'nothing may have been written');
+  });
+
+  test('the approver named on a sealed approval cannot be changed afterwards', async () => {
+    const applier = new Applier({ adapter: writing, policy, store, sealKey: KEY });
+    const plan = await engine.plan('UPDATE orders SET qty = 11 WHERE id = 1');
+    const rec = await recordPlan(store, plan, 'model', KEY);
+    await applier.approve(rec.id, 'a-human');
+
+    await bookkeeping.query('UPDATE llm_safe_sql_plans SET approved_by = ? WHERE id = ?', ['someone-else', rec.id]);
+
+    await assert.rejects(
+      () => applier.apply(rec.id, 'a-worker'),
+      (e: unknown) => e instanceof ApplyRefused && e.code === 'PLAN_TAMPERED',
+    );
+    assert.equal(await qtyOf(1), 10);
+  });
+
+  test('an approval cannot be lifted onto another plan', async () => {
+    // Bound to the plan's own seal, so copying the pair from an approved plan onto
+    // a pending one does not carry the approval with it.
+    const applier = new Applier({ adapter: writing, policy, store, sealKey: KEY });
+    const approvedPlan = await engine.plan('UPDATE orders SET qty = 11 WHERE id = 1');
+    const approvedRec = await recordPlan(store, approvedPlan, 'model', KEY);
+    await applier.approve(approvedRec.id, 'a-human');
+
+    const other = await engine.plan('UPDATE orders SET qty = 99 WHERE id = 2');
+    const otherRec = await recordPlan(store, other, 'model', KEY);
+
+    await bookkeeping.query(
+      `UPDATE llm_safe_sql_plans
+          SET status = 'approved',
+              approved_by = (SELECT approved_by FROM llm_safe_sql_plans WHERE id = ?),
+              approval_seal = (SELECT approval_seal FROM llm_safe_sql_plans WHERE id = ?)
+        WHERE id = ?`,
+      [approvedRec.id, approvedRec.id, otherRec.id],
+    );
+
+    await assert.rejects(
+      () => applier.apply(otherRec.id, 'a-worker'),
+      (e: unknown) => e instanceof ApplyRefused && e.code === 'PLAN_TAMPERED',
+    );
+    assert.equal(await qtyOf(2), 20, 'the borrowed approval must not have applied anything');
+  });
+
+  test('a sealed approval is refused by an applier that holds no key', async () => {
+    const applier = new Applier({ adapter: writing, policy, store, sealKey: KEY });
+    const plan = await engine.plan('UPDATE orders SET qty = 11 WHERE id = 1');
+    const rec = await recordPlan(store, plan, 'model', KEY);
+    await applier.approve(rec.id, 'a-human');
+
+    // Same record, a worker that was deployed without the secret. It must not fall
+    // back to taking `approved_by` at its word.
+    const keyless = new Applier({ adapter: writing, policy, store });
+    await assert.rejects(
+      () => keyless.apply(rec.id, 'a-worker'),
+      (e: unknown) => e instanceof ApplyRefused && e.code === 'PLAN_UNSEALED',
+    );
+  });
+
+  test('a transition that is not an approval leaves the proof alone', async () => {
+    // `apply` claims the plan by moving it to `applying`, with no approval
+    // argument. If that cleared the pair, the very next check would refuse a plan
+    // whose approval was real — the guard failing closed on its own bookkeeping.
+    const applier = new Applier({ adapter: writing, policy, store, sealKey: KEY });
+    const plan = await engine.plan('UPDATE orders SET qty = 11 WHERE id = 1');
+    const rec = await recordPlan(store, plan, 'model', KEY);
+    const approved = await applier.approve(rec.id, 'a-human');
+    assert.notEqual(approved.approvalSeal, null);
+
+    await applier.apply(rec.id, 'a-worker');
+    const after = await store.get(rec.id);
+    assert.equal(after?.status, 'applied');
+    assert.equal(after?.approvedBy, 'a-human');
+    assert.equal(after?.approvalSeal, approved.approvalSeal, 'the proof must survive the claim');
+  });
+
+  test('with no key configured, an approval written straight into the row is still accepted', async () => {
+    // The pre-0.9.0 behaviour, pinned so the unsealed default stays honestly
+    // described rather than quietly assumed to be safe.
+    const keyless = new Applier({ adapter: writing, policy, store });
+    const plan = await engine.plan('UPDATE orders SET qty = 11 WHERE id = 1');
+    const rec = await recordPlan(store, plan, 'model');
+
+    await bookkeeping.query(
+      "UPDATE llm_safe_sql_plans SET status = 'approved', approved_by = 'nobody' WHERE id = ?",
+      [rec.id],
+    );
+
+    const res = await keyless.apply(rec.id, 'a-worker');
+    assert.equal(res.rowsAffected, 1, 'without a key there is nothing to check this against');
+  });
+
+  test('replaying an applied plan is caught by the measurement, not by the seal', async () => {
+    // The one thing the approval seal cannot see: rolling `applied` back to
+    // `approved` replays an approval that genuinely happened, so the proof still
+    // verifies. The rows have moved on, and that is what refuses.
+    const applier = new Applier({ adapter: writing, policy, store, sealKey: KEY });
+    const plan = await engine.plan('UPDATE orders SET qty = 11 WHERE id = 1');
+    const rec = await recordPlan(store, plan, 'model', KEY);
+    await applier.approve(rec.id, 'a-human');
+    await applier.apply(rec.id, 'a-worker');
+    assert.equal(await qtyOf(1), 11);
+
+    await bookkeeping.query("UPDATE llm_safe_sql_plans SET status = 'approved' WHERE id = ?", [rec.id]);
+
+    await assert.rejects(
+      () => applier.apply(rec.id, 'a-worker'),
+      (e: unknown) => e instanceof ApplyRefused && e.code === 'ROW_CHANGED',
+    );
+    assert.equal(await qtyOf(1), 11, 'the row must not have been written twice');
   });
 });

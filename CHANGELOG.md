@@ -43,14 +43,42 @@ All notable changes to this project are documented here. The format follows
   the self-approval refusal reads — cannot be rewritten.
 
   What it does not buy, because a control's limits belong next to it: it does not
-  defend against a compromised planning process, which mints seals; and it does
-  not cover `status` or `approved_by`, which change legitimately after the seal
-  exists. Someone who can write the plan table can still mark an untouched plan
-  approved by a name that never read it. Both limits have tests.
+  defend against a compromised planning process, which mints seals. That is not a
+  property of the algorithm — whoever measures the plan is trusted to measure
+  honestly, and a signature by that party says nothing a symmetric tag does not.
 
   `check` now prints which of the two is in force, and says "configured, not
   probed" about the sealed case, because it is the first control here that cannot
   be established by asking the server.
+
+- **The approval is sealed too, separately, because it happens later.** Sealing
+  only the plan closes half the hole. `status` and `approved_by` are two ordinary
+  columns, so the same party who could no longer change *what* a plan said could
+  still write
+
+  ```sql
+  UPDATE llm_safe_sql_plans SET status = 'approved', approved_by = 'nobody' WHERE id = ...
+  ```
+
+  and the apply would commit a correctly measured, correctly sealed plan that no
+  human had read. For a library whose entire subject is the gap between "the
+  model proposed this" and "a person agreed to it", that was the worse of the
+  two.
+
+  `Applier.approve` now mints a second HMAC over the plan's own seal and the
+  approver's name, and the apply refuses without it. Binding it to the plan seal
+  rather than to the row id alone means an approval cannot be lifted from one
+  plan onto another, and that re-sealing a plan invalidates every approval of the
+  version it replaced.
+
+  The limit here is a status rollback: setting `applied` back to `approved`
+  replays an approval that genuinely happened, so both seals still verify and
+  nothing about them is false. That is refused a layer down instead, by the
+  measurement the library already makes — the rows hold the values the plan calls
+  `after`, so the pre-apply comparison fails with `ROW_CHANGED`, and a repeated
+  `DELETE` fails with `ROWS_MOVED`. Sealing a monotonic status chain would be the
+  general answer and buys nothing over a check that already refuses. Tested in
+  both directions.
 
 - **`migrate` adds the `seal` column to a plan table created by an earlier
   version.** `CREATE TABLE IF NOT EXISTS` does nothing to a table that exists, so
@@ -73,6 +101,13 @@ All notable changes to this project are documented here. The format follows
   appears on the card.
 
 ### Changed
+
+- **`PlanStore.transition` takes an `Approval` object instead of an
+  `approvedBy` string.** Breaking for anyone who implements `PlanStore`
+  themselves; the fix is mechanical. The pair is one argument rather than two
+  because the name and the proof of it must be written together or not at all —
+  two independent parameters is a shape in which `approved_by` can be recorded
+  with nothing attesting to it, which is the state this release exists to remove.
 
 - **The plan digest is now `v4` and older stored plans no longer verify.** A plan
   written by 0.8.0 or earlier covers a smaller surface than this version believes

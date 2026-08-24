@@ -19,6 +19,7 @@ import { Policy } from '../../src/policy.js';
 import {
   SqlPlanStore,
   recordPlan,
+  type Approval,
   type AuditEntry,
   type PlanStore,
   type PlanStatus,
@@ -55,8 +56,8 @@ class AuditFails implements PlanStore {
   constructor(private readonly inner: PlanStore, private readonly phase: string) {}
   put(r: StoredPlan): Promise<void> { return this.inner.put(r); }
   get(id: string): Promise<StoredPlan | undefined> { return this.inner.get(id); }
-  transition(id: string, from: readonly PlanStatus[], to: PlanStatus, by?: string): Promise<boolean> {
-    return this.inner.transition(id, from, to, by);
+  transition(id: string, from: readonly PlanStatus[], to: PlanStatus, approval?: Approval): Promise<boolean> {
+    return this.inner.transition(id, from, to, approval);
   }
   async audit(e: AuditEntry): Promise<void> {
     if (e.phase === this.phase) throw new Error('audit sink is down');
@@ -452,6 +453,49 @@ for (const label of ['mysql', 'postgres']) {
     );
     const rows = await c.bookkeeping.query<Row>('SELECT qty FROM apply_orders WHERE id = 1');
     assert.equal(Number(rows[0]?.['qty']), 10);
+  });
+
+  test(`[${label}] an approval written straight into the row is refused when sealed`, async () => {
+    const c = of();
+    const KEY = 'k'.repeat(32);
+    const sealing = new Applier({ adapter: c.writing, policy, store: c.store, sealKey: KEY });
+    const plan = await c.engine.plan('UPDATE apply_orders SET qty = 11 WHERE id = 1');
+    const rec = await recordPlan(c.store, plan, 'assistant', KEY);
+
+    // The store credential, marking a plan approved that nobody read.
+    await c.bookkeeping.execute(
+      label === 'mysql'
+        ? "UPDATE llm_safe_sql_plans SET status = 'approved', approved_by = 'nobody' WHERE id = ?"
+        : "UPDATE llm_safe_sql_plans SET status = 'approved', approved_by = 'nobody' WHERE id = $1",
+      [rec.id],
+    );
+
+    await assert.rejects(
+      () => sealing.apply(rec.id, 'alice'),
+      (e: unknown) => e instanceof ApplyRefused && e.code === 'PLAN_UNSEALED',
+    );
+    const rows = await c.bookkeeping.query<Row>('SELECT qty FROM apply_orders WHERE id = 1');
+    assert.equal(Number(rows[0]?.['qty']), 10);
+  });
+
+  test(`[${label}] a genuine sealed approval survives the claim and applies`, async () => {
+    // The other direction, on a real server: the transition to `applying` carries
+    // no approval argument, and must not clear the proof written by the approval.
+    const c = of();
+    const KEY = 'k'.repeat(32);
+    const sealing = new Applier({ adapter: c.writing, policy, store: c.store, sealKey: KEY });
+    const plan = await c.engine.plan('UPDATE apply_orders SET qty = 11 WHERE id = 1');
+    const rec = await recordPlan(c.store, plan, 'assistant', KEY);
+    const approved = await sealing.approve(rec.id, 'alice');
+    assert.notEqual(approved.approvalSeal, null);
+
+    const res = await sealing.apply(rec.id, 'bob');
+    assert.equal(res.rowsAffected, 1);
+    const after = await c.store.get(rec.id);
+    assert.equal(after?.status, 'applied');
+    assert.equal(after?.approvalSeal, approved.approvalSeal);
+    const rows = await c.bookkeeping.query<Row>('SELECT qty FROM apply_orders WHERE id = 1');
+    assert.equal(Number(rows[0]?.['qty']), 11);
   });
 
   test(`[${label}] the plan list shows what is waiting for a person`, async () => {

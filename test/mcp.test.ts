@@ -18,6 +18,7 @@ const stored: StoredPlan = {
   status: 'pending',
   createdBy: 'assistant',
   approvedBy: null,
+  approvalSeal: null,
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
   plan: {

@@ -377,12 +377,19 @@ refused (`PLAN_UNSEALED`) — deliberately, because a deployment that believes i
 is sealing and is not is worse than one that never tried. `check` prints which of
 the two you are running.
 
-It buys one thing and it is worth being exact about which. It does not defend
-against a compromised planning process, which mints seals and can therefore seal
-anything, and it does not cover `status` or `approved_by` — those change
-legitimately after the seal exists, so somebody who can write the plan table can
-still mark a plan approved by a name that never read it. What they cannot do is
-change what the plan says.
+The approval is sealed too, and separately, because it happens later. Sealing
+only the plan would leave `status` and `approved_by` as two ordinary columns —
+so the same party could not change what a plan said and could still mark it
+approved and have it applied with nobody having read it, which for this library
+is the worse of the two.
+
+It is worth being exact about what is left. It does not defend against a
+compromised planning process, which mints seals and can therefore seal anything.
+And it does not see a status rollback: setting `applied` back to `approved`
+replays an approval that genuinely happened, so both seals still verify. That
+one is refused a layer down instead — the rows now hold the values the plan
+calls "after", so the pre-apply comparison fails with `ROW_CHANGED`, and a
+repeated `DELETE` fails with `ROWS_MOVED`.
 
 On PostgreSQL each of these also carries a `schema`, defaulting to `public`, and
 it is pinned on the connection rather than inherited. PostgreSQL's own default is
