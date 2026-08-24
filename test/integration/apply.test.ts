@@ -16,7 +16,16 @@ import { PostgresAdapter } from '../../src/adapters/postgres.js';
 import { Engine } from '../../src/engine.js';
 import { Applier, ApplyRefused } from '../../src/apply.js';
 import { Policy } from '../../src/policy.js';
-import { SqlPlanStore, type AuditEntry, type PlanStore, type PlanStatus, type StoredPlan } from '../../src/store.js';
+import {
+  SqlPlanStore,
+  recordPlan,
+  type AuditEntry,
+  type PlanStore,
+  type PlanStatus,
+  type StoredPlan,
+} from '../../src/store.js';
+import { planDigest } from '../../src/digest.js';
+import { encodePlan } from '../../src/serialize.js';
 
 const MYSQL = { host: '127.0.0.1', port: 13306, user: 'root', password: 'llmsafesql', database: 'llmsafesql' };
 const PG = { host: '127.0.0.1', port: 15432, user: 'postgres', password: 'llmsafesql', database: 'llmsafesql' };
@@ -381,6 +390,68 @@ for (const label of ['mysql', 'postgres']) {
     await c.applier.apply(id, 'alice');
     const rows = await c.bookkeeping.query<Row>('SELECT id FROM apply_orders ORDER BY id');
     assert.deepEqual(rows.map((r) => Number(r['id'])), [1, 2]);
+  });
+
+  test(`[${label}] migrate adds the seal column to a plan table created before it existed`, async () => {
+    // The upgrade path, on a real server. `CREATE TABLE IF NOT EXISTS` does
+    // nothing to a table that already exists, so the column arrives from the
+    // ALTER in `addSealColumn` or not at all — and not at all means every plan
+    // throws on its first write, in a deployment that had just been told
+    // `migrate` was done. The SQLite suite covers the logic; this covers the two
+    // spellings that differ, MySQL's `CHAR(64) NULL` against Postgres's `text`.
+    const c = of();
+    const table = `seal_upgrade_${label}`;
+    await c.bookkeeping.execute(`DROP TABLE IF EXISTS ${c.bookkeeping.quoteIdent(table)}`);
+    await c.bookkeeping.execute(
+      label === 'mysql'
+        ? `CREATE TABLE \`${table}\` (
+             id VARCHAR(64) NOT NULL, status VARCHAR(16) NOT NULL, digest CHAR(64) NOT NULL,
+             body LONGTEXT NOT NULL, created_by VARCHAR(255) NOT NULL, approved_by VARCHAR(255) NULL,
+             created_at VARCHAR(32) NOT NULL, updated_at VARCHAR(32) NOT NULL,
+             PRIMARY KEY (id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
+        : `CREATE TABLE "${table}" (
+             id text PRIMARY KEY, status text NOT NULL, digest text NOT NULL, body text NOT NULL,
+             created_by text NOT NULL, approved_by text, created_at text NOT NULL, updated_at text NOT NULL)`,
+    );
+    try {
+      const upgraded = new SqlPlanStore({ adapter: c.bookkeeping, planTable: table, auditTable: 'llm_safe_sql_audit' });
+      await upgraded.migrate();
+      const shape = await c.bookkeeping.introspect(table);
+      assert.ok(shape.columns.some((col) => col.name.toLowerCase() === 'seal'), 'the column must have been added');
+
+      const plan = await c.engine.plan('UPDATE apply_orders SET qty = 11 WHERE id = 1');
+      const rec = await recordPlan(upgraded, plan, 'assistant', 'k'.repeat(32));
+      const back = await upgraded.get(rec.id);
+      assert.equal(back?.seal, rec.seal);
+      assert.notEqual(back?.seal, null);
+
+      await upgraded.migrate(); // idempotent
+    } finally {
+      await c.bookkeeping.execute(`DROP TABLE IF EXISTS ${c.bookkeeping.quoteIdent(table)}`);
+    }
+  });
+
+  test(`[${label}] a plan whose body was swapped by the store credential is refused when sealed`, async () => {
+    const c = of();
+    const KEY = 'k'.repeat(32);
+    const sealing = new Applier({ adapter: c.writing, policy, store: c.store, sealKey: KEY });
+    const good = await c.engine.plan('UPDATE apply_orders SET qty = 11 WHERE id = 1');
+    const rec = await recordPlan(c.store, good, 'assistant', KEY);
+
+    const evil = await c.engine.plan('UPDATE apply_orders SET qty = 9999 WHERE id = 1');
+    await c.bookkeeping.execute(
+      label === 'mysql'
+        ? 'UPDATE llm_safe_sql_plans SET body = ?, digest = ? WHERE id = ?'
+        : 'UPDATE llm_safe_sql_plans SET body = $1, digest = $2 WHERE id = $3',
+      [encodePlan(evil), planDigest(evil), rec.id],
+    );
+
+    await assert.rejects(
+      () => sealing.approve(rec.id, 'alice'),
+      (e: unknown) => e instanceof ApplyRefused && e.code === 'PLAN_TAMPERED',
+    );
+    const rows = await c.bookkeeping.query<Row>('SELECT qty FROM apply_orders WHERE id = 1');
+    assert.equal(Number(rows[0]?.['qty']), 10);
   });
 
   test(`[${label}] the plan list shows what is waiting for a person`, async () => {

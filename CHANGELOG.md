@@ -4,6 +4,83 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] — 2026-08-24
+
+### Added
+
+- **`sealKey`: a stored plan can now be bound to a secret the store credential
+  does not hold.** `planDigest` was described in its own source as "a tamper
+  check, not a security boundary — anyone who can write the plan table can
+  recompute it", and that description was accurate. What it left undefended is
+  not the model, which policy keeps off both bookkeeping tables, but anything
+  else holding the store account: a second application on the same database, an
+  operator at a psql prompt, a leaked connection string. Separating
+  `storeConnection` does not help, because that account is *supposed* to write
+  plans.
+
+  Measured on 0.8.0, with the four roles fully separated:
+
+  ```
+  card the human sees : UPDATE orders SET qty = 11 WHERE id = 1
+  adversary swapped to: UPDATE orders SET qty = 9999 WHERE id = 1
+  approve             : accepted
+  apply               : committed, rowsAffected = 1
+  qty in the database : 9999
+  ```
+
+  One `UPDATE` against the plan table, and `planDigest` recomputed over what was
+  written. The audit row still named the human who approved something else.
+
+  Set `sealKey` on the planning and applying sides and the same swap is refused,
+  because the seal is an HMAC over the same bytes and the store credential cannot
+  produce one. Both directions of mismatch refuse (`PLAN_UNSEALED`): a deployment
+  holding a key will not accept an unsealed record, or stripping the column
+  downgrades the control back to the checksum; and an applier holding no key will
+  not accept a sealed one, or a worker deployed without the secret stops checking
+  while the operator who turned sealing on has no way to find out. The seal is
+  bound to the plan's row id and to the actor who proposed it, so a sealed body
+  cannot be copied into a second row to apply twice, and `created_by` — the field
+  the self-approval refusal reads — cannot be rewritten.
+
+  What it does not buy, because a control's limits belong next to it: it does not
+  defend against a compromised planning process, which mints seals; and it does
+  not cover `status` or `approved_by`, which change legitimately after the seal
+  exists. Someone who can write the plan table can still mark an untouched plan
+  approved by a name that never read it. Both limits have tests.
+
+  `check` now prints which of the two is in force, and says "configured, not
+  probed" about the sealed case, because it is the first control here that cannot
+  be established by asking the server.
+
+- **`migrate` adds the `seal` column to a plan table created by an earlier
+  version.** `CREATE TABLE IF NOT EXISTS` does nothing to a table that exists, so
+  without this an upgraded deployment is told `migrate` succeeded and throws on
+  its first plan. Guarded by reading the catalogue rather than by catching the
+  error, because the three engines disagree about what they raise for a duplicate
+  column and one of them has no `IF NOT EXISTS` for it.
+
+### Fixed
+
+- **The trigger baseline was outside the digest.** `triggerCount` is stored with
+  the plan and read twice by the apply: as the baseline the `SCHEMA_CHANGED`
+  comparison uses, and — because a count is not a definition — to decide whether
+  to count the whole table on both sides and catch a trigger that was swapped for
+  a different one (the guard added in 0.8.0). It was not among the fields the
+  checksum covered, so editing it in the stored body turned that second guard off
+  while the digest still verified: set to zero, an apply against a triggered table
+  stopped watching for the rows a trigger moves. Same shape as the `impact` and
+  `warnings` omission fixed in 0.4.0, and quieter, because `triggerCount` never
+  appears on the card.
+
+### Changed
+
+- **The plan digest is now `v4` and older stored plans no longer verify.** A plan
+  written by 0.8.0 or earlier covers a smaller surface than this version believes
+  it does, and accepting it would mean vouching for a field that was never
+  hashed. Plans still `pending` or `approved` at upgrade must be re-planned;
+  applied ones are unaffected. This is the same direction of failure as the v2 and
+  v3 bumps.
+
 ## [0.8.0] — 2026-08-16
 
 ### Fixed
@@ -1811,6 +1888,7 @@ produced a plan describing something other than what would happen:
 - No runtime dependencies. Drivers are optional peers; the MCP server implements
   the wire protocol directly.
 
+[0.9.0]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.9.0
 [0.8.0]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.8.0
 [0.7.0]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.7.0
 [0.6.0]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.6.0

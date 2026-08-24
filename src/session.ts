@@ -135,6 +135,7 @@ export async function openAdminSession(cfg: Config): Promise<AdminSession> {
     adapter: writing,
     policy: base.policy,
     store: base.store,
+    ...(cfg.sealKey === undefined ? {} : { sealKey: cfg.sealKey }),
     ...(cfg.limits === undefined
       ? {}
       : {

@@ -356,6 +356,34 @@ guarantee below this code, where it survives our mistakes:
 | `readConnection` | reads | reads run on a connection that can write, and the allowlist is the only thing stopping them |
 | `storeConnection` | plans and audit records | whatever can commit a change can also edit the record of its approval |
 
+Separating `storeConnection` is necessary and is not sufficient, because that
+account is *supposed* to write plans. A stored plan carries a checksum, and the
+function that computes it is exported from this package — so whoever holds the
+store credential can replace an approved plan with a different one, recompute the
+checksum, and the apply commits what it finds, with the card, the audit row and
+the approver's name all still describing the plan that was replaced.
+
+Set `sealKey` and they would also need that value:
+
+```json
+{
+  "sealKey": "${LLM_SAFE_SQL_SEAL_KEY}"
+}
+```
+
+The same secret goes to the process that plans and the process that applies, and
+nowhere the store account can read. Set it on one side only and every plan is
+refused (`PLAN_UNSEALED`) — deliberately, because a deployment that believes it
+is sealing and is not is worse than one that never tried. `check` prints which of
+the two you are running.
+
+It buys one thing and it is worth being exact about which. It does not defend
+against a compromised planning process, which mints seals and can therefore seal
+anything, and it does not cover `status` or `approved_by` — those change
+legitimately after the seal exists, so somebody who can write the plan table can
+still mark a plan approved by a name that never read it. What they cannot do is
+change what the plan says.
+
 On PostgreSQL each of these also carries a `schema`, defaulting to `public`, and
 it is pinned on the connection rather than inherited. PostgreSQL's own default is
 `"$user", public`, which resolves differently for every role — so separating the

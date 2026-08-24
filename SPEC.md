@@ -220,7 +220,8 @@ of guaranteeing they catch two.
 | `ADAPTER_UNUSABLE` | The environment cannot support the guarantees, or the connection's state is no longer known |
 | `PLAN_NOT_FOUND`, `NOT_APPROVED`, `ALREADY_APPLIED` | The plan is missing, or is not in a state that can be applied |
 | `SELF_APPROVAL` | The approver proposed this plan. Have somebody else approve it, or say `--allow-self-approve` |
-| `PLAN_TAMPERED` | The stored plan does not match its checksum, or its statement no longer agrees with it |
+| `PLAN_TAMPERED` | The stored plan does not match its checksum or its seal, or its statement no longer agrees with it |
+| `PLAN_UNSEALED` | Sealing is configured on one side of this deployment and not the other, so the plan could not be checked |
 | `SCHEMA_CHANGED` | The table's primary key is not the one the plan identifies rows by |
 | `ROWS_MOVED` | A different set of rows matches the condition now |
 | `ROW_CHANGED` | A value that was approved is not what is in the row now |

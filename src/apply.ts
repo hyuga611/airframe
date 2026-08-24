@@ -11,7 +11,7 @@ import type { Adapter, Row } from './adapter.js';
 // the apply wrote '007' back over their edit and reported success. The digest in
 // `digest.ts` has always been strict here; only this comparison was not.
 import { sameValueAndType as same } from './compare.js';
-import { planDigest } from './digest.js';
+import { planDigest, planSeal, sealMatches } from './digest.js';
 import type { Plan, PlanRow, RefusalCode } from './engine.js';
 import { columnList } from './engine.js';
 import { keyOf, keyPredicate, qname } from './keys.js';
@@ -47,6 +47,7 @@ export type ApplyCode =
   | RefusalCode
   | 'PLAN_NOT_FOUND'
   | 'PLAN_TAMPERED'
+  | 'PLAN_UNSEALED'
   | 'NOT_APPROVED'
   | 'SELF_APPROVAL'
   | 'ALREADY_APPLIED'
@@ -145,6 +146,16 @@ export interface ApplierOptions {
     readonly lockMs?: number;
   };
   readonly assumeChecked?: boolean;
+  /**
+   * The secret that seals a plan against whoever holds the store credential.
+   *
+   * Must be the same value the planning side passes to `recordPlan`, and must not
+   * be reachable from the store account: the whole point is that writing the plan
+   * table is no longer enough to produce a record this will accept. Leave it unset
+   * and the checksum is the only tamper check, which is where every version before
+   * 0.9.0 was — `check` prints which of the two is in force.
+   */
+  readonly sealKey?: string;
 }
 
 const DEFAULTS = { statementMs: 5_000, lockMs: 3_000 };
@@ -154,6 +165,7 @@ export class Applier {
   readonly store: PlanStore;
   private readonly policy: Policy;
   private readonly limits: Required<NonNullable<ApplierOptions['limits']>>;
+  private readonly sealKey: string | undefined;
   private checked: boolean;
   private poisoned: string | undefined;
   /**
@@ -173,12 +185,13 @@ export class Applier {
     this.store = opts.store;
     this.policy = opts.policy;
     this.limits = { ...DEFAULTS, ...(opts.limits ?? {}) };
+    this.sealKey = opts.sealKey === '' ? undefined : opts.sealKey;
     this.checked = opts.assumeChecked ?? false;
   }
 
   /** Save a fresh plan for a human to look at. Nothing is written to their data. */
   async record(plan: Plan, createdBy: string): Promise<StoredPlan> {
-    return recordPlan(this.store, plan, createdBy);
+    return recordPlan(this.store, plan, createdBy, this.sealKey);
   }
 
   /**
@@ -654,12 +667,56 @@ export class Applier {
     return rec;
   }
 
+  /**
+   * Prove the stored record still says what it said when it was measured.
+   *
+   * Two checks, and the order matters only for the message: the checksum catches
+   * a partial write or an edit nobody meant as an attack, and the seal catches
+   * the one the checksum cannot, because `planDigest` is a public function and
+   * anyone who can write the plan table can write a matching one.
+   *
+   * The seal is refused in both directions of mismatch. A deployment holding a
+   * key must not accept an unsealed record, or stripping the column downgrades
+   * the control to the checksum; and an applier holding no key must not accept a
+   * sealed one, or a worker deployed without the secret quietly stops checking
+   * while the operator who turned sealing on has no way to find out. Both are
+   * `PLAN_UNSEALED` rather than `PLAN_TAMPERED`, because both are usually a
+   * deployment mistake and the remedy is a different sentence.
+   */
   private verifyDigest(rec: StoredPlan): void {
     if (planDigest(rec.plan) !== rec.digest) {
       throw new ApplyRefused(
         'PLAN_TAMPERED',
         `Plan ${rec.id} does not match its own checksum: the stored record has been altered since it was ` +
           'measured, so what it describes is not what a human approved.',
+      );
+    }
+    if (this.sealKey === undefined) {
+      if (rec.seal !== null) {
+        throw new ApplyRefused(
+          'PLAN_UNSEALED',
+          `Plan ${rec.id} carries a seal and this process holds no key to check it. Somebody configured ` +
+            'sealing on the side that wrote this plan; applying it here would verify nothing but the ' +
+            'checksum, which the party who could alter the record can also recompute. Set the same key ' +
+            'here.',
+        );
+      }
+      return;
+    }
+    if (rec.seal === null) {
+      throw new ApplyRefused(
+        'PLAN_UNSEALED',
+        `Plan ${rec.id} carries no seal, and this deployment requires one. Either it was created before ` +
+          'sealing was configured — make a new plan — or the column was cleared, which is what sealing ' +
+          'exists to catch.',
+      );
+    }
+    if (!sealMatches(planSeal(rec.plan, { id: rec.id, createdBy: rec.createdBy }, this.sealKey), rec.seal)) {
+      throw new ApplyRefused(
+        'PLAN_TAMPERED',
+        `Plan ${rec.id} does not match its seal. The record, the row it lives in, or the actor who proposed ` +
+          'it has been changed by something holding the store credential but not the sealing key, so what ' +
+          'it describes is not what was measured.',
       );
     }
   }

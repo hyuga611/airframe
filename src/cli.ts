@@ -450,7 +450,39 @@ async function run(args: Args): Promise<number> {
             'applyConnection: a database account the proposing side has no password for.',
         );
 
+        // Whether writing the plan table is enough to rewrite an approved plan.
+        //
+        // Not answered by any of the identity comparisons above, and this is the
+        // reason it is its own line: the store account is *supposed* to write
+        // plans, so a deployment can separate all four roles perfectly and still
+        // have this wide open. `planDigest` is an exported function over bytes
+        // anybody can reconstruct, so whoever holds that credential can swap an
+        // approved plan for a different one and compute the checksum to match.
+        // Measured on 0.8.0 before the seal existed: the card said `qty = 11`,
+        // the committed row said 9999, and every line printed in between said
+        // approved. Pushed after the "four different accounts" check above, for
+        // the reason the comment there gives.
+        if (cfg.sealKey === undefined) {
+          warn.push(
+            `plans are not sealed, so anything that can write \`${s.store.planTable}\` can replace an approved ` +
+              'plan with a different one, recompute its checksum, and the apply will commit what it finds — ' +
+              'with the card, the audit row and the approver all still naming the plan that was replaced. ' +
+              'Set `sealKey` to the same secret on the planning and applying sides, and keep it out of reach ' +
+              'of the store account.',
+          );
+        }
+
         for (const p of proved) out(`  + ${p}`);
+        if (cfg.sealKey !== undefined) {
+          // Configured, not probed, and said that way: this command's own rule is
+          // that a fact read out of a file is a weaker thing than a fact the
+          // server was asked for, and the seal is the first control here that
+          // cannot be probed at all from one side.
+          out(
+            `  + plans are sealed (configured, not probed) — writing \`${s.store.planTable}\` is no longer enough ` +
+              'to change what an approved plan says.',
+          );
+        }
         for (const w of warn) {
           out('');
           out(`  ! ${w}`);
@@ -520,7 +552,7 @@ async function run(args: Args): Promise<number> {
       if (sql.trim() === '') throw new UsageError('Nothing to plan. Pass an UPDATE or DELETE statement.');
       return withSession(cfg, async (s) => {
         const plan = await s.engine.plan(sql);
-        const rec = await recordPlan(s.store, plan, requireActor(args));
+        const rec = await recordPlan(s.store, plan, requireActor(args), cfg.sealKey);
         out(planCard(rec));
         return 0;
       });

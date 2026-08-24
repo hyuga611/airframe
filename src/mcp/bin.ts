@@ -99,7 +99,7 @@ async function main(): Promise<void> {
     async plan(sql) {
       const s = await open();
       const plan = await s.engine.plan(sql);
-      return recordPlan(s.store, plan, 'assistant');
+      return recordPlan(s.store, plan, 'assistant', s.cfg.sealKey);
     },
     async status(id) {
       const s = await open();

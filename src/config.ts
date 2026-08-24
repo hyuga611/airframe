@@ -123,6 +123,23 @@ export interface Config {
   readonly policy: PolicyOptions;
   readonly limits?: LimitsConfig;
   readonly autoColumns?: Readonly<Record<string, readonly string[]>>;
+  /**
+   * A secret that seals each plan against whoever holds the store credential.
+   *
+   * Write it as `"${LLM_SAFE_SQL_SEAL_KEY}"` — like every other secret here, the
+   * file itself stays committable and the value arrives from the environment.
+   *
+   * Without it, `planDigest` is the only tamper check on a stored plan, and it is
+   * a checksum over public bytes: anything that can write the plan table can
+   * replace an approved plan with a different one and recompute it, and the apply
+   * will commit what it finds. With it, that party would also need this value.
+   *
+   * It has to be the same on the process that plans and the process that applies,
+   * and it must not be readable from the store account. Set on one side only,
+   * every plan is refused — deliberately, because the alternative is a deployment
+   * that believes it is sealing and is not.
+   */
+  readonly sealKey?: string;
 }
 
 /**
@@ -288,7 +305,17 @@ export function parseConfig(raw: unknown, env: NodeJS.ProcessEnv = process.env):
 
   rejectUnknown(
     cfg,
-    ['dialect', 'connection', 'readConnection', 'applyConnection', 'storeConnection', 'policy', 'limits', 'autoColumns'],
+    [
+      'dialect',
+      'connection',
+      'readConnection',
+      'applyConnection',
+      'storeConnection',
+      'policy',
+      'limits',
+      'autoColumns',
+      'sealKey',
+    ],
     'config',
   );
 
@@ -346,7 +373,31 @@ export function parseConfig(raw: unknown, env: NodeJS.ProcessEnv = process.env):
     ...(cfg['autoColumns'] === undefined
       ? {}
       : { autoColumns: cfg['autoColumns'] as Record<string, string[]> }),
+    ...(cfg['sealKey'] === undefined ? {} : { sealKey: sealKeyOf(cfg['sealKey']) }),
   };
+}
+
+/**
+ * A short key is worse than none: it reads as a control in the config file and in
+ * `check`, and it is the one setting whose whole value is that guessing it is not
+ * worth trying. Refused rather than warned about, because a warning printed at
+ * startup is a warning nobody sees again.
+ */
+function sealKeyOf(raw: unknown): string {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    throw new ConfigError(
+      'config.sealKey must be a non-empty string, normally "${LLM_SAFE_SQL_SEAL_KEY}". Remove the key ' +
+        'entirely to run without sealing.',
+    );
+  }
+  if (raw.length < 32) {
+    throw new ConfigError(
+      `config.sealKey is ${String(raw.length)} characters. It is the one secret standing between somebody ` +
+        'who can write the plan table and an approved-looking plan of their own, so it must be at least 32. ' +
+        'Generate one with: node -e "console.log(crypto.randomBytes(32).toString(\'hex\'))"',
+    );
+  }
+  return raw;
 }
 
 export async function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): Promise<Config> {

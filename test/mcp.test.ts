@@ -14,6 +14,7 @@ import type { StoredPlan } from '../src/store.js';
 const stored: StoredPlan = {
   id: 'plan-1',
   digest: 'x',
+  seal: null,
   status: 'pending',
   createdBy: 'assistant',
   approvedBy: null,

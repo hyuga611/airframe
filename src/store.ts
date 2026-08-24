@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { planDigest } from './digest.js';
+import { planDigest, planSeal } from './digest.js';
 import type { Adapter, Row } from './adapter.js';
 import type { Plan } from './engine.js';
 import type { Dialect } from './lexer.js';
@@ -36,6 +36,16 @@ export interface StoredPlan {
   readonly id: string;
   readonly plan: Plan;
   readonly digest: string;
+  /**
+   * The keyed seal, when this deployment configures a key; `null` when it does not.
+   *
+   * Nullable rather than absent so the two cases stay distinguishable at the
+   * apply: a deployment that expects a seal must refuse a record without one,
+   * and a record that carries one must refuse an applier that cannot check it.
+   * Silently accepting either direction would turn the control off exactly when
+   * somebody had tried to turn it on.
+   */
+  readonly seal: string | null;
   readonly status: PlanStatus;
   readonly createdBy: string;
   readonly approvedBy: string | null;
@@ -79,12 +89,19 @@ export interface PlanStore {
  * surface which must not be able to apply — the MCP server — never has to hold
  * an object that can. Structure beats discipline for a rule this important.
  */
-export async function recordPlan(store: PlanStore, plan: Plan, createdBy: string): Promise<StoredPlan> {
+export async function recordPlan(
+  store: PlanStore,
+  plan: Plan,
+  createdBy: string,
+  sealKey?: string,
+): Promise<StoredPlan> {
   const at = nowIso();
+  const id = newPlanId();
   const rec: StoredPlan = {
-    id: newPlanId(),
+    id,
     plan,
     digest: planDigest(plan),
+    seal: sealKey === undefined || sealKey === '' ? null : planSeal(plan, { id, createdBy }, sealKey),
     status: 'pending',
     createdBy,
     approvedBy: null,
@@ -189,6 +206,7 @@ export function planStoreDdl(
          id          VARCHAR(64)  NOT NULL,
          status      VARCHAR(16)  NOT NULL,
          digest      CHAR(64)     NOT NULL,
+         seal        CHAR(64)     NULL,
          body        LONGTEXT     NOT NULL,
          created_by  VARCHAR(255) NOT NULL,
          approved_by VARCHAR(255) NULL,
@@ -218,6 +236,7 @@ export function planStoreDdl(
        id          text PRIMARY KEY,
        status      text NOT NULL,
        digest      text NOT NULL,
+       seal        text,
        body        text NOT NULL,
        created_by  text NOT NULL,
        approved_by text,
@@ -323,18 +342,41 @@ export class SqlPlanStore implements PlanStore {
     for (const sql of planStoreDdl(this.dialect, this.planTable, this.auditTable)) {
       await this.adapter.execute(sql);
     }
+    await this.addSealColumn();
+  }
+
+  /**
+   * Add `seal` to a plan table created before 0.9.0.
+   *
+   * `CREATE TABLE IF NOT EXISTS` does nothing to a table that already exists, so
+   * the column arrives here or not at all — and not at all is the bad kind of
+   * failure: `put` would throw on every plan, at the first write of a deployment
+   * that had just run `migrate` and been told it was ready.
+   *
+   * Guarded by reading the catalogue rather than by catching the error, because
+   * the three engines disagree about what they raise for a duplicate column and
+   * one of them (MySQL before 8.0.29) has no `IF NOT EXISTS` for it at all. A
+   * check that has to recognise three dialects' error text is a check that will
+   * be wrong on the fourth.
+   */
+  private async addSealColumn(): Promise<void> {
+    const shape = await this.adapter.introspect(this.planTable);
+    if (shape.columns.some((c) => c.name.toLowerCase() === 'seal')) return;
+    const type = this.dialect === 'mysql' ? 'CHAR(64) NULL' : 'text';
+    await this.adapter.execute(`ALTER TABLE ${this.q(this.planTable)} ADD COLUMN seal ${type}`);
   }
 
   async put(record: StoredPlan): Promise<void> {
     try {
       await this.adapter.execute(
         `INSERT INTO ${this.q(this.planTable)}
-         (id, status, digest, body, created_by, approved_by, created_at, updated_at)
-       VALUES (${this.p(1)}, ${this.p(2)}, ${this.p(3)}, ${this.p(4)}, ${this.p(5)}, ${this.p(6)}, ${this.p(7)}, ${this.p(8)})`,
+         (id, status, digest, seal, body, created_by, approved_by, created_at, updated_at)
+       VALUES (${this.p(1)}, ${this.p(2)}, ${this.p(3)}, ${this.p(4)}, ${this.p(5)}, ${this.p(6)}, ${this.p(7)}, ${this.p(8)}, ${this.p(9)})`,
         [
           record.id,
           record.status,
           record.digest,
+          record.seal,
           encodePlan(record.plan),
           record.createdBy,
           record.approvedBy,
@@ -349,7 +391,7 @@ export class SqlPlanStore implements PlanStore {
 
   async get(id: string): Promise<StoredPlan | undefined> {
     const rows = await this.adapter.query<Row>(
-      `SELECT id, status, digest, body, created_by, approved_by, created_at, updated_at
+      `SELECT id, status, digest, seal, body, created_by, approved_by, created_at, updated_at
          FROM ${this.q(this.planTable)} WHERE id = ${this.p(1)}`,
       [id],
     );
@@ -390,7 +432,7 @@ export class SqlPlanStore implements PlanStore {
     const where = opts.status === undefined ? '' : `WHERE status = ${this.p(1)}`;
     const params = opts.status === undefined ? [] : [opts.status];
     const rows = await this.adapter.query<Row>(
-      `SELECT id, status, digest, body, created_by, approved_by, created_at, updated_at
+      `SELECT id, status, digest, seal, body, created_by, approved_by, created_at, updated_at
          FROM ${this.q(this.planTable)} ${where}
         ORDER BY created_at DESC
         LIMIT ${limit}`,
@@ -404,6 +446,7 @@ export class SqlPlanStore implements PlanStore {
       id: String(r['id']),
       plan: decodePlan(String(r['body'])),
       digest: String(r['digest']),
+      seal: r['seal'] === null || r['seal'] === undefined || r['seal'] === '' ? null : String(r['seal']),
       status: String(r['status']) as PlanStatus,
       createdBy: String(r['created_by'] ?? ''),
       approvedBy: r['approved_by'] === null || r['approved_by'] === undefined ? null : String(r['approved_by']),
