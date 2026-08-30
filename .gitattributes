@@ -1,0 +1,3 @@
+# One line ending in the repository, whatever the machine checking it out uses.
+# Without this a Windows clone rewrites every file it touches and the next diff is the whole tree.
+* text=auto eol=lf
