@@ -1,0 +1,989 @@
+import { normalize, Rejected } from './normalize.js';
+import { tableRefs, setColumns, setColumnsAreCertain, whereClause, hasProjectionStar, lower } from './statement.js';
+import { PolicyViolation, type Policy } from './policy.js';
+import type { Adapter, Row, TableShape } from './adapter.js';
+// Every comparison in this file is between two values read the same way, through
+// this one connection, inside one dry run: before against after, and after
+// against what is there once the trial is rolled back. So the type-tolerant
+// `sameValue` — which exists for comparing across a round trip, in `apply` — is
+// deliberately not imported here. See the note on `sameValueAndType`.
+import { sameValueAndType as same } from './compare.js';
+import { keyOf, keyPredicate, qname } from './keys.js';
+import { Refusal } from './refusal.js';
+import { file } from './frame.js';
+
+import type { RejectCode } from './normalize.js';
+import type { PolicyCode } from './policy.js';
+
+/**
+ * Why a plan was refused.
+ *
+ * One union, and one error type, on purpose. Three layers can refuse a statement
+ * — the parser, the policy and the engine — and making a caller catch three
+ * different classes to find that out is a way of guaranteeing they catch two.
+ */
+export type RefusalCode =
+  | RejectCode
+  | PolicyCode
+  | 'NOT_A_WRITE'
+  | 'NOT_A_READ'
+  | 'NO_PRIMARY_KEY'
+  | 'NO_WHERE'
+  | 'NESTING_REFUSED'
+  | 'AUTO_COLUMNS_UNKNOWN'
+  | 'NO_ROWS'
+  | 'TOO_MANY_ROWS'
+  | 'KEY_NOT_UNIQUE'
+  | 'NO_CHANGE'
+  | 'ROW_COUNT_MISMATCH'
+  | 'ROLLBACK_FAILED'
+  | 'BUSY'
+  | 'NO_SUCH_COLUMN'
+  | 'AUTO_COLUMN_ASSIGNED'
+  | 'NOT_TRANSACTIONAL'
+  | 'CASCADE_SIDE_EFFECTS'
+  | 'CASCADES_UNKNOWN'
+  | 'TRIGGER_SIDE_EFFECT'
+  | 'UNREADABLE_COLUMN'
+  | 'ADAPTER_UNUSABLE';
+
+/** A plan we will not produce. Producing none is always safe; producing a wrong one is not. */
+export class PlanRefused extends Refusal {
+  declare readonly code: RefusalCode;
+  constructor(code: RefusalCode, message: string) {
+    super(code, message);
+  }
+}
+
+export interface PlanRow {
+  /** Primary key values identifying this row. */
+  readonly key: Row;
+  /** Columns that really differ, with auto-maintained ones removed. This is what the card shows. */
+  readonly changed: readonly string[];
+  /**
+   * Every column this statement writes to this row — which is not the same set.
+   *
+   * `UPDATE t SET name = 'x', postcode = '00100'` against a row already holding
+   * `'00100'` produces `changed: ['name']`, because the trial measured no
+   * difference in `postcode`. The statement still assigns it on every execution.
+   *
+   * That gap was reachable and was measured: the apply's pre-write comparison and
+   * its read-back both iterated `changed`, so between approval and apply another
+   * session could correct `postcode` to `'90210'` and the apply would write
+   * `'00100'` back over it — unverified, absent from the card, and reported as
+   * success. The same hole covered whole rows on PostgreSQL and SQLite, where the
+   * card says "already correct" about rows whose `changed` is empty.
+   *
+   * So the snapshot covers every assigned column, and the apply verifies all of
+   * them. `changed` still drives the display, because widening that would make the
+   * card claim a change where there is none.
+   */
+  readonly covered: readonly string[];
+  /** For UPDATE, the covered columns. For DELETE, every column. */
+  readonly before: Row;
+  /** For UPDATE, the covered columns. Empty for DELETE. */
+  readonly after: Row;
+}
+
+export interface Plan {
+  readonly sql: string;
+  readonly dialect: string;
+  readonly table: string;
+  readonly op: 'UPDATE' | 'DELETE';
+  readonly rows: readonly PlanRow[];
+  readonly columnsTouched: readonly string[];
+  /** What the database said it matched while we were pretending. */
+  readonly rowsMatched: number;
+  /**
+   * What the database said it really changed, where that is a different number.
+   *
+   * Kept so the apply can hold the real execution to the same counts as the
+   * trial. Comparing against `rows.length` instead would be wrong: a plan may
+   * legitimately contain rows whose only difference was a column the database
+   * maintains itself, and those are not displayed as changes.
+   */
+  readonly rowsChanged: number;
+  /** False when the dialect cannot distinguish "changed" from "matched" (Postgres). */
+  readonly rowsChangedIsMeaningful: boolean;
+  /**
+   * How many triggers the table had when this plan was measured.
+   *
+   * The apply re-checks that a trigger has not appeared since — and until 0.5.2 it
+   * did that by refusing whenever the table had any trigger at all, comparing
+   * against zero instead of against this. With `autoColumns` declared the engine
+   * plans a triggered table on purpose, so every one of those plans was carded,
+   * stored, approved and then refused with a sentence that was false in every
+   * clause. Optional because a plan stored by an earlier version has no baseline:
+   * the apply says so and asks for a new plan rather than guessing one.
+   */
+  readonly triggerCount?: number;
+
+  /** The business consequence of touching this table. Never empty: see D13. */
+  readonly impact: string;
+  readonly warnings: readonly string[];
+}
+
+export interface ReadResult {
+  /** The statement as it was actually run: comments stripped, one statement. */
+  readonly sql: string;
+  readonly rows: readonly Row[];
+  readonly columns: readonly string[];
+  /** True when the answer was cut short, so the caller cannot mistake it for all of it. */
+  readonly truncated: boolean;
+}
+
+export interface EngineOptions {
+  readonly adapter: Adapter;
+  /**
+   * A separate connection for {@link Engine.read}, ideally one the database
+   * itself will not let write. Defaults to {@link adapter}.
+   *
+   * The dry run cannot use it: planning means really executing the statement
+   * before rolling it back, so that connection must be able to write. Reading
+   * has no such excuse, and reading is the larger surface — it is what an
+   * injected instruction reaches first, and exfiltration needs no write at all.
+   *
+   * This exists because of where the other guards sit. The allowlist and the
+   * denied-identifier check run inside this process, holding a credential that
+   * can write; they are only as good as this library is correct. A connection
+   * the engine refuses to let write is enforced a layer below us, and survives
+   * our own bugs. On SQLite that is a read-only handle SQLite enforces itself;
+   * elsewhere it is a database role with no write privileges.
+   */
+  readonly readAdapter?: Adapter;
+  readonly policy: Policy;
+  readonly limits?: {
+    readonly maxUpdateRows?: number;
+    readonly maxDeleteRows?: number;
+    /** Rows a single read may return before it is reported as truncated. */
+    readonly maxReadRows?: number;
+    readonly statementMs?: number;
+    readonly lockMs?: number;
+  };
+  /**
+   * Columns each table maintains by itself, when the dialect cannot report them.
+   *
+   * Declared beats detected. On Postgres an `updated_at` maintained by a trigger
+   * is invisible in the column definitions, and assuming "none" is not a
+   * conservative default — it makes every plan unconfirmable, with an error that
+   * reads like a concurrency problem.
+   */
+  readonly autoColumns?: Readonly<Record<string, readonly string[]>>;
+  /**
+   * Skip the startup environment check. Only for callers that ran
+   * {@link Adapter.selfCheck} themselves; the default is to require it.
+   *
+   * The guards it performs — is this a real transaction, does "rows affected"
+   * mean what we think, is the session ours alone — are not advisory. An earlier
+   * version left calling it to the caller, and a caller who forgets gets an
+   * engine that makes all its promises and keeps none of them.
+   */
+  readonly assumeChecked?: boolean;
+  /** Test seam: replaces the rollback so the fail-closed path can be exercised. */
+  readonly _rollbackHook?: () => Promise<void>;
+}
+
+const DEFAULTS = { maxUpdateRows: 200, maxDeleteRows: 50, maxReadRows: 200, statementMs: 5_000, lockMs: 3_000 };
+
+/**
+ * The columns of a table, named, for the before-and-after images.
+ *
+ * `SELECT *` is not the same set. MySQL 8 omits an INVISIBLE column from it while
+ * still listing that column in `information_schema.COLUMNS` — so the shape and
+ * the row disagree, in exactly the direction that hides a write.
+ */
+export function columnList(q: (name: string) => string, shape: TableShape): string {
+  return shape.columns.map((c) => q(c.name)).join(', ');
+}
+
+export class Engine {
+  readonly adapter: Adapter;
+  /** Where reads go. The same object as {@link adapter} unless one was supplied. */
+  readonly readAdapter: Adapter;
+  /**
+   * True when reads run on a connection of their own, and so possibly on
+   * privileges of their own.
+   *
+   * This said the opposite until 0.4.9 — "true when reads and dry runs are the
+   * same connection" — while the line that sets it is `readAdapter !== adapter`.
+   * The code was right and the sentence was inverted, on a public field whose
+   * whole purpose is to tell a caller which of those two situations they are in.
+   */
+  readonly readIsSeparate: boolean;
+  private readonly policy: Policy;
+  private readonly limits: Required<NonNullable<EngineOptions['limits']>>;
+  private readonly declaredAuto: Readonly<Record<string, readonly string[]>>;
+  private readonly rollbackHook: (() => Promise<void>) | undefined;
+  private checked: boolean;
+  /** The read connection is verified separately, because it may be a different connection. */
+  private readChecked: boolean;
+  /** Set when the connection's state is no longer known. Nothing may run after that. */
+  private poisoned: string | undefined;
+  /**
+   * What currently owns the planning connection, if anything.
+   *
+   * Read and written only between `await`s, so it is a lock in the only sense
+   * this runtime has one. See {@link plan}.
+   */
+  private busy: string | undefined;
+
+  constructor(opts: EngineOptions) {
+    this.adapter = opts.adapter;
+    this.readAdapter = opts.readAdapter ?? opts.adapter;
+    this.readIsSeparate = this.readAdapter !== this.adapter;
+    this.policy = opts.policy;
+    this.limits = { ...DEFAULTS, ...(opts.limits ?? {}) };
+    this.declaredAuto = opts.autoColumns ?? {};
+    this.rollbackHook = opts._rollbackHook;
+    this.checked = opts.assumeChecked ?? false;
+    this.readChecked = opts.assumeChecked ?? false;
+  }
+
+  /**
+   * Produce a plan by actually running the statement, reading the real result,
+   * and rolling it back.
+   *
+   * The alternative — predicting what a statement would do — cannot be made
+   * correct. `SET price = price * 1.1` is an expression; triggers fire; defaults
+   * apply. Anything short of executing it is a guess, and showing a human a guess
+   * labelled as fact is worse than showing them nothing.
+   *
+   * One at a time, per connection. The D6 check below asks the adapter whether a
+   * transaction is already open, and that question is only meaningful for a
+   * transaction somebody *else* opened: it is several `await`s away from the
+   * `begin()` it guards, so two overlapping calls both saw "no transaction" and
+   * both opened one. On MySQL the second `START TRANSACTION` **commits** the
+   * first — a dry run, permanently written to production and reported as rolled
+   * back. The MCP server makes this reachable without any concurrency in the
+   * caller: it serves tool calls as they arrive on one shared session.
+   *
+   * The latch is taken before the first `await`, which is what makes it a latch —
+   * a single-threaded runtime cannot interleave two calls until one of them
+   * yields. It refuses rather than queues, because a caller who is told "later"
+   * can decide what to do, and a caller silently held behind a lock of unknown
+   * duration cannot.
+   */
+  async plan(rawSql: string): Promise<Plan> {
+    if (this.busy !== undefined) {
+      throw new PlanRefused(
+        'BUSY',
+        `${this.busy} is already running on this connection, and a dry run has to own the transaction it ` +
+          'rolls back. Run one at a time, or give each caller its own session.',
+      );
+    }
+    this.busy = 'A dry run';
+    try {
+      const plan = await this.planExclusive(rawSql);
+      // 測って戻した事実を台帳へ。ロールバック済みなので世界は変わっていないが、
+      // 「何行に当たるはずだったか」は残す価値がある——承認されなかった提案ほど。
+      await file({
+        phase: 'pre',
+        subject: `${plan.op} ${plan.table}`,
+        observed: { rowsMatched: plan.rowsMatched, columns: plan.columnsTouched },
+        note: 'dry run, rolled back',
+      });
+      return plan;
+    } finally {
+      this.busy = undefined;
+    }
+  }
+
+  private async planExclusive(rawSql: string): Promise<Plan> {
+    if (this.poisoned !== undefined) {
+      throw new PlanRefused(
+        'ADAPTER_UNUSABLE',
+        `This connection is no longer in a known state and will not be used again: ${this.poisoned}`,
+      );
+    }
+    if (!this.checked) {
+      await this.adapter.selfCheck();
+      this.checked = true;
+    }
+
+    // The parser and the policy have their own error types; the caller should
+    // only have to know one.
+    let stmt;
+    try {
+      stmt = normalize(rawSql, { dialect: this.adapter.dialect });
+      this.policy.check(stmt);
+    } catch (e) {
+      if (e instanceof Rejected || e instanceof PolicyViolation) {
+        throw new PlanRefused(e.code, e.message);
+      }
+      throw e;
+    }
+
+    if (stmt.kind !== 'write') {
+      throw new PlanRefused('NOT_A_WRITE', 'Only UPDATE and DELETE are planned; reads execute directly.');
+    }
+
+    const table = tableRefs(stmt.tokens)[0];
+    if (table === undefined) throw new PlanRefused('NOT_A_WRITE', 'No target table.');
+    const where = whereClause(stmt.tokens);
+    if (where === undefined) {
+      throw new PlanRefused('NO_WHERE', 'A write without WHERE would target every row and is refused.');
+    }
+    const op: 'UPDATE' | 'DELETE' = /^\s*delete\b/i.test(stmt.sql) ? 'DELETE' : 'UPDATE';
+
+    const shape = await this.adapter.introspect(table);
+    if (shape.primaryKey.length === 0) {
+      throw new PlanRefused(
+        'NO_PRIMARY_KEY',
+        `Table \`${table}\` has no primary key, so rows cannot be shown to you one by one.`,
+      );
+    }
+
+    // P7 — every column on the left of SET has to exist. The rule was in SPEC
+    // from the first version and implemented in none of them, so a misspelling
+    // was found by the database, after the statement had been executed inside the
+    // dry run, and surfaced as a raw driver error rather than as a refusal.
+    // Checking it here costs one comparison against metadata already fetched, and
+    // it fails before anything runs.
+    const assigned: string[] = op === 'UPDATE' ? setColumns(stmt.tokens) : [];
+    if (op === 'UPDATE') {
+      const known = new Set(shape.columns.map((c) => lower(c.name)));
+      const unknown = assigned.filter((c) => !known.has(lower(c)));
+      if (unknown.length > 0) {
+        throw new PlanRefused(
+          'NO_SUCH_COLUMN',
+          `Table \`${table}\` has no column ${unknown.map((c) => `\`${c}\``).join(', ')}. ` +
+            `It has: ${shape.columns.map((c) => c.name).join(', ')}.`,
+        );
+      }
+      // The SET clause has to be readable for the snapshot below to be complete.
+      // Reporting a partial list here would be worse than reporting none: the
+      // apply would verify the columns it was told about and write the rest.
+      if (!setColumnsAreCertain(stmt.tokens)) {
+        throw new PlanRefused(
+          'NO_SUCH_COLUMN',
+          'Part of this SET clause could not be read as a column assignment, so the columns this statement ' +
+            'writes cannot be listed — and every one of them has to be checked before the apply. Rewrite it ' +
+            'as plain `column = value` assignments.',
+        );
+      }
+    }
+
+    // A dry run on a table that cannot roll back is not a dry run. The storage
+    // engine is a per-table property, so the startup probe says nothing about
+    // this one; without this check the write lands permanently and is reported
+    // as harmless.
+    if (!shape.transactional) {
+      throw new PlanRefused(
+        'NOT_TRANSACTIONAL',
+        `Table \`${table}\` is not on a transactional storage engine, so a trial run could not be undone. ` +
+          'It would be a permanent change to production.',
+      );
+    }
+
+    // Rows in other tables that would move as a side effect can never appear on
+    // the card, and for DELETE the loss is irreversible. Refuse rather than show
+    // a confirmation that understates what it authorises.
+    // Before asking what the foreign keys say, ask whether this credential could
+    // have been shown them. On MySQL the rows describing a foreign key belong to
+    // the *child* table, and a connection with no privilege on that child is sent
+    // an empty list — the same empty list a table with no children gets. Measured
+    // on 8.4.11, 5.7.44 and MariaDB 11.8: a role holding SELECT, INSERT, UPDATE,
+    // DELETE on the allowlisted table alone read `inboundCascades: []` for a table
+    // that cascades deletes into two others, and this method approved the DELETE.
+    if (!shape.inboundCascadesKnown) {
+      throw new PlanRefused(
+        'CASCADES_UNKNOWN',
+        `This credential cannot see which foreign keys point at \`${table}\`, so whether a ${op} would ` +
+          'also change rows in other tables could not be established. MySQL only shows a foreign key to a ' +
+          'connection holding some privilege on the child table. Grant the planning role SELECT on the ' +
+          'whole schema (GRANT SELECT ON db.* TO ...) and this becomes answerable; without it, an empty ' +
+          'list of cascades means nothing.',
+      );
+    }
+
+    const cascades = shape.inboundCascades.filter((c) => {
+      const rule = op === 'DELETE' ? c.onDelete : c.onUpdate;
+      return rule === 'CASCADE' || rule === 'SET NULL' || rule === 'SET DEFAULT';
+    });
+    if (cascades.length > 0) {
+      const list = cascades.map((c) => `${c.table} (${c.constraint}: ON ${op} ${op === 'DELETE' ? c.onDelete : c.onUpdate})`);
+      throw new PlanRefused(
+        'CASCADE_SIDE_EFFECTS',
+        `A ${op} on \`${table}\` also changes rows in ${list.join(', ')} through foreign keys. ` +
+          'Those rows cannot be shown to you, so this cannot be approved here.',
+      );
+    }
+
+    const auto = this.resolveAutoColumns(table, shape);
+
+    // D8 again, from the other side. A column the engine has been told maintains
+    // itself is dropped from the diff — that is the point of the rule. If the
+    // statement *assigns* it too, dropping it silently means an arbitrary value
+    // reaches the row without ever appearing on the card, and `autoColumns` is a
+    // config key a model can read in the repository. Refuse rather than hide it.
+    if (op === 'UPDATE') {
+      const alsoAuto = assigned.filter((c) => auto.has(lower(c)));
+      if (alsoAuto.length > 0) {
+        throw new PlanRefused(
+          'AUTO_COLUMN_ASSIGNED',
+          `This statement assigns ${alsoAuto.map((c) => `\`${c}\``).join(', ')}, which is declared as ` +
+            'maintained by the database. Such columns are excluded from the diff, so the value would be ' +
+            'written without appearing on the card. Remove it from the SET clause, or from autoColumns.',
+        );
+      }
+    }
+
+
+    // D6 — never nest. Measured: on MySQL a rolled-back statement keeps its row
+    // locks until the caller's transaction ends. Postgres releases them, but the
+    // engine would still have to own the transaction boundary to guarantee the
+    // rollback, and taking over someone else's is worse than declining.
+    if (this.adapter.inTransaction()) {
+      throw new PlanRefused(
+        'NESTING_REFUSED',
+        'A dry run will not run inside a transaction you already opened: it has to own the transaction ' +
+          'it rolls back. Give the engine its own connection.',
+      );
+    }
+
+    await this.adapter.applyLimits({ statementMs: this.limits.statementMs, lockMs: this.limits.lockMs });
+
+    const q = this.adapter.quoteIdent.bind(this.adapter);
+    const pk = shape.primaryKey;
+    const cap = op === 'DELETE' ? this.limits.maxDeleteRows : this.limits.maxUpdateRows;
+
+    let before: Row[] = [];
+    let after: Row[] = [];
+    let matched = 0;
+    let changedReported = 0;
+    let changedMeaningful = false;
+
+    await this.adapter.begin('repeatable-read');
+    // `attempted` is set the moment the statement is handed to the server, not
+    // when it comes back. A write that reached the database and then failed on
+    // the way home — a reset connection, a client-side timeout — is exactly the
+    // moment the rollback most needs proving, and an earlier version skipped
+    // verification on every error path.
+    let attempted = false;
+    let primary: unknown;
+    try {
+      // D1 — count first, so a heavy statement is not executed just to discover
+      // it was too big. D4 — count and snapshot come from the same transaction,
+      // so another session's commit cannot appear inside our before/after diff.
+      const cnt = await this.adapter.query<Row>(`SELECT COUNT(*) AS c FROM ${qname(q, table)} WHERE ${where}`);
+      const total = Number(Object.values(cnt[0] ?? { c: 0 })[0] ?? 0);
+      if (total === 0) throw new PlanRefused('NO_ROWS', `No rows in \`${table}\` match that condition.`);
+      if (total > cap) {
+        throw new PlanRefused(
+          'TOO_MANY_ROWS',
+          `${total} rows match, above the ${cap}-row ceiling for ${op}. ` +
+            'Every row is shown individually for approval, so narrow the condition.',
+        );
+      }
+
+      // Not `SELECT *`. MySQL 8 lets a column be INVISIBLE: it is in
+      // `information_schema.COLUMNS`, so it passes the P7 check on the left of
+      // SET, and it is absent from `SELECT *`, so the trial's before-image has no
+      // entry for it. The diff then cannot see it move, the card cannot show it,
+      // and `covered` — the list the apply verifies before committing — silently
+      // drops it.
+      //
+      // Measured on MySQL 8.4.11:
+      //   UPDATE iv_orders SET status = 'sent', secret = 'LEAKED' WHERE id = 1
+      //   -> an approvable card reading "1 row would change, across 1 column:
+      //      status", with `secret` written from 'KEEP' to 'LEAKED' and named
+      //      nowhere. Which is the sentence this library exists to make impossible,
+      //      arriving for the third time by a third mechanism.
+      //
+      // Naming the columns fixes it at the source: an invisible column is fetched,
+      // diffed, displayed and verified like any other.
+      before = await this.adapter.query<Row>(`SELECT ${columnList(q, shape)} FROM ${qname(q, table)} WHERE ${where}`);
+
+      // D5 — a name called "id" is not a guarantee of uniqueness. If the key does
+      // not identify rows one-to-one, the human sees fewer rows than will change.
+      const keys = new Set(before.map((r) => keyOf(pk, r)));
+      if (keys.size !== before.length || before.length !== total) {
+        throw new PlanRefused(
+          'KEY_NOT_UNIQUE',
+          `The primary key of \`${table}\` does not identify these rows uniquely ` +
+            `(${total} matched, ${keys.size} distinct keys), so a row-by-row diff would be wrong.`,
+        );
+      }
+
+      // A trigger can write rows in this same table, and nothing else here sees it.
+      // The driver's affected-row count excludes work done by triggers, and the
+      // before/after images are taken over the pre-selected keys only, so a trigger
+      // that deletes some other row leaves no trace in either. Measured on SQLite:
+      //   AFTER DELETE ON orders -> DELETE FROM orders WHERE id = 2
+      //   DELETE FROM orders WHERE id = 1
+      //   -> a card reading "1 row would be deleted", listing id 1, after which
+      //      both 1 and 2 are gone and the apply still reports "1 row(s)".
+      // Counting the table on both sides of the statement catches it. Measured,
+      // not predicted — the same claim the rest of this file makes. The cost is
+      // paid only where the risk is: a table with no trigger runs neither query.
+      const watchSideEffects = shape.triggersVisible && shape.triggerCount > 0;
+      const netBefore = watchSideEffects ? await this.countAll(q, table) : 0;
+
+      attempted = true;
+      const res = await this.adapter.execute(stmt.sql);
+      matched = res.rowsMatched;
+      changedReported = res.rowsChanged;
+      changedMeaningful = res.changedIsMeaningful;
+
+      if (watchSideEffects) {
+        const netAfter = await this.countAll(q, table);
+        const expected = op === 'DELETE' ? -before.length : 0;
+        const actual = netAfter - netBefore;
+        if (actual !== expected) {
+          const extra = Math.abs(actual - expected);
+          throw new PlanRefused(
+            'TRIGGER_SIDE_EFFECT',
+            `A trigger on \`${table}\` changed ${extra} more row(s) than this statement names. ` +
+              `The dry run counted ${Math.abs(actual)} row(s) added or removed where the statement ` +
+              `accounts for ${Math.abs(expected)}. Those rows cannot be shown on the card, so approving ` +
+              'it would mean agreeing to a change nobody has seen. Disable the trigger, or write a ' +
+              'statement that names every row it touches.',
+          );
+        }
+      }
+
+      if (op === 'UPDATE') {
+        const { sql: pred, params } = keyPredicate(pk, before, q, this.adapter.dialect);
+        after = await this.adapter.query<Row>(
+          `SELECT ${columnList(q, shape)} FROM ${qname(q, table)} WHERE ${pred}`,
+          params,
+        );
+      }
+    } catch (e) {
+      primary = e;
+      throw e;
+    } finally {
+      try {
+        await this.undo(before, after, table, pk, q, attempted, op);
+      } catch (u) {
+        // A failure to undo outranks nothing: if the statement was refused before
+        // it ever ran, saying "the trial could not be rolled back" would send an
+        // operator looking for damage that does not exist. Report both, and lead
+        // with the one that actually happened first.
+        if (primary === undefined) throw u;
+        if (!attempted) throw primary;
+        throw u;
+      }
+    }
+
+    return this.build(
+      stmt.sql, table, op, pk, before, after, auto, assigned, matched, changedReported, changedMeaningful, shape,
+    );
+  }
+
+  /**
+   * Run a SELECT, bounded, through the same policy as a write.
+   *
+   * Reads matter more than they look like they do. A model that can read a
+   * credential has leaked it, and the usual defence — masking the result set by
+   * column name — is defeated by `SELECT secret AS x` and never applied to
+   * anything but `SELECT *` in the first place. So the check is on the
+   * *reference*: to read a column you have to name it, and naming it is what gets
+   * caught (R2).
+   *
+   * Only SELECT and WITH are accepted. `SHOW TABLES` and friends have no table
+   * reference for the allowlist to bite on, so allowing them would hand back the
+   * shape of the whole schema from a tool whose entire premise is default-deny.
+   */
+  async read(rawSql: string, opts: { limit?: number } = {}): Promise<ReadResult> {
+    // Held for the duration when reads share the planning connection, not merely
+    // tested on the way in. Testing alone stopped a read that began after a dry
+    // run had the latch, and did nothing about a dry run that began while a read
+    // was in flight — the driver serialises statements on one connection, so
+    // that read's SELECT lands inside the trial transaction and returns its
+    // uncommitted values as fact.
+    if (this.readIsSeparate) return this.readExclusive(rawSql, opts);
+    if (this.busy !== undefined) {
+      throw new PlanRefused(
+        'BUSY',
+        `${this.busy} is holding this connection, so a read now would return its uncommitted trial values ` +
+          'as fact. Configure readConnection so reads have a connection of their own, or read afterwards.',
+      );
+    }
+    this.busy = 'A read';
+    try {
+      return await this.readExclusive(rawSql, opts);
+    } finally {
+      this.busy = undefined;
+    }
+  }
+
+  private async readExclusive(rawSql: string, opts: { limit?: number } = {}): Promise<ReadResult> {
+    if (this.poisoned !== undefined) {
+      throw new PlanRefused('ADAPTER_UNUSABLE', `This connection will not be used again: ${this.poisoned}`);
+    }
+    if (!this.readChecked) {
+      // A separate read connection is verified as a read connection. Asking it
+      // for the write path's guarantees would refuse the very configuration this
+      // setting exists to encourage: a role with no privilege to write.
+      await this.readAdapter.selfCheck(this.readIsSeparate ? 'read' : 'full');
+      this.readChecked = true;
+    }
+
+    let stmt;
+    try {
+      stmt = normalize(rawSql, { dialect: this.readAdapter.dialect });
+      this.policy.check(stmt);
+    } catch (e) {
+      if (e instanceof Rejected || e instanceof PolicyViolation) throw new PlanRefused(e.code, e.message);
+      throw e;
+    }
+    if (stmt.kind !== 'read') {
+      throw new PlanRefused('NOT_A_READ', 'Only SELECT is run directly; a write has to be planned and approved.');
+    }
+    const lead = lower(stmt.sql.trimStart().split(/\s/, 1)[0] ?? '');
+    if (lead !== 'select' && lead !== 'with') {
+      throw new PlanRefused(
+        'NOT_A_READ',
+        `Only SELECT and WITH are allowed here. \`${lead.toUpperCase()}\` names no table for the allowlist to ` +
+          'check, so it would report on tables that were never opened up.',
+      );
+    }
+
+    // R2 — the allowlist can only bite on a table that is named. A `SELECT` with
+    // no `FROM` names none, so it went past a default-deny policy without ever
+    // being compared to it: `SELECT 1`, `SELECT DATABASE()`, and — until the
+    // forbidden list grew — `SELECT nextval('order_id_seq')`, which permanently
+    // consumes an id and is not undone by a rollback. Requiring a table makes
+    // "deny by default" true of reads in the same way it is true of writes.
+    if (tableRefs(stmt.tokens).length === 0) {
+      throw new PlanRefused(
+        'TABLE_NOT_ALLOWED',
+        'This read names no table, so there is nothing for the allowlist to check and it cannot be ' +
+          'allowed by default. Read from one of the allowlisted tables.',
+      );
+    }
+
+    // R6 — a wildcard names no column, so `denyIdentifiers` could not see it.
+    // `SELECT password_hash FROM users` was refused and `SELECT * FROM users`
+    // printed the hash, which is the wrong way round: the guard held against the
+    // deliberate spelling and gave way to the obvious one. Asking the table what
+    // columns it has is the only way to know what a `*` is about to hand over.
+    if (this.policy.hasDeniedIdentifiers && hasProjectionStar(stmt.tokens)) {
+      for (const table of tableRefs(stmt.tokens)) {
+        const shape = await this.readAdapter.introspect(table);
+        const hit = this.policy.deniedAmong(shape.columns.map((c) => c.name));
+        if (hit === undefined) continue;
+        throw new PlanRefused(
+          'DENIED_IDENTIFIER',
+          `\`${table}\` has a column \`${hit.name}\`, and it is ${hit.why} A \`*\` would return it without ` +
+            'ever naming it. Name the columns you want instead.',
+        );
+      }
+    }
+
+    const limit = Math.max(1, Math.floor(opts.limit ?? this.limits.maxReadRows));
+    await this.readAdapter.applyLimits({ statementMs: this.limits.statementMs, lockMs: this.limits.lockMs });
+
+    // R4 — ask for one more row than we will show. Fetching exactly the limit
+    // makes "was there more?" unanswerable, and the caller is then told it saw
+    // everything. Wrapping rather than appending keeps a LIMIT the statement
+    // already had, instead of producing two of them.
+    const rows = await this.readAdapter.query<Row>(
+      `SELECT * FROM (${stmt.sql}) AS llm_safe_sql_read LIMIT ${limit + 1}`,
+    );
+    const truncated = rows.length > limit;
+    const shown = truncated ? rows.slice(0, limit) : rows;
+    const columns = Object.keys(shown[0] ?? {});
+
+    // R6, again, and this is the half that is load-bearing. The check above reads
+    // the statement, so it is only ever as good as the reading; this one reads the
+    // result and cannot be out-spelled. A wildcard behind a spelling the token
+    // walk does not recognise still arrives here, and still does not get returned.
+    //
+    // It runs after the fetch, so the value did reach this process before being
+    // refused. That is worth less than not fetching it, which is exactly why the
+    // check above exists — but it is what makes the guarantee unconditional.
+    if (this.policy.hasDeniedIdentifiers) {
+      const hit = this.policy.deniedAmong(columns);
+      if (hit !== undefined) {
+        throw new PlanRefused(
+          'DENIED_IDENTIFIER',
+          `This read returned a column \`${hit.name}\`, and it is ${hit.why} It was not named in the ` +
+            'statement, so a wildcard brought it back. Name the columns you want instead.',
+        );
+      }
+    }
+
+    return {
+      sql: stmt.sql,
+      rows: shown,
+      columns,
+      truncated,
+    };
+  }
+
+  /**
+   * D7 — roll back, then prove it. "No exception" is not proof.
+   *
+   * The proof has to be narrow. An earlier version re-read the rows and reported
+   * failure if *anything* differed from the snapshot, which meant any concurrent
+   * edit by another session produced "the trial run may have persisted" — an
+   * accusation of data corruption caused by ordinary traffic. A false alarm of
+   * that kind is not a safe default: it sends someone to restore a backup over a
+   * database that was never damaged.
+   *
+   * So the check asks only one question: does the row still carry *the value this
+   * trial wrote*? A third value means somebody else was working, which is their
+   * business and not evidence about our rollback.
+   */
+  private async undo(
+    before: Row[],
+    after: Row[],
+    table: string,
+    pk: readonly string[],
+    q: (s: string) => string,
+    attempted: boolean,
+    op: 'UPDATE' | 'DELETE',
+  ): Promise<void> {
+    let failure: unknown;
+    try {
+      if (this.rollbackHook) await this.rollbackHook();
+      else await this.adapter.rollback();
+    } catch (e) {
+      failure = e;
+    }
+
+    if (failure !== undefined || this.adapter.inTransaction()) {
+      // The connection's state is no longer known: it may still hold an open
+      // transaction and exclusive locks on production rows. Handing it back to a
+      // pool would pass that on to the next caller, so it is retired instead.
+      await this.adapter.rollback().catch(() => {});
+      this.poisoned = failure === undefined ? 'a transaction stayed open after rollback' : String(failure);
+      await this.adapter.close().catch(() => {});
+      throw new PlanRefused(
+        'ROLLBACK_FAILED',
+        attempted
+          ? `The trial run could not be confirmed as rolled back, so no plan is offered, and this connection ` +
+            `will not be reused. Check the target rows before assuming they are unchanged. Cause: ${String(failure)}`
+          : `The transaction could not be closed cleanly. Nothing was written — the statement was refused before ` +
+            `it ran — but this connection will not be reused. Cause: ${String(failure)}`,
+      );
+    }
+
+    if (!attempted || before.length === 0) return;
+
+    const { sql: pred, params } = keyPredicate(pk, before, q, this.adapter.dialect);
+    const now = await this.adapter.query<Row>(`SELECT * FROM ${qname(q, table)} WHERE ${pred}`, params);
+
+    if (op === 'DELETE') {
+      if (now.length < before.length) {
+        this.poisoned = 'a trial DELETE was not undone';
+        await this.adapter.close().catch(() => {});
+        throw new PlanRefused(
+          'ROLLBACK_FAILED',
+          `${before.length - now.length} of the ${before.length} rows the trial deleted are still missing after the ` +
+            'rollback. Treat them as deleted and restore from a backup.',
+        );
+      }
+      return;
+    }
+
+    const byKey = new Map(now.map((r) => [keyOf(pk, r), r]));
+    const afterByKey = new Map(after.map((r) => [keyOf(pk, r), r]));
+    for (const b of before) {
+      const key = keyOf(pk, b);
+      const n = byKey.get(key);
+      const a = afterByKey.get(key);
+      if (n === undefined || a === undefined) continue; // someone else's doing, not ours
+      for (const c of Object.keys(b)) {
+        const wroteSomething = !same(b[c], a[c]);
+        if (!wroteSomething) continue;
+        if (same(n[c], a[c])) {
+          this.poisoned = 'a trial write was not undone';
+          await this.adapter.close().catch(() => {});
+          throw new PlanRefused(
+            'ROLLBACK_FAILED',
+            `Column \`${c}\` still holds the value the trial run wrote, so the rollback did not take effect. ` +
+              'No plan is offered and this connection will not be reused.',
+          );
+        }
+      }
+    }
+  }
+
+  private build(
+    sql: string,
+    table: string,
+    op: 'UPDATE' | 'DELETE',
+    pk: readonly string[],
+    before: Row[],
+    after: Row[],
+    auto: ReadonlySet<string>,
+    assigned: readonly string[],
+    matched: number,
+    changedReported: number,
+    changedMeaningful: boolean,
+    shape: TableShape,
+  ): Plan {
+    const afterByKey = new Map(after.map((r) => [keyOf(pk, r), r]));
+    const rows: PlanRow[] = [];
+    const touched = new Set<string>();
+    let rowsWithAnyDiff = 0;
+
+    for (const b of before) {
+      const key: Row = {};
+      for (const c of pk) key[c] = b[c];
+
+      if (op === 'DELETE') {
+        // D11 — every column, including the ones that are null right now. Dropping
+        // them from the display also drops them from the pre-apply comparison, and
+        // a value written in between would then be deleted unseen.
+        rows.push({ key, changed: Object.keys(b), covered: Object.keys(b), before: { ...b }, after: {} });
+        for (const c of Object.keys(b)) touched.add(c);
+        rowsWithAnyDiff++;
+        continue;
+      }
+
+      const a = afterByKey.get(keyOf(pk, b));
+      if (a === undefined) {
+        throw new PlanRefused('ROW_COUNT_MISMATCH', 'A row disappeared during the trial run.');
+      }
+      let anyDiff = false;
+      const changed: string[] = [];
+      for (const c of Object.keys(b)) {
+        if (same(b[c], a[c])) continue;
+        anyDiff = true;
+        if (auto.has(lower(c))) continue; // D8
+        changed.push(c);
+        touched.add(c);
+      }
+      if (anyDiff) rowsWithAnyDiff++;
+
+      // Everything the statement writes, whether or not the trial saw it move.
+      // A column assigned its own current value is still assigned on the real
+      // execution, so the apply has to hold a before-image of it — otherwise it
+      // writes over whatever the column holds by then, having verified nothing.
+      // Auto-maintained columns stay out: the statement cannot be assigning one,
+      // because that is refused before the trial runs.
+      const covered = [...changed];
+      for (const c of assigned) {
+        const actual = Object.keys(b).find((k) => lower(k) === lower(c));
+        if (actual === undefined) {
+          // Unreachable now that the before-image names its columns rather than
+          // asking for `*` — and left in as a refusal rather than a `continue`
+          // because of what the `continue` did while it was reachable: the column
+          // was dropped from `covered`, so the apply held no before-image of it and
+          // wrote over it having verified nothing, without it appearing on the card.
+          throw new PlanRefused(
+            'UNREADABLE_COLUMN',
+            `\`${table}.${c}\` is assigned by this statement and was not returned when the row was read, ` +
+              'so it cannot be shown to you or checked before the change is committed.',
+          );
+        }
+        if (auto.has(lower(actual))) continue;
+        if (!covered.some((x) => lower(x) === lower(actual))) covered.push(actual);
+      }
+
+      const bd: Row = {};
+      const ad: Row = {};
+      for (const c of covered) {
+        bd[c] = b[c];
+        ad[c] = a[c];
+      }
+      rows.push({ key, changed, covered, before: bd, after: ad });
+    }
+
+    if (touched.size === 0) {
+      throw new PlanRefused(
+        'NO_CHANGE',
+        'Running this changed nothing: the rows already hold those values. Production is untouched.',
+      );
+    }
+
+    // D9 — reconcile what the database says it did against what we can show. A
+    // mismatch means rows moved that never appeared on the card.
+    const expected = changedMeaningful && op === 'UPDATE' ? changedReported : matched;
+    const shown = changedMeaningful && op === 'UPDATE' ? rowsWithAnyDiff : before.length;
+    if (expected !== shown) {
+      throw new PlanRefused(
+        'ROW_COUNT_MISMATCH',
+        `The database reports ${expected} rows affected but only ${shown} can be shown to you. ` +
+          'Rows you would not see may change, so this is refused. Narrow the condition or target rows by key.',
+      );
+    }
+
+    const impact = this.policy.impactFor(table) ?? '';
+    const warnings: string[] = [];
+    if (op === 'DELETE') {
+      warnings.push('Deleted rows cannot be brought back by this tool. Restoring them means going to a backup.');
+    }
+    if (auto.size > 0) {
+      warnings.push(`The database maintains ${[...auto].join(', ')} by itself; those are not shown as changes.`);
+    }
+    // `autoColumns` answers which columns of *this row* the database maintains. A
+    // trigger can also write rows in other tables, and no declaration says
+    // anything about that — but declaring one used to remove the only sign that
+    // there was a trigger at all, because the refusal was the sign. The card is
+    // the right place for it: the operator reading this is the person who can
+    // decide whether they know what the trigger does.
+    if (!shape.autoColumnsKnown && shape.triggersVisible) {
+      // The old wording named "other tables" only, which reads as a promise that
+      // same-table effects are covered. They were not: a trigger deleting another
+      // row of this table produced a card saying "1 row would be deleted" while two
+      // went. The count check above now refuses that case outright, so what is left
+      // to disclose is what counting cannot see — values written to rows this
+      // statement does not name, and anything in another table.
+      warnings.push(
+        `\`${table}\` has ${shape.triggerCount} trigger(s). The dry run counts rows added or removed in ` +
+          `\`${table}\` and refuses if they exceed this statement, but it does not show values a trigger ` +
+          'writes to rows not listed above, and it does not measure other tables at all.',
+      );
+    }
+    // Whatever this engine cannot guarantee is said here, on the card, every
+    // time — not once in a README the approver has never read.
+    warnings.push(...this.adapter.limitations);
+
+    return {
+      sql,
+      dialect: this.adapter.dialect,
+      table,
+      op,
+      rows,
+      columnsTouched: [...touched],
+      rowsMatched: matched,
+      rowsChanged: changedReported,
+      rowsChangedIsMeaningful: changedMeaningful,
+      triggerCount: shape.triggerCount,
+      impact,
+      warnings,
+    };
+  }
+
+  /** Rows in the whole table, inside the current transaction. Used to see trigger work. */
+  private async countAll(q: (s: string) => string, table: string): Promise<number> {
+    const r = await this.adapter.query<Row>(`SELECT COUNT(*) AS c FROM ${qname(q, table)}`);
+    return Number(Object.values(r[0] ?? { c: 0 })[0] ?? 0);
+  }
+
+  /** D8 — declared beats detected, and "unknown" is never silently read as "none". */
+  private resolveAutoColumns(table: string, shape: TableShape): ReadonlySet<string> {
+    const declared = this.declaredAuto[table] ?? this.declaredAuto[lower(table)];
+    if (declared !== undefined) return new Set(declared.map(lower));
+    if (shape.autoColumnsKnown) {
+      return new Set(shape.columns.filter((c) => c.autoUpdated).map((c) => lower(c.name)));
+    }
+    // Two different situations, and until 0.5.0 they shared one sentence — which
+    // told an operator to declare their way out of a problem a declaration cannot
+    // fix. On MySQL, `information_schema.TRIGGERS` is filtered by the TRIGGER
+    // privilege and answers `COUNT(*) = 0` rather than an error, so the role the
+    // examples recommended was told a table with a trigger had none. The remedy
+    // there is a grant.
+    if (!shape.triggersVisible) {
+      throw new PlanRefused(
+        'AUTO_COLUMNS_UNKNOWN',
+        `This credential may not read \`information_schema.TRIGGERS\`, so whether \`${table}\` has triggers ` +
+          'could not be established — MySQL reports that as "no triggers" rather than as an error. ' +
+          'Grant the planning role the TRIGGER privilege (GRANT TRIGGER ON db.* TO ...) so the question ' +
+          'can be answered. Declaring autoColumns would silence this without answering it.',
+      );
+    }
+    throw new PlanRefused(
+      'AUTO_COLUMNS_UNKNOWN',
+      `Table \`${table}\` has triggers, so this dialect cannot say which columns the database maintains itself. ` +
+        'Declare them in autoColumns. Guessing "none" would make every plan fail to confirm, ' +
+        'with an error that looks like someone else edited the row.',
+    );
+  }
+
+}

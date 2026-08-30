@@ -1,0 +1,47 @@
+{
+  "//": [
+    "SQLite has no credential to separate -- the database is a file, and anyone",
+    "who can open it can write to it. So the four-account split the MySQL and",
+    "PostgreSQL examples use is not available here.",
+    "",
+    "What is available is the read handle. Open the same file read-only for the",
+    "model's SELECTs and SQLite itself refuses every write on that handle,",
+    "whatever the policy layer does or fails to do. It is a weaker boundary than",
+    "a separate credential -- the process can still open a second, writable",
+    "handle -- but it is enforced by the engine rather than by us, which is more",
+    "than a shared connection gives you.",
+    "",
+    "Requires Node 24 or later: node:sqlite ships unflagged from Node 23.4.",
+    "MySQL and PostgreSQL work on Node 20+.",
+    "",
+    "Relative paths resolve against this file's directory, not the working",
+    "directory, so the config can be committed next to the database it describes."
+  ],
+
+  "dialect": "sqlite",
+
+  "//connection": "The dry run, and the apply. Really executes, rolls back, and later commits.",
+  "connection": { "file": "app.db" },
+
+  "//readConnection": [
+    "The same file, opened read-only. This is the one real boundary SQLite",
+    "offers, and it costs one line.",
+    "",
+    "`llm-safe-sql check` proves it rather than trusting it: it attempts a",
+    "zero-row write through this handle and reports what actually happened."
+  ],
+  "readConnection": { "file": "app.db", "readOnly": true },
+
+  "policy": {
+    "allow": ["orders"],
+
+    "//impact": [
+      "Required before any write to a table can be planned at all. Without it the",
+      "engine refuses with IMPACT_UNDECLARED, on purpose. Write the consequence,",
+      "not the mechanism."
+    ],
+    "impact": {
+      "orders": "Marking an order shipped emails the customer and starts the 14-day return window. It cannot be taken back by editing the row again."
+    }
+  }
+}

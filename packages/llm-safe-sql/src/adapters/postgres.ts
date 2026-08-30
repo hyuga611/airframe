@@ -1,0 +1,429 @@
+import pg from 'pg';
+import type { Adapter, ColumnShape, Row, DeleteAbility, ProbeOutcome, Savepoint, SelfCheckMode, TableShape, WriteAbility } from '../adapter.js';
+import { AdapterUnusable, probeDeleteAbility, probeWriteAbility } from '../adapter.js';
+
+/**
+ * Whether PostgreSQL refused this statement **for the privilege**, rather than
+ * for anything else.
+ *
+ * `42501` is `insufficient_privilege`, and it is the only answer here that says
+ * something about the grants. The one that made this function necessary is
+ * `25006`, `read_only_sql_transaction`: with `default_transaction_read_only` set
+ * on the role, a superuser is refused every write in exactly the same shape, and
+ * the probes reported it as a credential the database will not let write.
+ *
+ * @see https://www.postgresql.org/docs/16/errcodes-appendix.html
+ */
+function refusedForPrivilege(e: unknown): boolean {
+  return (e as { code?: unknown } | null | undefined)?.code === '42501';
+}
+
+export { AdapterUnusable };
+
+export interface PostgresConfig {
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+  database: string;
+  /**
+   * The schema unqualified table names resolve against. Defaults to `public`.
+   *
+   * Set on every connection this adapter opens. See {@link PostgresAdapter.connect}
+   * for why leaving PostgreSQL's default in place is not an option here.
+   */
+  schema?: string;
+}
+
+/**
+ * Date and time OIDs, which this adapter takes as text rather than as `Date`.
+ *
+ * `timestamp(6)` holds microseconds and a JS `Date` holds milliseconds, so the
+ * default parser silently drops the last three digits — and a change confined to
+ * them then never appears in the diff. The parser is overridden per client rather
+ * than through `pg.types.setTypeParser`, which is global to the module and would
+ * change how every other query in the host application reads its timestamps.
+ */
+const TEXTUAL_OIDS = new Set([
+  1082, // date
+  1083, // time
+  1114, // timestamp
+  1184, // timestamptz
+  1266, // timetz
+]);
+
+const asText = (v: string): string => v;
+
+const TYPES = {
+  getTypeParser(oid: number, format?: unknown): unknown {
+    if (TEXTUAL_OIDS.has(oid)) return asText;
+    return (pg.types.getTypeParser as (o: number, f?: unknown) => unknown)(oid, format);
+  },
+};
+
+export class PostgresAdapter implements Adapter {
+  readonly dialect = 'postgres' as const;
+  /** `statement_timeout` and `lock_timeout` are both real here, so there is nothing to disclaim. */
+  readonly limitations: readonly string[] = [];
+  private readonly client: pg.Client;
+  private open = false;
+  private savepoints = 0;
+
+  private constructor(client: pg.Client, schema: string) {
+    this.client = client;
+    this.schema = schema;
+  }
+
+  /**
+   * The schema every unqualified table name in this session resolves against.
+   *
+   * Kept so `check` can print it and so {@link selfCheck} can prove it took, and
+   * because the alternative is what this library shipped until 0.4.0: nothing.
+   */
+  readonly schema: string;
+
+  static async connect(cfg: PostgresConfig): Promise<PostgresAdapter> {
+    const { schema = 'public', ...rest } = cfg;
+    const client = new pg.Client({ ...rest, types: TYPES as never });
+    await client.connect();
+    const self = new PostgresAdapter(client, schema);
+
+    // Pin the search path. PostgreSQL's default is `"$user", public`, and `$user`
+    // expands per connection — so `orders` is a *different table* depending on
+    // which role asked. This library's recommended deployment gives the plan and
+    // the apply different roles, which makes that difference the gap between what
+    // was measured and what gets written.
+    //
+    // Measured on PostgreSQL 16, before this line existed: with a schema named
+    // after the apply role holding a table of the same name, the planner measured
+    // `public.sp_orders` and produced a card from it; the apply role then ran the
+    // identical statement and wrote `sp_applier.sp_orders`. The approved change
+    // did not happen and an unapproved one did, with no error anywhere. A role
+    // that can create a schema in its own database can arrange this for itself,
+    // which is the ordinary shape of a search-path attack.
+    //
+    // `pg_catalog` is searched implicitly whatever this says, so introspection
+    // still works; a deployment whose tables live elsewhere sets `schema` and
+    // gets a loud "relation does not exist" if it gets that wrong, rather than a
+    // quiet write to the wrong table.
+    await client.query(`SET search_path TO ${self.quoteIdent(schema)}`);
+    return self;
+  }
+
+  async selfCheck(mode: SelfCheckMode = 'full'): Promise<void> {
+    // 1. Session stickiness. pgbouncer in transaction mode will fail this, and it
+    //    must: it can hand our session to another caller mid-dry-run. This one
+    //    applies to reads too — a truncated read is still a wrong answer.
+    await this.client.query("SET llm_safe_sql.probe = 'sticky'");
+    const stick = await this.client.query<{ v: string }>("SELECT current_setting('llm_safe_sql.probe', true) AS v");
+    if (stick.rows[0]?.v !== 'sticky') {
+      throw new AdapterUnusable(
+        'Session state does not survive between statements. A connection pooler in transaction mode ' +
+          'cannot be used: a dry run could be left open on a connection handed to another caller.',
+      );
+    }
+
+    // 1b. The search path is still the one we pinned. Checked on the read path
+    //     too, because a read answered from a different schema is a wrong answer
+    //     in exactly the way a write to a different schema is a wrong write — and
+    //     because whatever could reset it between statements (a pooler, a
+    //     `ALTER ROLE ... SET search_path` applied at reconnect) would do so
+    //     silently.
+    const path = await this.client.query<{ v: string }>('SELECT current_schema() AS v');
+    if (path.rows[0]?.v !== this.schema) {
+      throw new AdapterUnusable(
+        `This session resolves unqualified names against "${String(path.rows[0]?.v)}", not the configured ` +
+          `"${this.schema}". Every unqualified table in a statement would mean a different table from the ` +
+          'one that was measured, so nothing here can be relied on.',
+      );
+    }
+
+    // Everything below needs write privileges to establish, so it cannot be
+    // asked of the read path — a read-only role has no business creating a
+    // temporary table, and demanding one refuses the correct configuration.
+    if (mode === 'read') return;
+
+    try {
+      await this.client.query('CREATE TEMP TABLE llm_safe_sql_probe (id INT PRIMARY KEY, v INT NOT NULL)');
+    } catch (e) {
+      throw new AdapterUnusable(
+        `Cannot create a temporary table, so the environment cannot be verified. (${String(e)})`,
+      );
+    }
+
+    try {
+      await this.client.query('INSERT INTO llm_safe_sql_probe VALUES (1, 10)');
+
+      // 2. Does a rollback really undo?
+      await this.client.query('BEGIN');
+      await this.client.query('UPDATE llm_safe_sql_probe SET v = 999 WHERE id = 1');
+      await this.client.query('ROLLBACK');
+      const back = await this.client.query<{ v: number }>('SELECT v FROM llm_safe_sql_probe WHERE id = 1');
+      if (Number(back.rows[0]?.v) !== 10) {
+        throw new AdapterUnusable('A rollback did not undo the change; this connection is not transactional.');
+      }
+
+      // 3. Confirm the counting model. Postgres rewrites a row even when the new
+      //    value equals the old one, so rowCount cannot answer "did anything
+      //    really change" and the engine must compare snapshots instead. We check
+      //    the assumption rather than trusting it, because building the
+      //    reconciliation on the wrong model is silent.
+      const same = await this.client.query('UPDATE llm_safe_sql_probe SET v = 10 WHERE v = 10');
+      if (same.rowCount !== 1) {
+        throw new AdapterUnusable(
+          `Expected a same-value UPDATE to report 1 row, got ${String(same.rowCount)}. ` +
+            'Row counting does not behave as this adapter assumes.',
+        );
+      }
+    } finally {
+      await this.client.query('DROP TABLE IF EXISTS llm_safe_sql_probe').catch(() => {});
+    }
+  }
+
+  /** Both limits are real session settings here, and both apply to writes. */
+  async applyLimits(limits: { statementMs: number; lockMs: number }): Promise<void> {
+    await this.client.query(`SET statement_timeout = ${Math.max(0, Math.floor(limits.statementMs))}`);
+    await this.client.query(`SET lock_timeout = ${Math.max(0, Math.floor(limits.lockMs))}`);
+  }
+
+  async introspect(table: string): Promise<TableShape> {
+    const cols = await this.client.query<{ name: string; type: string; nullable: boolean }>(
+      `SELECT a.attname AS name,
+              format_type(a.atttypid, a.atttypmod) AS type,
+              NOT a.attnotnull AS nullable
+         FROM pg_attribute a
+        WHERE a.attrelid = $1::regclass AND a.attnum > 0 AND NOT a.attisdropped
+        ORDER BY a.attnum`,
+      [table],
+    );
+    if (cols.rows.length === 0) throw new AdapterUnusable(`Table "${table}" was not found.`);
+
+    const pk = await this.client.query<{ attname: string }>(
+      `SELECT a.attname
+         FROM pg_index i
+         CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord)
+         JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+        WHERE i.indrelid = $1::regclass AND i.indisprimary
+        ORDER BY k.ord`,
+      [table],
+    );
+
+    // Postgres has no declarative ON UPDATE. The conventional way to maintain an
+    // updated_at column is a BEFORE UPDATE trigger — which means the column
+    // definitions cannot tell us what moves by itself.
+    //
+    // This is precisely the case that would otherwise reintroduce "no plan can
+    // ever be confirmed": the trigger bumps updated_at between the dry run and
+    // the apply, the post-apply comparison sees a value that differs from the
+    // plan, and every approval fails citing concurrent modification. So when a
+    // trigger exists we report that we do not know, and let the caller declare
+    // the columns instead of guessing "none".
+    const trig = await this.client.query<{ c: number }>(
+      `SELECT COUNT(*)::int AS c FROM pg_trigger WHERE tgrelid = $1::regclass AND NOT tgisinternal`,
+      [table],
+    );
+    const triggerCount = Number(trig.rows[0]?.c ?? 0);
+
+    // Foreign keys pointing AT this table. With CASCADE or SET NULL, changing an
+    // approved row also changes rows in another table that were never displayed —
+    // and for DELETE that is irreversible.
+    const fks = await this.client.query<{ child: string; name: string; del: string; upd: string }>(
+      `SELECT c.conrelid::regclass::text AS child,
+              c.conname                  AS name,
+              c.confdeltype              AS del,
+              c.confupdtype              AS upd
+         FROM pg_constraint c
+        WHERE c.contype = 'f' AND c.confrelid = $1::regclass`,
+      [table],
+    );
+    const RULE: Record<string, string> = {
+      a: 'NO ACTION', r: 'RESTRICT', c: 'CASCADE', n: 'SET NULL', d: 'SET DEFAULT',
+    };
+    const inboundCascades = fks.rows.map((f) => ({
+      table: f.child,
+      constraint: f.name,
+      onDelete: RULE[f.del] ?? 'NO ACTION',
+      onUpdate: RULE[f.upd] ?? 'NO ACTION',
+    }));
+
+    // Ordinary and unlogged tables are transactional here. A foreign table is not
+    // ours to reason about: the remote side has its own rules about rollback.
+    const rel = await this.client.query<{ kind: string }>(
+      `SELECT relkind AS kind FROM pg_class WHERE oid = $1::regclass`,
+      [table],
+    );
+    const transactional = ['r', 'p', 'm'].includes(String(rel.rows[0]?.kind ?? ''));
+
+    const columns: ColumnShape[] = cols.rows.map((c) => ({
+      name: c.name,
+      type: c.type,
+      nullable: c.nullable,
+      autoUpdated: false, // never declarative on this engine
+    }));
+
+    return {
+      table,
+      columns,
+      primaryKey: pk.rows.map((r) => r.attname),
+      autoColumnsKnown: triggerCount === 0,
+      // `pg_trigger` and `pg_constraint` are readable by every role. Measured
+      // rather than assumed: a role with SELECT, INSERT, UPDATE, DELETE on one
+      // table reported the same trigger and the same inbound foreign key as the
+      // superuser did, where MySQL reported neither.
+      triggersVisible: true,
+      inboundCascadesKnown: true,
+      transactional,
+      inboundCascades,
+      triggerCount,
+    };
+  }
+
+  async begin(isolation: 'default' | 'repeatable-read' = 'default'): Promise<void> {
+    // Postgres defaults to READ COMMITTED, under which the count and the snapshot
+    // are two different views of the database: a concurrent commit between them
+    // shows up in the diff as an effect of the statement being planned. The dry
+    // run therefore asks for REPEATABLE READ explicitly.
+    await this.client.query(
+      isolation === 'repeatable-read' ? 'BEGIN ISOLATION LEVEL REPEATABLE READ' : 'BEGIN',
+    );
+    this.open = true;
+  }
+
+  async commit(): Promise<void> {
+    await this.client.query('COMMIT');
+    this.open = false;
+  }
+
+  async rollback(): Promise<void> {
+    await this.client.query('ROLLBACK');
+    this.open = false;
+  }
+
+  inTransaction(): boolean {
+    return this.open;
+  }
+
+  async savepoint(): Promise<Savepoint> {
+    const name = `llm_safe_sql_sp_${++this.savepoints}`;
+    await this.client.query(`SAVEPOINT ${name}`);
+    const client = this.client;
+    return {
+      name,
+      async rollback() {
+        await client.query(`ROLLBACK TO SAVEPOINT ${name}`);
+      },
+      async release() {
+        await client.query(`RELEASE SAVEPOINT ${name}`);
+      },
+    };
+  }
+
+  async query<T = Row>(sql: string, params: readonly unknown[] = []): Promise<T[]> {
+    const res = await this.client.query(sql, params as unknown[]);
+    return res.rows as T[];
+  }
+
+  async execute(
+    sql: string,
+    params: readonly unknown[] = [],
+  ): Promise<{ rowsMatched: number; rowsChanged: number; changedIsMeaningful: boolean }> {
+    const res = await this.client.query(sql, params as unknown[]);
+    const n = res.rowCount ?? 0;
+    return {
+      rowsMatched: n,
+      rowsChanged: n,
+      // A same-value UPDATE still rewrites the row and still counts, so this
+      // number cannot distinguish "changed" from "matched". Only the before/after
+      // snapshots can.
+      changedIsMeaningful: false,
+    };
+  }
+
+  quoteIdent(name: string): string {
+    return '"' + name.replace(/"/g, '""') + '"';
+  }
+
+  /**
+   * Ask PostgreSQL whether this role may change the allowlisted tables.
+   *
+   * Every attempt gets its own savepoint, and that is not tidiness. Postgres puts
+   * the whole transaction into an aborted state as soon as one statement fails,
+   * and every statement after that returns `current transaction is aborted`. That
+   * error is indistinguishable, to a `catch`, from a refusal — so without the
+   * savepoints a role holding UPDATE but not DELETE probes as read-only, which is
+   * the one answer that must never be wrong. Measured on PostgreSQL 16.
+   */
+  /**
+   * `current_user` is the role privileges are decided by, and the server address
+   * and port come from the server rather than from the client's connection
+   * string, so two spellings of one host collapse to one identity here.
+   */
+  async identity(): Promise<string> {
+    const rows = await this.query<Row>(
+      "SELECT current_user AS u, current_database() AS d, current_schema() AS s, " +
+        "coalesce(inet_server_addr()::text, 'local') AS a, coalesce(inet_server_port()::text, 'local') AS p",
+    );
+    const r = rows[0] ?? {};
+    return `${String(r['u'])}@${String(r['a'])}:${String(r['p'])}/${String(r['d'])} schema=${String(r['s'])}`;
+  }
+
+  async probeDeletable(table: string): Promise<DeleteAbility> {
+    return probeDeleteAbility(
+      table,
+      (n) => this.quoteIdent(n),
+      async () => {
+        try {
+          await this.introspect(table);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      async (sql): Promise<ProbeOutcome> => {
+        try {
+          await this.query(sql);
+          return 'ok';
+        } catch (e) {
+          return refusedForPrivilege(e) ? 'denied' : 'unclear';
+        }
+      },
+    );
+  }
+
+  async probeWritable(tables: readonly string[]): Promise<WriteAbility> {
+    // Never inside a caller's transaction: the rollback below would discard
+    // their work. Nothing was established, so say exactly that.
+    if (this.inTransaction()) return 'unknown';
+    await this.client.query('BEGIN');
+    let n = 0;
+    try {
+      return await probeWriteAbility(
+        tables,
+        async (t) => (await this.introspect(t)).columns.map((c) => c.name),
+        (name) => this.quoteIdent(name),
+        async (sql): Promise<ProbeOutcome> => {
+          const sp = `llm_safe_sql_wprobe_${++n}`;
+          await this.client.query(`SAVEPOINT ${sp}`);
+          try {
+            await this.client.query(sql);
+            await this.client.query(`RELEASE SAVEPOINT ${sp}`);
+            return 'ok';
+          } catch (e) {
+            await this.client.query(`ROLLBACK TO SAVEPOINT ${sp}`).catch(() => {});
+            return refusedForPrivilege(e) ? 'denied' : 'unclear';
+          }
+        },
+      );
+    } finally {
+      await this.client.query('ROLLBACK').catch(() => {});
+    }
+  }
+
+  rowLockClause(): string {
+    return ' FOR UPDATE';
+  }
+
+  async close(): Promise<void> {
+    await this.client.end();
+  }
+}
