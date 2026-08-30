@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * narai — 習い ("the ways one picks up by repetition")
+ * habit — 習い ("the ways one picks up by repetition")
  *
  * Makes a coding agent aware that its output was corrected.
  *
@@ -34,7 +34,7 @@ export {
   isGitIgnored,
 } from './secrets.mjs';
 
-export const STORE = process.env.NARAI_HOME || join(homedir(), '.claude', 'narai');
+export const STORE = process.env.HABIT_HOME || join(homedir(), '.claude', 'habit');
 const ARTIFACTS = () => join(STORE, 'artifacts');
 const CORRECTIONS = () => join(STORE, 'corrections');
 const SIGNALS = () => join(STORE, 'signals');
@@ -229,9 +229,9 @@ function cmdExport(args) {
     else if (args[i] === '--out') out = args[++i];
   }
   const bundle = buildExport({ as });
-  const target = out || join(process.cwd(), `narai-${bundle.who}.json`);
+  const target = out || join(process.cwd(), `habit-${bundle.who}.json`);
   writeFileSync(target, JSON.stringify(bundle, null, 1), 'utf8');
-  console.log(`narai: ${bundle.count} correction(s) written to ${target}`);
+  console.log(`habit: ${bundle.count} correction(s) written to ${target}`);
   console.log('  included: changed lines, what you asked for, the file name');
   console.log('  excluded: the folder path, the file contents, anything git ignores');
   // The changed lines are your code. Whatever was on those lines is in the file.
@@ -242,8 +242,8 @@ function cmdExport(args) {
 // ---------------- reading the corrections back, for the learn skill ----------------
 
 /**
- * `narai corpus`   — print the corrections in a fixed layout, for an agent to read.
- * `narai validate` — check a rules file against the corrections actually on disk.
+ * `habit corpus`   — print the corrections in a fixed layout, for an agent to read.
+ * `habit validate` — check a rules file against the corrections actually on disk.
  *
  * The second one is the point. An agent told to "cite at least two corrections" will
  * usually do it, and the times it does not are exactly the times the rule was invented.
@@ -258,7 +258,7 @@ function cmdLearn(cmd, args) {
 
     if (cmd === 'corpus') {
       if (corrections.length === 0 && signals.length === 0) {
-        console.log('narai: nothing recorded yet. Use the agent for a while first.');
+        console.log('habit: nothing recorded yet. Use the agent for a while first.');
         return 0;
       }
       console.log(`# ${corrections.length} correction(s)\n`);
@@ -268,14 +268,14 @@ function cmdLearn(cmd, args) {
 
     const file = args.find((a) => !a.startsWith('--'));
     if (!file) {
-      console.error('narai validate <rules.json> [--save]');
+      console.error('habit validate <rules.json> [--save]');
       return 2;
     }
     let obj;
     try {
       obj = JSON.parse(readFileSync(file, 'utf8'));
     } catch (e) {
-      console.error(`narai: cannot read ${file} — ${e.message}`);
+      console.error(`habit: cannot read ${file} — ${e.message}`);
       return 2;
     }
 
@@ -283,10 +283,10 @@ function cmdLearn(cmd, args) {
     for (const d of dropped) {
       console.error(`  dropped: ${d.reason} (cited ${d.cited}, ${d.real} real) — ${d.rule}`);
     }
-    console.log(`narai: ${rules.length} rule(s) kept, ${dropped.length} dropped`);
+    console.log(`habit: ${rules.length} rule(s) kept, ${dropped.length} dropped`);
 
     if (dropped.length) {
-      console.error('narai: fix the evidence and run again. Nothing was saved.');
+      console.error('habit: fix the evidence and run again. Nothing was saved.');
       return 1;
     }
 
@@ -296,7 +296,7 @@ function cmdLearn(cmd, args) {
       const l = propose(rules, nowIso(), corrections);
       const fresh = l.proposals.slice(-rules.length);
       const scorable = fresh.filter((p) => p.scorable).length;
-      console.log(`narai: saved to ${RULES()} and recorded in the ledger`);
+      console.log(`habit: saved to ${RULES()} and recorded in the ledger`);
       console.log(`  ${scorable} of ${rules.length} can be scored later; the rest share no repeated line to watch for`);
       // The pile has been distilled, so the nudge starts over from here.
       try {
@@ -305,14 +305,14 @@ function cmdLearn(cmd, args) {
     }
     return 0;
   }).catch((e) => {
-    console.error(`narai: ${e.message}`);
+    console.error(`habit: ${e.message}`);
     return 1;
   });
 }
 
 /**
- * `narai score`  — how the rules that were written have actually done.
- * `narai accept` / `narai reject` — whether a proposal was adopted.
+ * `habit score`  — how the rules that were written have actually done.
+ * `habit accept` / `habit reject` — whether a proposal was adopted.
  *
  * All three write ledger.json, and nothing else does. Keeping the only writer on the
  * command side means no hook can ever lose a write to it, or be delayed by one.
@@ -322,26 +322,26 @@ function cmdLedger(cmd, args) {
     if (cmd === 'accept' || cmd === 'reject') {
       const id = args.find((a) => !a.startsWith('--'));
       if (!id) {
-        console.error(`narai ${cmd} <proposal-id>   (see narai score)`);
+        console.error(`habit ${cmd} <proposal-id>   (see habit score)`);
         return 2;
       }
       const p = setAccepted(id, cmd === 'accept');
       if (!p) {
-        console.error(`narai: no proposal matching ${id}`);
+        console.error(`habit: no proposal matching ${id}`);
         return 1;
       }
-      console.log(`narai: ${cmd}ed — ${p.rule}`);
+      console.log(`habit: ${cmd}ed — ${p.rule}`);
       return 0;
     }
 
     const s = score(listCorrections());
     if (!s.proposed) {
-      console.log('narai: no rules have been proposed yet, so there is nothing to score.');
-      console.log('Run the narai-learn skill first — it writes rules and records them here.');
+      console.log('habit: no rules have been proposed yet, so there is nothing to score.');
+      console.log('Run the habit-learn skill first — it writes rules and records them here.');
       return 0;
     }
 
-    console.log(`narai: ${s.proposed} proposal(s) — ${s.scorable} scorable, ${s.unscorable} unscorable`);
+    console.log(`habit: ${s.proposed} proposal(s) — ${s.scorable} scorable, ${s.unscorable} unscorable`);
     console.log(`${s.recurrences} correction(s) of a kind a rule was meant to stop have arrived since.\n`);
 
     for (const r of s.rows) {
@@ -363,12 +363,12 @@ function cmdLedger(cmd, args) {
     console.log('\nNo hit rate is printed, on purpose. A rule with no recurrence may be working,');
     console.log('or the situation may simply not have come up — nothing here can tell those apart.');
     if (existsSync(RULES())) {
-      console.log('These rules are also injected at session start, so narai is treating the very');
+      console.log('These rules are also injected at session start, so habit is treating the very');
       console.log('behaviour it is measuring. Read the rows, not a score.');
     }
     return 0;
   }).catch((e) => {
-    console.error(`narai: ${e.message}`);
+    console.error(`habit: ${e.message}`);
     return 1;
   });
 }
@@ -422,7 +422,7 @@ export function hookSync(payload) {
       size: cur.size,
       writtenAt: nowIso(),
       promptId: payload.prompt_id || null,
-      // Kept so `narai doctor` can show how often this path is the one doing the
+      // Kept so `habit doctor` can show how often this path is the one doing the
       // writing. A store full of these means the agent is not using Write at all.
       tool: payload.tool_name || null,
       viaSync: true,
@@ -480,7 +480,7 @@ export function hookPost(payload) {
     file: resolve(file),
     hash: cur.hash,
     text: keepBody ? cur.text : null,
-    withheld: keepBody ? null : cur.tooBig ? 'size' : process.env.NARAI_HASH_ONLY === '1' ? 'hash-only' : 'policy',
+    withheld: keepBody ? null : cur.tooBig ? 'size' : process.env.HABIT_HASH_ONLY === '1' ? 'hash-only' : 'policy',
     size: cur.size,
     writtenAt: nowIso(),
     session: payload.session_id || null,
@@ -497,7 +497,7 @@ export function hookPost(payload) {
  * are kept.
  */
 export function lastUserMessage(transcriptPath, limit = 500) {
-  if (!transcriptPath || process.env.NARAI_NO_PROMPTS === '1') return null;
+  if (!transcriptPath || process.env.HABIT_NO_PROMPTS === '1') return null;
   let tail;
   try {
     const st = statSync(transcriptPath);
@@ -540,7 +540,7 @@ export function lastUserMessage(transcriptPath, limit = 500) {
  * Why there is nothing to diff against.
  *
  * Four different reasons end up here and they are not interchangeable. Telling someone their
- * file looks like it holds secrets when the real reason is that `narai prune` dropped the copy
+ * file looks like it holds secrets when the real reason is that `habit prune` dropped the copy
  * is a false alarm about their own repository — and it was what this said until a pruned record
  * was actually put through it. `cur.text` is checked first because a file that has grown past
  * the size limit since it was stored says nothing about how it was stored.
@@ -548,8 +548,8 @@ export function lastUserMessage(transcriptPath, limit = 500) {
 function whyNoDiff(rec, cur) {
   if (cur.text == null) return 'the file is now too large to read';
   if (rec.withheld === 'size') return 'the file was too large to keep';
-  if (rec.withheld === 'hash-only') return 'NARAI_HASH_ONLY is set, so no contents are kept anywhere';
-  if (String(rec.withheld).startsWith('pruned')) return 'the stored copy was dropped by `narai prune`';
+  if (rec.withheld === 'hash-only') return 'HABIT_HASH_ONLY is set, so no contents are kept anywhere';
+  if (String(rec.withheld).startsWith('pruned')) return 'the stored copy was dropped by `habit prune`';
   return 'this path may hold secrets, so its contents are never stored';
 }
 
@@ -591,7 +591,7 @@ export function hookPre(payload) {
 
   const head = sameSession
     ? [
-        `narai: ${basename(rec.file)} is not what you last wrote (${rec.writtenAt}).`,
+        `habit: ${basename(rec.file)} is not what you last wrote (${rec.writtenAt}).`,
         // The premise is stated with the conclusion so a reader can see when it fails.
         // It fails if `hook sync` is not installed, and then this sentence is wrong —
         // which is better than the sentence it replaced, which asserted the conclusion
@@ -601,7 +601,7 @@ export function hookPre(payload) {
         '',
       ]
     : [
-        `narai: ${basename(rec.file)} is not what you last wrote (${rec.writtenAt}).`,
+        `habit: ${basename(rec.file)} is not what you last wrote (${rec.writtenAt}).`,
         'That write was in an earlier session, and nothing has been watching this file since,',
         'so a script or a release step accounts for the difference as well as a person does.',
         'Read it before writing over it. Who changed it is not being claimed.',
@@ -636,7 +636,7 @@ export function hookPre(payload) {
             'undone, say why and ask first.',
           ]),
     ];
-    // Only material narai can actually attribute becomes material to learn from. A rule is
+    // Only material habit can actually attribute becomes material to learn from. A rule is
     // meant to be citable back to corrections the user really made; an entry sourced from a
     // release script would be fabricated evidence wearing the same id.
     if (sameSession) {
@@ -758,7 +758,7 @@ export function errorTextOf(payload) {
 /**
  * Why a call was blocked, in the harness's words.
  *
- * `reason` is on every denial payload observed so far, and narai was throwing it away — it
+ * `reason` is on every denial payload observed so far, and habit was throwing it away — it
  * recorded *that* something was refused and kept only the program name. The refusal is the
  * least ambiguous "do not do that" this tool ever sees, and the reason is the only part that
  * says which of the many possible objections it was. Read as free text, so it goes through the
@@ -786,7 +786,7 @@ export function listSignals() {
     .filter(Boolean);
 }
 
-/** Where the per-file records live. `narai prune` needs the filenames, not just the contents. */
+/** Where the per-file records live. `habit prune` needs the filenames, not just the contents. */
 export function artifactsDir() {
   return ARTIFACTS();
 }
@@ -802,7 +802,7 @@ function sessionRecords(session) {
   return listArtifacts().filter((r) => r && r.session === session && r.file);
 }
 
-/** The per-file records the hooks keep. Read by `narai doctor`; nothing else needs them. */
+/** The per-file records the hooks keep. Read by `habit doctor`; nothing else needs them. */
 export function listArtifacts() {
   if (!existsSync(ARTIFACTS())) return [];
   return readdirSync(ARTIFACTS())
@@ -836,7 +836,7 @@ export function loadRules() {
 /** The learned rules, as lines to hand to an agent. Empty when there are none. */
 function ruleLines(rules) {
   if (!rules.length) return [];
-  const out = ['narai — how this user works, learned from their own corrections:'];
+  const out = ['habit — how this user works, learned from their own corrections:'];
   for (const r of rules.slice(0, 12)) out.push(`- ${r.rule}${r.scope && r.scope !== '*' ? `  (${r.scope})` : ''}`);
   return out;
 }
@@ -853,7 +853,7 @@ export function hookSubagent() {
     for (const c of corr) byFile[basename(c.file)] = (byFile[basename(c.file)] || 0) + 1;
     const top = Object.entries(byFile).sort((a, b) => b[1] - a[1]).slice(0, 5).filter(([, n]) => n >= 2);
     if (top.length) {
-      lines.push('narai — files this user has hand-corrected after the agent wrote them:');
+      lines.push('habit — files this user has hand-corrected after the agent wrote them:');
       for (const [f, n] of top) lines.push(`- ${f} (${n} times)`);
       lines.push('Read them before rewriting; those edits were deliberate.');
     }
@@ -888,7 +888,7 @@ export function undistilled(rules, corrections) {
 }
 
 /**
- * The one line narai is allowed to say without being asked.
+ * The one line habit is allowed to say without being asked.
  *
  * Distilling needs a model, and a model may not run in a hook, so something has to raise
  * the subject. It is addressed to the agent that just started — which can act on it — and
@@ -915,7 +915,7 @@ export function distillNudge(rules, corrections, now, { min = 10 } = {}) {
     // reappears every single session, which is precisely how an ambient tool gets uninstalled.
     return null;
   }
-  return `narai: ${n} correction(s) recorded, not yet distilled. The narai-learn skill turns them into rules.`;
+  return `habit: ${n} correction(s) recorded, not yet distilled. The habit-learn skill turns them into rules.`;
 }
 
 /**
@@ -954,13 +954,13 @@ function emit(eventName, context) {
 function cmdLog(argv) {
   const all = listCorrections();
   if (all.length === 0) {
-    console.log('narai: nothing recorded yet.');
+    console.log('habit: nothing recorded yet.');
     console.log('Install the hooks, then edit a file the agent wrote — that is what gets recorded.');
     return 0;
   }
   const n = parseInt(argv.find((a) => /^\d+$/.test(a)) || '20', 10);
   const recent = all.slice(-n);
-  console.log(`narai: ${all.length} hand-edit(s) recorded (showing the last ${recent.length})\n`);
+  console.log(`habit: ${all.length} hand-edit(s) recorded (showing the last ${recent.length})\n`);
   for (const c of recent) {
     const when = c.detectedAt.slice(0, 16).replace('T', ' ');
     console.log(`${when}  ${basename(c.file)}  (−${c.removedCount} +${c.addedCount})`);
@@ -1019,7 +1019,7 @@ export function main(argv) {
         return 0;
       })
       .catch((e) => {
-        console.error(`narai: ${e.message}`);
+        console.error(`habit: ${e.message}`);
         return 1;
       });
   }
@@ -1029,7 +1029,7 @@ export function main(argv) {
     const di = args.indexOf('--days');
     const days = di >= 0 ? Number.parseInt(args[di + 1], 10) : 30;
     if (!Number.isFinite(days) || days < 0) {
-      console.error('narai prune [--days N] [--apply]');
+      console.error('habit prune [--days N] [--apply]');
       return 2;
     }
     return import('./prune.mjs')
@@ -1038,7 +1038,7 @@ export function main(argv) {
         return 0;
       })
       .catch((e) => {
-        console.error(`narai: ${e.message}`);
+        console.error(`habit: ${e.message}`);
         return 1;
       });
   }
@@ -1048,52 +1048,52 @@ export function main(argv) {
     return 0;
   }
 
-  console.log(`narai — tells the agent when you edited what it wrote
+  console.log(`habit — tells the agent when you edited what it wrote
 
-  narai log [n]     show the hand-edits it has recorded (default 20)
-  narai doctor      what the store actually contains, and which couplings have gone quiet
-  narai prune [--days N] [--apply]
+  habit log [n]     show the hand-edits it has recorded (default 20)
+  habit doctor      what the store actually contains, and which couplings have gone quiet
+  habit prune [--days N] [--apply]
                     drop stored file bodies whose file is gone or untouched for N days
                     (default 30). The hash stays, so edits are still detected. Dry run
                     unless --apply.
-  narai export      write a bundle to hand over: changed lines only, no paths, no file bodies
+  habit export      write a bundle to hand over: changed lines only, no paths, no file bodies
                       --as <name>   label the bundle (default: a hash of the hostname)
                       --out <file>  where to write it
-  narai corpus      print the corrections, laid out for reading
-  narai validate <rules.json> [--save]
+  habit corpus      print the corrections, laid out for reading
+  habit validate <rules.json> [--save]
                     check a rules file against the corrections on disk. A rule citing
                     fewer than two real ones is dropped and the command exits 1.
-  narai score       how the rules that were written have actually done since
-  narai accept <id> | narai reject <id>
-                    record whether a proposal was adopted (ids come from narai score)
-  narai where       print the store location
+  habit score       how the rules that were written have actually done since
+  habit accept <id> | habit reject <id>
+                    record whether a proposal was adopted (ids come from habit score)
+  habit where       print the store location
 
-  Turning corrections into rules is the narai-learn skill's job — no API key involved.
+  Turning corrections into rules is the habit-learn skill's job — no API key involved.
 
   Install as hooks, in your Claude Code settings.json. The first three are the product; the
   rest are what makes it learn rather than only warn:
 
     "PostToolUse":       [{ "matcher": "Write|Edit", "hooks": [
-      { "type": "command", "command": "npx @hyuga/narai hook post", "timeout": 10 }]},
+      { "type": "command", "command": "npx @hyuga/habit hook post", "timeout": 10 }]},
                           { "hooks": [
-      { "type": "command", "command": "npx @hyuga/narai hook sync", "timeout": 10 }]}],
+      { "type": "command", "command": "npx @hyuga/habit hook sync", "timeout": 10 }]}],
     "PreToolUse":        [{ "matcher": "Write|Edit", "hooks": [
-      { "type": "command", "command": "npx @hyuga/narai hook pre",  "timeout": 10 }]}],
+      { "type": "command", "command": "npx @hyuga/habit hook pre",  "timeout": 10 }]}],
 
   The unmatched "hook sync" is not optional. Without it, an agent that edits a file
   through the shell instead of Write is reported to itself as the user editing by
   hand — and filed as a correction you never made.
     "SessionStart":      [{ "hooks": [
-      { "type": "command", "command": "npx @hyuga/narai hook session", "timeout": 10 }]}],
+      { "type": "command", "command": "npx @hyuga/habit hook session", "timeout": 10 }]}],
     "SubagentStart":     [{ "hooks": [
-      { "type": "command", "command": "npx @hyuga/narai hook subagent", "timeout": 10 }]}],
+      { "type": "command", "command": "npx @hyuga/habit hook subagent", "timeout": 10 }]}],
     "PermissionDenied":  [{ "hooks": [
-      { "type": "command", "command": "npx @hyuga/narai hook denied", "timeout": 10 }]}],
+      { "type": "command", "command": "npx @hyuga/habit hook denied", "timeout": 10 }]}],
     "PostToolUseFailure":[{ "hooks": [
-      { "type": "command", "command": "npx @hyuga/narai hook failed", "timeout": 10 }]}]
+      { "type": "command", "command": "npx @hyuga/habit hook failed", "timeout": 10 }]}]
 
-  Set NARAI_HASH_ONLY=1 to never store file contents.
-  Set NARAI_NO_PROMPTS=1 to keep the diffs but not what you said.
+  Set HABIT_HASH_ONLY=1 to never store file contents.
+  Set HABIT_NO_PROMPTS=1 to keep the diffs but not what you said.
 `);
   return 0;
 }
@@ -1104,7 +1104,7 @@ export function main(argv) {
  * argv[1] is the path as invoked, and both `npm i -g` and `npx` put a symlink
  * there. import.meta.url is the resolved real path, so the two never matched for
  * an installed copy and this did nothing at all: exit 0, no output. Every hook in
- * the README is spelled `npx @hyuga/narai hook ...`, so the product was inert
+ * the README is spelled `npx @hyuga/habit hook ...`, so the product was inert
  * wherever it was actually installed — and a hook that returns 0 without speaking
  * is indistinguishable from one with nothing to say. Resolve the link first.
  */

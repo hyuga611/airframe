@@ -1,8 +1,8 @@
 /**
- * narai learn — turn accumulated corrections into the way this person works.
+ * habit learn — turn accumulated corrections into the way this person works.
  *
  * There is no model call in here. Reading the corrections and writing the rules is the
- * agent's job, driven by skills/narai-learn/SKILL.md; this file is the part that has to
+ * agent's job, driven by skills/habit-learn/SKILL.md; this file is the part that has to
  * be code rather than instructions:
  *
  *   buildCorpus  — lay the corrections out in a fixed shape, so what the agent reads
@@ -18,7 +18,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, basename, dirname, extname } from 'node:path';
 import { createHash } from 'node:crypto';
-import { listCorrections, listSignals, STORE } from './narai.mjs';
+import { listCorrections, listSignals, STORE } from './habit.mjs';
 
 const LEDGER = () => join(STORE, 'ledger.json');
 
@@ -238,7 +238,7 @@ export function propose(rules, at, corrections = []) {
       marker,                 // null when the cited corrections share no literal line
       scorable: marker != null,
       proposedAt: at,
-      accepted: null,         // set only by `narai accept` / `narai reject`
+      accepted: null,         // set only by `habit accept` / `habit reject`
     });
   }
   saveLedger(l);
@@ -264,7 +264,7 @@ export function setAccepted(id, value) {
  * everything, so a second log would only be a second thing to keep in step.
  *
  * No rate is returned. Zero recurrences cannot be told apart from "the situation never came
- * up", and since narai injects these same rules at session start it is treating the very
+ * up", and since habit injects these same rules at session start it is treating the very
  * behaviour it is measuring — any ratio would be pinned toward 1.00 by its own hand. The
  * rows are the honest output. A scoreboard whose mistakes flatter it is a sales pitch.
  */

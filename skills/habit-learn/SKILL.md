@@ -1,32 +1,32 @@
 ---
-name: narai-learn
-description: Turn the corrections narai has recorded into rules for AGENTS.md / CLAUDE.md. Use when the user asks what narai has learned, wants rules distilled from their edits, asks "what are my habits", or says narai learn. Reads ~/.claude/narai/corrections and writes a validated rules file. Not for setting narai up, and not for reading a single diff — that is what `narai log` is for.
+name: habit-learn
+description: Turn the corrections habit has recorded into rules for AGENTS.md / CLAUDE.md. Use when the user asks what habit has learned, wants rules distilled from their edits, asks "what are my habits", or says habit learn. Reads ~/.claude/habit/corrections and writes a validated rules file. Not for setting habit up, and not for reading a single diff — that is what `habit log` is for.
 ---
 
-# narai-learn — put someone's habits into words they can hand to an agent
+# habit-learn — put someone's habits into words they can hand to an agent
 
-narai records the moments its user corrected an agent. This skill reads that pile and
+habit records the moments its user corrected an agent. This skill reads that pile and
 writes the rules behind it.
 
-There is no API key in this. You are the model. `narai` supplies the corrections and
+There is no API key in this. You are the model. `habit` supplies the corrections and
 throws out the rules whose evidence does not hold up.
 
 ## The loop
 
 ```bash
-narai score                       # how the last set of rules actually did
-narai corpus                      # what has been recorded
+habit score                       # how the last set of rules actually did
+habit corpus                      # what has been recorded
 # ...write rules.json...
-narai validate rules.json         # exits 1 if a rule cannot be backed up
-narai validate rules.json --save  # only once it exits 0
+habit validate rules.json         # exits 1 if a rule cannot be backed up
+habit validate rules.json --save  # only once it exits 0
 ```
 
-Run `narai score` first and **open your report with how the previous set did** — which rules
+Run `habit score` first and **open your report with how the previous set did** — which rules
 have had a correction of their kind arrive since, and which have not. If nothing has ever been
 proposed it says so in one line; move on. A distillation that never looks at the last one is
 just a fresh guess every time.
 
-Then run `narai corpus`, every time. Do not read the correction files directly — the corpus
+Then run `habit corpus`, every time. Do not read the correction files directly — the corpus
 lays them out in a fixed shape, and the ids it prints are the ids `validate` will check against.
 It also lists **calls the user blocked**; those ids are citable like any other, but read them
 narrowly, since a block can be about one path or one moment rather than a standing rule.
@@ -36,7 +36,7 @@ If it prints `nothing recorded yet`, stop and say so. Do not invent a starting s
 ## What a rule has to be
 
 **Backed by at least two corrections, cited by id.** One correction is an incident. Two
-is the beginning of a habit. `narai validate` enforces this — a rule citing one real id,
+is the beginning of a habit. `habit validate` enforces this — a rule citing one real id,
 or an id that does not exist, is dropped and the command exits 1.
 
 What is counted is **occasions, not records**. Say "drop the emoji" once and three files get
@@ -85,12 +85,12 @@ An empty `rules` array is a fine answer. Say what was there and why none of it h
 
 ## Never leave a rejected file behind
 
-If `narai validate` exits 1, fix the evidence and run it again. Try three times. Still
+If `habit validate` exits 1, fix the evidence and run it again. Try three times. Still
 failing means the corrections do not support the rules you want to write — delete the
 file and report what you found instead. **A rules file that validate rejects is never
 left on disk**, and never pasted into AGENTS.md.
 
-`--save` writes `~/.claude/narai/rules.json` and records each rule in the ledger as a
+`--save` writes `~/.claude/habit/rules.json` and records each rule in the ledger as a
 prediction: apply this, and corrections of this kind stop. That is checkable later, which
 is the only reason to write it down.
 

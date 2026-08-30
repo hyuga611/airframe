@@ -1,10 +1,10 @@
 /**
- * narai prune — drop the stored bodies that can no longer earn their keep.
+ * habit prune — drop the stored bodies that can no longer earn their keep.
  *
  * `artifacts/` holds the full text of every distinct file the agent has ever written, keyed by
  * a hash of the path, and nothing has ever deleted one. Finish a project, delete the file,
  * rename it — the body stays, forever, in a user-global directory. On a machine that works
- * across many clients that is the one part of narai that quietly accumulates other people's
+ * across many clients that is the one part of habit that quietly accumulates other people's
  * source code.
  *
  * A body exists for exactly one purpose: to diff against the *next* write of that same file.
@@ -18,7 +18,7 @@
  */
 import { readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import { artifactsDir } from './narai.mjs';
+import { artifactsDir } from './habit.mjs';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -86,7 +86,7 @@ export function report(r, { days }) {
   const lines = [];
   const total = r.gone.length + r.stale.length;
 
-  lines.push(`narai: ${r.scanned} artifact(s) — ${r.keptWithBody} keep their body, ${r.alreadyBare} already have none`);
+  lines.push(`habit: ${r.scanned} artifact(s) — ${r.keptWithBody} keep their body, ${r.alreadyBare} already have none`);
   if (!total) {
     lines.push('Nothing to prune. Every stored body is for a file that still exists and was written recently.');
     return lines.join('\n');

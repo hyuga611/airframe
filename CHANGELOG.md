@@ -63,14 +63,14 @@
 の matcher に当たらないので記録が古いまま残り、次の Write で
 
 ```
-narai: report.md was edited after you last wrote it (...)
+habit: report.md was edited after you last wrote it (...)
 Someone — most likely the user — changed it by hand.
 ```
 
 と、エージェント自身の `sed` を人間のせいにして報告していた。
 
 見た目の誤りだけなら軽い。実際にはその差分が **correction として保存される**。correction は
-narai-learn でルールになり、ルールは SessionStart で以降の全セッションに注入される。つまり
+habit-learn でルールになり、ルールは SessionStart で以降の全セッションに注入される。つまり
 **エージェントの shell コマンドが、あなたが一度も言っていない「好み」として戻ってくる。**
 このツールの存在意義は「あなたの直しを学ぶ」ことなので、これは中心的な機能の汚染にあたる。
 
@@ -82,24 +82,24 @@ narai-learn でルールになり、ルールは SessionStart で以降の全セ
 
 ```json
 "PostToolUse": [{ "matcher": "Write|Edit", "hooks": [
-  { "type": "command", "command": "npx @hyuga/narai hook post", "timeout": 10 }]},
+  { "type": "command", "command": "npx @hyuga/habit hook post", "timeout": 10 }]},
                 { "hooks": [
-  { "type": "command", "command": "npx @hyuga/narai hook sync", "timeout": 10 }]}],
+  { "type": "command", "command": "npx @hyuga/habit hook sync", "timeout": 10 }]}],
 ```
 
 対象は「そのセッションで記録したファイル」だけに絞ってある。ストアには過去に書いた全ファイルが
 溜まるので、Bash のたびに全部ハッシュし直すとホットパスが際限なく重くなる。3週間前に書いた
 ファイルについて、いま嘘をつかれる心配はない。
 
-**自分のストアを確認する場合。** `narai log` に、自分で直した覚えのない差分が並んでいないか見る。
+**自分のストアを確認する場合。** `habit log` に、自分で直した覚えのない差分が並んでいないか見る。
 とくに整形だけの差分（インデント、クォート、import 順）は、フォーマッタが書いてエージェントの
-仕業として記録されたものの可能性が高い。ルールを書いてしまっている場合は `narai score` で
+仕業として記録されたものの可能性が高い。ルールを書いてしまっている場合は `habit score` で
 そのルールの成績を確認できる。
 
 ### 「リバートは起きない」は嘘だった
 
 README は、警告文が書き込み前に注入されるので **so the revert never happens** と書いていた。
-narai が返すのは `additionalContext` だけで、`permissionDecision` は一度も返さない。
+habit が返すのは `additionalContext` だけで、`permissionDecision` は一度も返さない。
 **書き込みを止める仕組みは存在しない。** モデルは無視できるし、ときどき無視する。
 
 買えるのは「知らずにリバートすることがなくなる」ことであって、「リバートが起きない」ことではない。
@@ -111,7 +111,7 @@ README を、実際に返しているものに合わせて書き直した。
 隠していたので、根拠が崩れているとき（＝`hook sync` 未設置のとき）に読み手が気づけなかった。
 
 ```
-narai: report.md is not what you last wrote (...).
+habit: report.md is not what you last wrote (...).
 Nothing you did through a tool accounts for the difference, so it came from
 outside this agent — most likely the user, by hand.
 ```
@@ -140,15 +140,15 @@ connects the return path.
 
 - **Rules now reach the main session.** `SubagentStart` had been handing the learned rules to
   subagents since 0.1.0, so the only agent not being told was the one that actually writes your
-  files. Added `narai hook session` (`SessionStart`), which is one `readFileSync` and the same
+  files. Added `habit hook session` (`SessionStart`), which is one `readFileSync` and the same
   silence rule: nothing to say, say nothing. Distilled rules previously had no effect at all
   unless a human pasted them into `AGENTS.md` by hand.
-- **Added the one line narai says without being asked.** Distilling needs a model and a model
+- **Added the one line habit says without being asked.** Distilling needs a model and a model
   may not run in a hook, so nothing was ever raising the subject. At session start, when ten or
   more corrections are undistilled, the pile has grown since last time, and a week has passed,
-  one line points at the narai-learn skill. Addressed to the agent, which can act on it, not to
+  one line points at the habit-learn skill. Addressed to the agent, which can act on it, not to
   a person who has to remember. State in `said.json`, reset when rules are saved.
-- **Added `narai score`, `narai accept <id>`, `narai reject <id>`.** `propose()` recorded every
+- **Added `habit score`, `habit accept <id>`, `habit reject <id>`.** `propose()` recorded every
   rule as a falsifiable prediction and nothing ever scored it: `accepted` and `correctionsSince`
   were written once and only ever read, so `score()` returned `applied: 0` forever — and had no
   CLI branch to be called from at all. Recurrences are now folded from the corrections on disk;
@@ -159,11 +159,11 @@ connects the return path.
   recurrence. Rules whose evidence shares nothing literal are kept, injected, and reported
   `unscorable` — the grader does not get to write its own answer key.
 - **`score` no longer returns a rate.** Zero recurrences cannot be distinguished from "the
-  situation never arose", and now that narai injects the rules it is measuring, any ratio is
+  situation never arose", and now that habit injects the rules it is measuring, any ratio is
   pinned toward 1.00 by its own hand. Rows and dates only.
-- **Added `narai doctor`.** A pure read over the store reporting what the hooks have actually
+- **Added `habit doctor`.** A pure read over the store reporting what the hooks have actually
   captured, field by field, and naming any coupling that has never once delivered. Every
-  vendor-side breakage in narai presents identically — the tool simply gets quieter — so
+  vendor-side breakage in habit presents identically — the tool simply gets quieter — so
   counting is the only way to see one.
 - **Fixed: failure signals recorded nothing about the failure.** `recordSignal` read
   `payload.tool_error`, which is not a field the harness sends; all 34 failures on the author's
@@ -178,19 +178,19 @@ connects the return path.
   release carry no `promptId` and are each counted separately — there is no evidence they
   shared a turn, and inventing that link would drop real rules.
 - **Denials are readable evidence.** `PermissionDenied` signals were recorded since 0.1.0 and
-  read by nothing. `narai corpus` now lists them grouped by command shape with citable ids, and
+  read by nothing. `habit corpus` now lists them grouped by command shape with citable ids, and
   `validate` resolves evidence ids against signals as well as corrections. Failure signals stay
   out until `doctor` reports an error text actually arriving.
-- **`narai corpus` shows the parent folder, not just the basename.** On a machine holding many
+- **`habit corpus` shows the parent folder, not just the basename.** On a machine holding many
   projects, two clients' `index.html` read as one file corrected twice, and the two-correction
   gate passed on evidence that was never one habit. No new capture — the path was already in
-  the record, and `narai export` still strips it.
-- The help text and README registered two of the six hooks narai uses. Both now list all six.
+  the record, and `habit export` still strips it.
+- The help text and README registered two of the six hooks habit uses. Both now list all six.
 
 ### Two holes closed before any of that ships
 
 - **A credential typed into the chat is no longer written to disk.** `NEVER_STORE` judges a
-  path, so it covers a file *named* for a secret and nothing else — but narai also keeps the
+  path, so it covers a file *named* for a secret and nothing else — but habit also keeps the
   sentence you typed, taken from the transcript. Say "deploy it, the password is …" and it went
   straight into `askedFor` in plain text, and no path rule was ever going to see it. Added
   `looksSecret()`, matching the shape of a credential in free text (`sk-…`, `ghp_…`, `AKIA…`,
@@ -202,8 +202,8 @@ connects the return path.
 - **Failure text goes through the same check.** `stderr` is exactly where a failing command
   echoes back the URL it was handed, token and all. `errorTextOf()` now returns
   `{ text, withheld }` so "nothing arrived" stays distinguishable from "something arrived and
-  was dropped", and `narai doctor` reports the two separately.
-- **Added `narai prune [--days N] [--apply]`.** `artifacts/` held the full text of every
+  was dropped", and `habit doctor` reports the two separately.
+- **Added `habit prune [--days N] [--apply]`.** `artifacts/` held the full text of every
   distinct file the agent had ever written, keyed by path hash, and nothing had ever deleted
   one — delete the file, rename it, finish the project, the body stayed forever in a
   user-global directory. A body exists only to diff against the *next* write of that same path,
@@ -211,7 +211,7 @@ connects the return path.
   hash**: detection is unchanged, the next write just reads the file first instead of showing a
   diff, which is a path the code already had. Dry run by default. Nothing is scheduled and
   nothing deletes on its own.
-- `narai doctor` now reports the total size of stored bodies, how many belong to files that no
+- `habit doctor` now reports the total size of stored bodies, how many belong to files that no
   longer exist, and how much text has been withheld as credential-shaped.
 
 ### Fixed, found by reading the whole thing back
@@ -219,7 +219,7 @@ connects the return path.
 - **`hookPre` threw a `TypeError` once a stored file grew past 512 KB.** `hookPost` guarded on
   `cur.tooBig`; `hookPre` did not, so `lineDiff(text, null)` crashed. The hook swallows it and
   exits 0, so nothing visibly broke — the correction was simply lost and no warning appeared.
-  A file getting large made narai go quiet, and a quiet narai is indistinguishable from one
+  A file getting large made habit go quiet, and a quiet habit is indistinguishable from one
   that found nothing.
 - **A path rule meant for credentials was silencing whole repositories.** The check was a bare
   substring test over the full path, so `tokenlint/`, `tokenizer.js`, `TokenList.tsx` and
@@ -233,7 +233,7 @@ connects the return path.
   characters while the storage path capped only how many lines. One edit to a minified bundle —
   a single line of half a megabyte — was written whole, and corrections are never pruned. Now
   cut to 400 characters at the point of writing, which is past anything downstream reads.
-- **`prune` made narai lie about why it had no diff.** A pruned record reported "this path may
+- **`prune` made habit lie about why it had no diff.** A pruned record reported "this path may
   hold secrets, so its contents are never stored" — a false alarm about the user's own
   repository. The four reasons (too large then, too large now, pruned, policy) are now distinct.
 - **A failure to record the distill nudge no longer costs the session its rules.** `said.json`
@@ -261,21 +261,21 @@ connects the return path.
 - **Removed the API call.** `learn` used to hand the corrections to a model through an SDK
   client the caller supplied, which meant an API key and a second bill for anyone already
   working from a subscription — most of the people this is for. Distillation is now the
-  **narai-learn skill**: the agent already running reads the corpus and writes the rules.
-  `distill()` and `MODEL` are gone from `narai/learn`; `buildCorpus`, `validate`, the ledger
+  **habit-learn skill**: the agent already running reads the corpus and writes the rules.
+  `distill()` and `MODEL` are gone from `habit/learn`; `buildCorpus`, `validate`, the ledger
   and `gather` stay, and the package still has zero dependencies and makes no network call.
-- **Added `narai corpus` and `narai validate <rules.json> [--save]`.** The constraint that
+- **Added `habit corpus` and `habit validate <rules.json> [--save]`.** The constraint that
   used to live in a prompt now lives in a command: a rule citing fewer than two corrections
   that actually exist on disk is dropped, and the command exits 1. An agent asked to cite its
   evidence usually will, and the times it does not are exactly the times the rule was invented.
-- **Added `narai export`.** Writes the changed lines, what was asked for, and the file's
+- **Added `habit export`.** Writes the changed lines, what was asked for, and the file's
   basename — not the directory it sat in, and not the file contents. For handing a set of
   corrections to someone else without handing over the work they came from.
 - **A change with no changed line is no longer a correction.** `hookPre` recorded one whenever
   the hash moved, so `git checkout` normalising LF to CRLF produced a correction with empty
   `removed` and `added` — and a warning telling the agent a human had edited a file nobody had
   touched. The empty entry was worse than noise: it still had an id, so it could be cited as
-  one of the two corrections `narai validate` demands, which is exactly the fabricated evidence
+  one of the two corrections `habit validate` demands, which is exactly the fabricated evidence
   that gate exists to stop. `hookPost` already had this guard; `hookPre` now does too.
 
 ## 0.1.0
@@ -286,17 +286,17 @@ First release.
   reports the diff when a human edited the file in between. The agent stops silently reverting
   hand edits.
 - **Catches corrections you never made by hand.** Many people never edit the file — they tell the
-  agent what is wrong and let it do the editing, so no hand edit ever occurs. narai detects the
+  agent what is wrong and let it do the editing, so no hand edit ever occurs. habit detects the
   agent rewriting its own output across a turn boundary (a new prompt id means the user spoke in
   between; a rewrite under the same one is the agent still working) and keeps what the user said
   alongside the diff. That sentence is the reason behind the change and is the strongest input the
-  distiller gets. `NARAI_NO_PROMPTS=1` keeps the diff and drops the sentence.
+  distiller gets. `HABIT_NO_PROMPTS=1` keeps the diff and drops the sentence.
 - Works on any file the agent writes, not just source code.
 - Contents are never stored for paths that may hold secrets (`.env*`, keys, anything named for a
   credential), for git-ignored files, or over 512 KB. Those files are still watched by hash, so
-  the edit is still detected — only the diff is withheld. `NARAI_HASH_ONLY=1` applies that to
+  the edit is still detected — only the diff is withheld. `HABIT_HASH_ONLY=1` applies that to
   everything.
-- Both hooks always exit 0; a failure in narai never interrupts an editing session.
-- `narai/learn` distills accumulated edits into rules. **A rule must cite at least two
+- Both hooks always exit 0; a failure in habit never interrupts an editing session.
+- `habit/learn` distills accumulated edits into rules. **A rule must cite at least two
   corrections by id or it is discarded** — enforced in code, so an unfalsifiable claim about the
   user cannot survive. `distill()` takes the API client as an argument and is testable offline.

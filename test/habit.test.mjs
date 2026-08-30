@@ -5,15 +5,15 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 // 各テストが自分の保存先を持てるよう、import より前に既定を切っておく
-const HOME = mkdtempSync(join(tmpdir(), 'narai-home-'));
-process.env.NARAI_HOME = HOME;
+const HOME = mkdtempSync(join(tmpdir(), 'habit-home-'));
+process.env.HABIT_HOME = HOME;
 
 const {
   hookPost, hookPre, hookSync, lineDiff, formatDiff, mayStoreBody, listCorrections, filePathOf,
   recordSignal, summarizeToolInput, listSignals, hookSubagent,
   hookSession, distillNudge, undistilled, errorTextOf, listArtifacts, looksSecret,
   namedForCredential, storableLines, reasonOf, STORE,
-} = await import('../src/narai.mjs');
+} = await import('../src/habit.mjs');
 const { prune } = await import('../src/prune.mjs');
 const {
   validate, buildCorpus, markerFor, propose, score, setAccepted, saveLedger,
@@ -21,7 +21,7 @@ const {
 const { doctor } = await import('../src/doctor.mjs');
 
 function work() {
-  return mkdtempSync(join(tmpdir(), 'narai-work-'));
+  return mkdtempSync(join(tmpdir(), 'habit-work-'));
 }
 const payload = (file, tool = 'Write') => ({ tool_name: tool, session_id: 's', tool_input: { file_path: file } });
 // 同一ミリ秒に複数の信号が着地しうるので、末尾ではなく目印で引く。
@@ -89,20 +89,20 @@ test('長すぎる行は、訂正としてディスクに書く時点で切れ�
   }
 });
 
-test('NARAI_HASH_ONLY turns off body storage entirely', () => {
-  process.env.NARAI_HASH_ONLY = '1';
+test('HABIT_HASH_ONLY turns off body storage entirely', () => {
+  process.env.HABIT_HASH_ONLY = '1';
   try {
     assert.equal(mayStoreBody('/x/report.md'), false);
   } finally {
-    delete process.env.NARAI_HASH_ONLY;
+    delete process.env.HABIT_HASH_ONLY;
   }
 });
 
-test('NARAI_HASH_ONLY のときは、秘密を疑ったせいだと言わない', () => {
+test('HABIT_HASH_ONLY のときは、秘密を疑ったせいだと言わない', () => {
   // この設定は「この環境では一切本文を持たない」という運用判断であって、
   // そのファイルが怪しいという話ではない。全ファイルで誤った警告を出すことになる。
   const dir = work();
-  process.env.NARAI_HASH_ONLY = '1';
+  process.env.HABIT_HASH_ONLY = '1';
   try {
     const f = join(dir, 'ordinary.md');
     writeFileSync(f, 'nothing sensitive at all\n');
@@ -110,10 +110,10 @@ test('NARAI_HASH_ONLY のときは、秘密を疑ったせいだと言わない'
     writeFileSync(f, 'changed by a human\n');
     const msg = hookPre(payload(f));
     assert.ok(msg, '本文が無くても変更は検出する');
-    assert.match(msg, /NARAI_HASH_ONLY/);
+    assert.match(msg, /HABIT_HASH_ONLY/);
     assert.doesNotMatch(msg, /may hold secrets/);
   } finally {
-    delete process.env.NARAI_HASH_ONLY;
+    delete process.env.HABIT_HASH_ONLY;
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -172,7 +172,7 @@ test('hookPre reports the diff once a human has edited the file', () => {
     hookPost(payload(f));
     writeFileSync(f, '## Monthly figures\nsomething shared\n');
     const msg = hookPre(payload(f));
-    assert.ok(msg, 'expected narai to notice the hand edit');
+    assert.ok(msg, 'expected habit to notice the hand edit');
     assert.match(msg, /is not what you last wrote/);
     assert.match(msg, /- ## Great news everyone/);
     assert.match(msg, /\+ ## Monthly figures/);
@@ -547,9 +547,9 @@ test('the reason is taken from the user, never from a tool result', () => {
   }
 });
 
-test('NARAI_NO_PROMPTS keeps the diff but not what was said', () => {
+test('HABIT_NO_PROMPTS keeps the diff but not what was said', () => {
   const dir = work();
-  process.env.NARAI_NO_PROMPTS = '1';
+  process.env.HABIT_NO_PROMPTS = '1';
   try {
     const f = join(dir, 'v.md');
     const tp = transcript(dir, 'something the user would rather not have stored');
@@ -561,7 +561,7 @@ test('NARAI_NO_PROMPTS keeps the diff but not what was said', () => {
     assert.equal(c.askedFor, null);
     assert.ok(c.removed.length, 'the diff is still worth keeping');
   } finally {
-    delete process.env.NARAI_NO_PROMPTS;
+    delete process.env.HABIT_NO_PROMPTS;
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -599,14 +599,14 @@ test('denials and failures are recorded as distinct kinds', () => {
 
 test('a subagent is told nothing when there is nothing worth telling', () => {
   // 立ち上げ直後（訂正がまだ少ない）のストアでは黙る
-  const HOME2 = mkdtempSync(join(tmpdir(), 'narai-empty-'));
-  const prev = process.env.NARAI_HOME;
-  process.env.NARAI_HOME = HOME2;
+  const HOME2 = mkdtempSync(join(tmpdir(), 'habit-empty-'));
+  const prev = process.env.HABIT_HOME;
+  process.env.HABIT_HOME = HOME2;
   try {
     // STORE はモジュール読み込み時に固定されるので、ここでは件数の少なさだけを確かめる
     assert.ok(listCorrections().length >= 0);
   } finally {
-    process.env.NARAI_HOME = prev;
+    process.env.HABIT_HOME = prev;
     rmSync(HOME2, { recursive: true, force: true });
   }
 });
@@ -885,7 +885,7 @@ test('corpus は却下された呼び出しを、引用できる id つきでま
 
 test('doctor は store の実測を返し、空でも落ちない', () => {
   const out = doctor();
-  assert.match(out, /narai store:/);
+  assert.match(out, /habit store:/);
   assert.match(out, /artifact\(s\)/);
   assert.match(out, /Distillation:/);
   assert.ok(listArtifacts().length >= 0);
@@ -1079,7 +1079,7 @@ test('prune 済みのファイルを書き直しても、警告は出せる（�
     assert.match(msg, /is not what you last wrote/);
     assert.match(msg, /Read the file as it stands now/);
     // 理由を取り違えると、自分のリポジトリについて誤った警告を出すことになる
-    assert.match(msg, /narai prune/, 'prune が落としたと正しく言う');
+    assert.match(msg, /habit prune/, 'prune が落としたと正しく言う');
     assert.doesNotMatch(msg, /may hold secrets/, '秘密を含むかのように言ってはいけない');
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -1091,7 +1091,7 @@ test('prune 済みのファイルを書き直しても、警告は出せる（�
 test('保存後にファイルが512KBを超えても、hookPre は落ちずに警告する', () => {
   // hookPost には !cur.tooBig ガードがあるが hookPre には無かった。本文を保存済みの
   // ファイルが上限を超えて肥大すると lineDiff(text, null) で TypeError になり、
-  // フックが例外を飲むので「大きくなった瞬間に narai が静かになる」形で壊れていた。
+  // フックが例外を飲むので「大きくなった瞬間に habit が静かになる」形で壊れていた。
   const dir = work();
   try {
     const f = join(dir, 'grows.md');

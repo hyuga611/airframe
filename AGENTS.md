@@ -1,13 +1,13 @@
-# narai — notes for agents working on this repository
+# habit — notes for agents working on this repository
 
-`narai` tells a coding agent when a human edited what it wrote, so it stops reverting those
+`habit` tells a coding agent when a human edited what it wrote, so it stops reverting those
 edits. Two Claude Code hooks and a local store; no daemon, no network.
 
 ## Layout
 
-- `src/narai.mjs` — the hooks, the store, the diff, the CLI
+- `src/habit.mjs` — the hooks, the store, the diff, the CLI
 - `src/learn.mjs` — distilling accumulated edits into rules (the only part that calls a model)
-- `test/narai.test.mjs` — unit tests
+- `test/habit.test.mjs` — unit tests
 
 ## Working on it
 
@@ -38,9 +38,9 @@ real one, and it never reaches the network — `distill()` takes its client as a
   stops there. Deciding what the edit implies is the agent's job, and undoing it is the user's.
 - **A rule that cannot be checked is reported unscorable, never held.** `score()` prints rows and
   dates and no hit rate. Zero recurrences may mean the rule worked or that the situation never
-  came up, and narai injects the rules it is measuring, so any ratio flatters itself. Refusing to
+  came up, and habit injects the rules it is measuring, so any ratio flatters itself. Refusing to
   compute the number is the honest output; a scoreboard that only shows wins is a sales pitch.
 - **Report what was observed, not what is expected.** Every coupling here is to a field another
   program decides to send, and when one stops arriving nothing fails — the record is just written
-  with a hole in it. `narai doctor` counts. That is why `tool_error` could be empty 34 times
+  with a hole in it. `habit doctor` counts. That is why `tool_error` could be empty 34 times
   running while the source read correctly the whole way through.

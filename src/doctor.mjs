@@ -1,7 +1,7 @@
 /**
- * narai doctor — what the store actually contains.
+ * habit doctor — what the store actually contains.
  *
- * narai is a pile of couplings to fields another program decides to send. When one of them
+ * habit is a pile of couplings to fields another program decides to send. When one of them
  * stops arriving, nothing breaks: the hook still runs, still exits 0, still writes a record.
  * It just writes a record with a hole in it, and the tool gets quietly worse at its job. A
  * crash announces itself; this does not.
@@ -13,7 +13,7 @@
  */
 import { existsSync } from 'node:fs';
 import { basename, dirname } from 'node:path';
-import { listCorrections, listSignals, listArtifacts, loadRules, STORE } from './narai.mjs';
+import { listCorrections, listSignals, listArtifacts, loadRules, STORE } from './habit.mjs';
 
 const kb = (n) => (n > 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${(n / 1024).toFixed(0)} KB`);
 
@@ -39,7 +39,7 @@ export function doctor() {
   const artifacts = listArtifacts();
   const rules = loadRules();
 
-  out.push(`narai store: ${STORE}`);
+  out.push(`habit store: ${STORE}`);
   out.push(`  ${artifacts.length} artifact(s), ${corrections.length} correction(s), ${signals.length} signal(s)`);
 
   // The stored bodies are the only thing here that grows without bound, so they get a number.
@@ -48,7 +48,7 @@ export function doctor() {
   const orphaned = bodies.filter((a) => !a.file || !existsSync(a.file)).length;
   if (bodies.length) {
     out.push(`  ${bodies.length} of them keep a file body — ${kb(bodyBytes)} in total`);
-    if (orphaned) out.push(`  ${orphaned} body/bodies belong to files that no longer exist — see \`narai prune\``);
+    if (orphaned) out.push(`  ${orphaned} body/bodies belong to files that no longer exist — see \`habit prune\``);
   }
   out.push('');
 
@@ -63,7 +63,7 @@ export function doctor() {
     meaning: 'hookPre cannot tell a human edit from the agent\'s own script',
   }));
   out.push(coupling('corrections carry prompt_id', corrections.filter((c) => c.promptId).length, corrections.length, {
-    owner: 'narai — fixed in 0.3.0, older records stay anonymous',
+    owner: 'habit — fixed in 0.3.0, older records stay anonymous',
     meaning: 'two corrections from one sentence still count as two observations',
   }));
   out.push(coupling('instructed ones carry askedFor', instructed.filter((c) => c.askedFor).length, instructed.length, {
@@ -79,12 +79,12 @@ export function doctor() {
     meaning: 'a blocked call is recorded with nothing to identify it',
   }));
   out.push(coupling('denials carry a reason', denials.filter((s) => s.reason).length, denials.length, {
-    owner: 'narai — captured from 0.3.0, older denials have none',
+    owner: 'habit — captured from 0.3.0, older denials have none',
     meaning: 'only the command shape survives, so which objection it was is lost',
   }));
 
   // Text dropped on the way in because it looked like a credential. Worth showing: it is the
-  // one place narai silently keeps less than it could, and a run of these means someone is
+  // one place habit silently keeps less than it could, and a run of these means someone is
   // typing secrets into the chat.
   const saidHeld = corrections.filter((c) => c.askedForWithheld).length;
   const errHeld = signals.filter((s) => s.errorWithheld).length;
@@ -138,12 +138,12 @@ export function doctor() {
   out.push('Distillation:');
   if (!rules.length) {
     out.push(`  no rules written yet — ${pending} correction(s) are waiting`);
-    out.push('  Corrections only become rules when the narai-learn skill is run. Nothing runs it');
+    out.push('  Corrections only become rules when the habit-learn skill is run. Nothing runs it');
     out.push('  on its own; from 0.3.0 the session-start hook raises it once the pile is deep enough.');
   } else {
     out.push(`  ${rules.length} rule(s) in force, ${pending} correction(s) not yet distilled`);
   }
-  out.push(`  ledger: ${existsSync(`${STORE}/ledger.json`) ? 'present — run `narai score`' : 'absent (no rule has ever been proposed)'}`);
+  out.push(`  ledger: ${existsSync(`${STORE}/ledger.json`) ? 'present — run `habit score`' : 'absent (no rule has ever been proposed)'}`);
 
   return out.join('\n');
 }

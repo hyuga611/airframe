@@ -1,15 +1,15 @@
 {
-  "name": "@hyuga/narai",
+  "name": "@hyuga/habit",
   "version": "0.4.1",
   "description": "Tells your coding agent when you edited what it wrote, so it stops silently reverting your fixes. Claude Code hooks, no daemon, no network. The accumulated edits distill into rules, the rules are handed back at session start, and the ledger says whether they held.",
   "type": "module",
-  "main": "src/narai.mjs",
+  "main": "src/habit.mjs",
   "exports": {
-    ".": "./src/narai.mjs",
+    ".": "./src/habit.mjs",
     "./learn": "./src/learn.mjs"
   },
   "bin": {
-    "narai": "src/narai.mjs"
+    "habit": "src/habit.mjs"
   },
   "files": [
     "src",
@@ -34,13 +34,13 @@
   },
   "license": "MIT",
   "author": "hyuga611",
-  "homepage": "https://github.com/hyuga611/narai",
+  "homepage": "https://github.com/hyuga611/habit",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hyuga611/narai.git"
+    "url": "git+https://github.com/hyuga611/habit.git"
   },
   "bugs": {
-    "url": "https://github.com/hyuga611/narai/issues"
+    "url": "https://github.com/hyuga611/habit/issues"
   },
   "engines": {
     "node": ">=18"

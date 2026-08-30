@@ -1,10 +1,10 @@
-# narai
+# habit
 
 **習い** — when you fix something your coding agent wrote, the agent has no idea. Next time it
-writes that file, it writes its version again and your fix is gone. `narai` closes that loop.
+writes that file, it writes its version again and your fix is gone. `habit` closes that loop.
 
 ```
-narai: report.md is not what you last wrote (2026-07-31T03:06:27Z).
+habit: report.md is not what you last wrote (2026-07-31T03:06:27Z).
 Nothing you did through a tool accounts for the difference, so it came from
 outside this agent — most likely the user, by hand.
 
@@ -21,7 +21,7 @@ If you believe it should be undone, say why and ask first.
 That text reaches the agent *before* it writes, rather than after — which is the
 whole difference between a warning it can act on and a report of what it already did.
 
-**It does not stop the write.** narai returns context, not a permission decision; it
+**It does not stop the write.** habit returns context, not a permission decision; it
 never denies the tool call. Whether the revert happens is still up to the model, and
 sometimes it will revert anyway. What changes is that it can no longer do so *without
 knowing* — the diff and the instruction are in front of it at the moment it decides.
@@ -31,7 +31,7 @@ a mechanism that does not exist.
 ## Corrections come in two shapes
 
 Some people fix the file themselves. Many never touch it — they say *"no, drop the emoji"* and let
-the agent do the editing. **No hand edit ever happens, but a correction certainly did.** narai
+the agent do the editing. **No hand edit ever happens, but a correction certainly did.** habit
 catches both.
 
 | What you did | How it is detected |
@@ -77,7 +77,7 @@ Hooks only. No daemon, no watcher, no LLM in the hot path.
 
 The comparison itself is microseconds. Measured end to end it is about **18 ms per write**, and
 essentially all of that is one `git check-ignore` subprocess — the check that keeps git-ignored
-files from being stored. `NARAI_HASH_ONLY=1` skips it (no bodies are kept at all, so there is
+files from being stored. `HABIT_HASH_ONLY=1` skips it (no bodies are kept at all, so there is
 nothing to decide) and brings the hook back under a microsecond.
 
 It works on **any file the agent writes** — source, Markdown, HTML, CSV, config. The problem
@@ -86,10 +86,10 @@ isn't specific to code, and neither is this.
 ## Install
 
 ```bash
-npm i -g @hyuga/narai
+npm i -g @hyuga/habit
 ```
 
-The package is scoped; `narai` is only the bin name. Bare `npx narai` looks up a
+The package is scoped; `habit` is only the bin name. Bare `npx habit` looks up a
 package that does not exist and 404s — npm refuses the unscoped name as too close
 to an existing one.
 
@@ -100,34 +100,34 @@ rest are what makes it learn rather than only warn:
 {
   "hooks": {
     "PostToolUse": [{ "matcher": "Write|Edit", "hooks": [
-      { "type": "command", "command": "npx @hyuga/narai hook post", "timeout": 10 }]},
+      { "type": "command", "command": "npx @hyuga/habit hook post", "timeout": 10 }]},
                     { "hooks": [
-      { "type": "command", "command": "npx @hyuga/narai hook sync", "timeout": 10 }]}],
+      { "type": "command", "command": "npx @hyuga/habit hook sync", "timeout": 10 }]}],
     "PreToolUse":  [{ "matcher": "Write|Edit", "hooks": [
-      { "type": "command", "command": "npx @hyuga/narai hook pre",  "timeout": 10 }]}],
+      { "type": "command", "command": "npx @hyuga/habit hook pre",  "timeout": 10 }]}],
     "SessionStart": [{ "hooks": [
-      { "type": "command", "command": "npx @hyuga/narai hook session", "timeout": 10 }]}],
+      { "type": "command", "command": "npx @hyuga/habit hook session", "timeout": 10 }]}],
     "SubagentStart": [{ "hooks": [
-      { "type": "command", "command": "npx @hyuga/narai hook subagent", "timeout": 10 }]}],
+      { "type": "command", "command": "npx @hyuga/habit hook subagent", "timeout": 10 }]}],
     "PermissionDenied": [{ "hooks": [
-      { "type": "command", "command": "npx @hyuga/narai hook denied", "timeout": 10 }]}],
+      { "type": "command", "command": "npx @hyuga/habit hook denied", "timeout": 10 }]}],
     "PostToolUseFailure": [{ "hooks": [
-      { "type": "command", "command": "npx @hyuga/narai hook failed", "timeout": 10 }]}]
+      { "type": "command", "command": "npx @hyuga/habit hook failed", "timeout": 10 }]}]
   }
 }
 ```
 
-Every hook always exits 0. If `narai` breaks, your editing session does not.
+Every hook always exits 0. If `habit` breaks, your editing session does not.
 
 ## What it keeps, and where
 
-Everything stays on your machine, under `~/.claude/narai/` (`narai where` prints the path).
+Everything stays on your machine, under `~/.claude/habit/` (`habit where` prints the path).
 
 Nothing here makes a network call — not the hooks, not the learning half, not to Anthropic,
 not anywhere. You can check that yourself, and it is worth checking before you let anything
 watch your files:
 
-- `src/narai.mjs` imports only Node built-ins (`fs`, `path`, `crypto`, `os`, `url`,
+- `src/habit.mjs` imports only Node built-ins (`fs`, `path`, `crypto`, `os`, `url`,
   `child_process`) and has **zero runtime dependencies**
 - the one subprocess it starts is `git check-ignore`, which reads and returns an exit code
 - there is no `fetch`, no HTTP client, and no API key anywhere in the package — not in the
@@ -143,12 +143,12 @@ they aren't:
 
 Those files are **still watched**: the hash is recorded, so an edit is still detected. You just
 get "the contents were not kept, read the file before writing over it" instead of a diff. Set
-`NARAI_HASH_ONLY=1` to get that behaviour for every file.
+`HABIT_HASH_ONLY=1` to get that behaviour for every file.
 
-### Two things narai keeps are not files
+### Two things habit keeps are not files
 
 Those rules judge a path, which covers a file *named* for a credential and nothing else. But
-narai also stores **the sentence you typed** (taken from the transcript, so a rule can cite the
+habit also stores **the sentence you typed** (taken from the transcript, so a rule can cite the
 reason in your own words) and **the text of a failed call**. Paste a key into the chat and no
 path rule ever sees it.
 
@@ -163,8 +163,8 @@ record says why:
 
 The diff survives either way, so the correction is still usable evidence — just weaker. This
 will sometimes drop a sentence that merely *discusses* a password, and that is the right way
-to be wrong. `narai doctor` counts how often it has happened; a run of them means credentials
-are being typed into the chat. `NARAI_NO_PROMPTS=1` drops every sentence, secret or not.
+to be wrong. `habit doctor` counts how often it has happened; a run of them means credentials
+are being typed into the chat. `HABIT_NO_PROMPTS=1` drops every sentence, secret or not.
 
 A file that holds a secret but isn't *named* like one — `config.js`, `docker-compose.yml` —
 is still stored in full. Pattern matching has holes by construction; treat the store as
@@ -173,9 +173,9 @@ sensitive as the code it watches.
 ## Keeping it from growing forever
 
 ```bash
-narai prune              # what could go
-narai prune --apply      # drop it
-narai prune --days 90 --apply
+habit prune              # what could go
+habit prune --apply      # drop it
+habit prune --days 90 --apply
 ```
 
 A stored body exists for exactly one purpose: to diff against the **next** write of that same
@@ -184,16 +184,16 @@ probably won't be. `prune` drops those bodies and **keeps the hash**, so nothing
 detected — the next write to that path just reads the file first instead of showing a diff.
 
 Nothing runs on a schedule and nothing deletes on its own. It is a command, it defaults to a
-dry run, and `narai doctor` reports the total so you can see when it is worth running.
+dry run, and `habit doctor` reports the total so you can see when it is worth running.
 
 ## Seeing what it has learned
 
 ```bash
-narai log
+habit log
 ```
 
 ```
-narai: 23 hand-edit(s) recorded (showing the last 20)
+habit: 23 hand-edit(s) recorded (showing the last 20)
 
 2026-07-31 03:06  report.md  (−2 +2)
     − ## 🎉 Great news everyone
@@ -208,14 +208,14 @@ Corrected most often:
 ## Turning edits into rules
 
 Every detected edit is a small piece of evidence about how you actually want things done. Once
-enough accumulate, the **narai-learn** skill turns them into rules you can put in `AGENTS.md`.
+enough accumulate, the **habit-learn** skill turns them into rules you can put in `AGENTS.md`.
 
 The agent you already have does the reading. There is no API key and no second subscription:
 
 ```bash
-narai corpus                      # the corrections, laid out for reading
-narai validate rules.json         # exits 1 if a rule cannot be backed up
-narai validate rules.json --save  # only once it exits 0
+habit corpus                      # the corrections, laid out for reading
+habit validate rules.json         # exits 1 if a rule cannot be backed up
+habit validate rules.json --save  # only once it exits 0
 ```
 
 One constraint is enforced in code rather than in the instructions: **a rule must cite at
@@ -231,13 +231,13 @@ Once saved, the rules are handed to the agent at the start of every session — 
 `SubagentStart` already did for subagents, extended to the one that actually writes your files.
 You can still paste them into `AGENTS.md`; you no longer have to for them to have any effect.
 
-**The one thing narai says without being asked.** Distilling needs a model, and a model may
+**The one thing habit says without being asked.** Distilling needs a model, and a model may
 not run inside a hook, so something has to raise the subject — otherwise the corrections pile
 up and nothing ever reads them. Once at least ten are waiting, the pile has grown since last
 time, and a week has passed, one line appears at session start:
 
 ```
-narai: 14 correction(s) recorded, not yet distilled. The narai-learn skill turns them into rules.
+habit: 14 correction(s) recorded, not yet distilled. The habit-learn skill turns them into rules.
 ```
 
 It is addressed to the agent, which can act on it, rather than to you, who would have to
@@ -247,10 +247,10 @@ line you turn off.
 ## Checking it is still working
 
 ```bash
-narai doctor
+habit doctor
 ```
 
-narai is a set of couplings to fields another program decides to send. When one stops
+habit is a set of couplings to fields another program decides to send. When one stops
 arriving nothing breaks — the hook still runs, still exits 0, still writes a record. It
 writes a record with a hole in it, and the tool quietly gets worse at its job.
 
@@ -271,7 +271,7 @@ never the right one, and no amount of reading the code would say so. It can only
 ## Did the rules actually do anything
 
 ```bash
-narai score
+habit score
 ```
 
 Every saved rule goes into a ledger as a prediction: *apply this and corrections of this kind
@@ -284,7 +284,7 @@ be graded. The alternative is fuzzy matching, which fires on unrelated edits and
 ledger into noise.
 
 **No hit rate is printed, deliberately.** A rule with no recurrence may be working, or the
-situation may never have come up — nothing in the data separates those. And since narai now
+situation may never have come up — nothing in the data separates those. And since habit now
 injects these same rules at session start, it is treating the behaviour it is measuring, so
 any ratio would be pinned toward a perfect score by its own hand. You get the rows and the
 dates. A scoreboard whose mistakes flatter it is a sales pitch.

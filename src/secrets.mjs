@@ -1,10 +1,10 @@
 /**
- * What narai is not allowed to keep.
+ * What habit is not allowed to keep.
  *
  * This is the whole of that policy, in one file, on purpose. Everything else here decides
  * *when* to record something; this decides *whether* it may be written down at all, and a
  * reader auditing the tool should be able to answer "what does it store about me?" without
- * reading the hook logic around it. It depends on nothing inside narai, so it can also be
+ * reading the hook logic around it. It depends on nothing inside habit, so it can also be
  * read, tested and argued with on its own.
  *
  * Every rule below fails toward keeping less: when a check is uncertain, the contents are
@@ -28,7 +28,7 @@ export const NEVER_STORE = [
  *
  * This used to be a bare substring test over the whole path, which excluded far more than it
  * meant to: `tokenlint/`, `tokenizer.js`, `TokenList.tsx`, `secretary/`. A directory caught by
- * it took everything underneath with it, so narai went silent across a whole repository and
+ * it took everything underneath with it, so habit went silent across a whole repository and
  * said nothing about why — the failure looks exactly like the tool working and finding nothing.
  *
  * Testing each segment with a boundary keeps `secrets.yml`, `API_KEY.txt` and `config/secrets/`
@@ -48,7 +48,7 @@ export function namedForCredential(file) {
  * Text that must not reach the disk, wherever it came from.
  *
  * `NEVER_STORE` judges a path, which covers a file named for a credential and nothing else.
- * Two things narai keeps are not files: the sentence you typed (`askedFor`, taken from the
+ * Two things habit keeps are not files: the sentence you typed (`askedFor`, taken from the
  * transcript) and the text of a failed call. Paste a key into the chat and the path rules
  * never see it. These patterns match the *shape* of a credential in free text, so they apply
  * to both.
@@ -77,7 +77,7 @@ export function looksSecret(text) {
 
 /** May this file's contents be kept? When in doubt, no. */
 export function mayStoreBody(file) {
-  if (process.env.NARAI_HASH_ONLY === '1') return false;
+  if (process.env.HABIT_HASH_ONLY === '1') return false;
   const p = resolve(file);
   if (NEVER_STORE.some((re) => re.test(p))) return false;
   if (namedForCredential(p)) return false;

@@ -91,7 +91,7 @@ jobs:
       # once. With a trusted publisher configured, npm verifies this workflow's
       # short-lived OIDC identity instead and there is nothing to leak.
       #
-      # narai is an unscoped name, so --access public is not required, but it is
+      # habit is an unscoped name, so --access public is not required, but it is
       # harmless and keeps this file identical to its siblings.
       - name: Publish with provenance
         run: npm publish --provenance --access public

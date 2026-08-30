@@ -21,7 +21,7 @@ jobs:
         run: node --test
 
   dogfood:
-    # narai's own agent config is checked by the linters it ships alongside.
+    # habit's own agent config is checked by the linters it ships alongside.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

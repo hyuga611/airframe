@@ -13,13 +13,13 @@ import { join, resolve } from 'node:path';
 //
 // 既存のテストはすべて関数を import して確かめており、bin を一度も実行していなかったので
 // 何も気づけなかった。このテストは install と同じ経路で入口を叩く。
-// src/narai.mjs の realpathSync を戻すと、出力ゼロで落ちる。
+// src/habit.mjs の realpathSync を戻すと、出力ゼロで落ちる。
 test('シンボリックリンク経由でも CLI が動く（npm i -g / npx と同じ経路）', () => {
   const dir = mkdtempSync(join(tmpdir(), 'entrypoint-'));
   try {
     const link = join(dir, 'cli.mjs');
     try {
-      symlinkSync(resolve('src/narai.mjs'), link);
+      symlinkSync(resolve('src/habit.mjs'), link);
     } catch {
       return; // シンボリックリンクを作る権限が無い環境（開発者モード無効の Windows 等）
     }
