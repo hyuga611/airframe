@@ -1,15 +1,19 @@
-# groundtruth × Claude Code（Stop フック）
+# groundtruth × Claude Code (the Stop hook)
 
-エージェントが**未検証のまま「完了」してターンを終える**のを防ぐ参考実装。
+A reference implementation that stops an agent ending its turn on an unverified "done".
 
-## 仕組み
+## How it works
 
-1. エージェントは副作用を起こしたら、その完了契約を `.groundtruth/pending.jsonl` に1行追記する（`action` / 実状態を再取得する `probe` コマンド / `expect`）。
-2. ターン終了時、Stop フック `groundtruth-stop-hook.mjs` が全契約の probe を**再取得**して検証する。
-3. 未達が1件でもあれば **exit 2** で stop をブロックし、理由を stderr でエージェントに返す。エージェントはそれを読んで対処し、再度終了を試みる。
-4. 全部通れば `pending.jsonl` をクリアして exit 0。
+1. Whenever the agent causes a side effect, it appends one completion contract to
+   `.groundtruth/pending.jsonl`: an `action`, a `probe` command that re-fetches the real state,
+   and an `expect`.
+2. At the end of the turn, the Stop hook `groundtruth-stop-hook.mjs` runs every probe and checks
+   what came back.
+3. A single unmet contract exits **2**, which blocks the stop, and the reasons go to stderr. The
+   agent reads them, deals with them, and tries to finish again.
+4. When they all pass, `pending.jsonl` is cleared and the hook exits 0.
 
-## 設定
+## Setting it up
 
 ```jsonc
 // .claude/settings.json
@@ -25,17 +29,24 @@
 }
 ```
 
-## 契約の形（`.groundtruth/pending.jsonl`）
+## What a contract looks like (`.groundtruth/pending.jsonl`)
 
 ```jsonl
-{"action":"batch=123 を45件投入","probe":"psql -tAc 'select count(*) from t where batch=123'","expect":{"type":"count","value":45}}
-{"action":"out.png を配置","probe":"curl -sI https://example.com/out.png","expect":{"type":"contains","value":"200"}}
+{"action":"insert 45 rows with batch=123","probe":"psql -tAc 'select count(*) from t where batch=123'","expect":{"type":"count","value":45}}
+{"action":"publish out.png","probe":"curl -sI https://example.com/out.png","expect":{"type":"contains","value":"200"}}
 ```
 
-`expect.type`: `nonempty` / `count` / `at-least` / `contains` / `equals` / `matches`（省略時は nonempty）。
+`expect.type` is one of `nonempty` / `count` / `at-least` / `contains` / `equals` / `matches`.
+Omitted, it is `nonempty` — and a `type` this hook does not recognise is refused rather than
+quietly read as the weakest of them.
 
-## メモ
+## Notes
 
-- 契約ファイルの場所は `GROUNDTRUTH_PENDING` 環境変数で変えられる。
-- probe は指定したコマンドをそのまま実行する。`.groundtruth` に秘密を書かないこと（→ ルートの `SECURITY.md`）。
-- これは参考アダプタ。コアの `verify` / `gate`（`src/index.mjs`）はフレームワーク非依存で、Claude Code に依存しない。
+- `GROUNDTRUTH_PENDING` moves the contract file somewhere else.
+- A probe is run as the command it says. **Nothing secret belongs in `.groundtruth`** — see
+  `SECURITY.md` at the package root. A command that would have needed approval as a tool call
+  does not need it here.
+- If the hook itself falls over it exits 2, not 0. Treating the unverified as verified is the
+  one thing this cannot do, including when the failure is its own.
+- This is an adapter. The core — `verify` and `gate` in `src/index.mjs` — is framework-agnostic
+  and knows nothing about Claude Code.

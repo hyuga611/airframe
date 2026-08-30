@@ -6,8 +6,6 @@
 
 **Nothing gets to report "done" except a re-fetched real result.** A completion verification gate for AI agents and automation — framework-agnostic, zero-dependency, and it runs no LLM.
 
-**「完了しました」を、再取得した実結果でしか名乗らせない。** AIエージェント/自動化のための完了検証ゲート。
-
 [![npm](https://img.shields.io/npm/v/@hyuga/groundtruth.svg)](https://www.npmjs.com/package/@hyuga/groundtruth)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
