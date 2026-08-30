@@ -1,6 +1,6 @@
 {
   "name": "@hyuga/habit",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Tells your coding agent when you edited what it wrote, so it stops silently reverting your fixes. Claude Code hooks, no daemon, no network. The accumulated edits distill into rules, the rules are handed back at session start, and the ledger says whether they held.",
   "type": "module",
   "main": "src/habit.mjs",

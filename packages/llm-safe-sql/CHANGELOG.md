@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.10.1
+
+### 日本語の README を `README.ja.md` に分けた
+
+`README.md` は1つのファイルに2言語入っていた——英語494行、水平線、`# 日本語` の下に217行。
+どちらの読者にとっても悪い。英語の読者は自分向けでない半分をスクロールで通り過ぎ、
+日本語の読者は真ん中まで来ないと何も始まらず、どちらの半分も単独でリンクできない。
+
+`README.ja.md` は `files` にも入れた。npm が黙って同梱するのは `README.md` だけで、
+もう一方は tarball から落ちる。
+
+### CI バッジの向き先
+
+バッジは `hyuga611/llm-safe-sql` の ci.yml を指していた。そのリポジトリは今もあるが、
+`packages/llm-safe-sql` を実際にビルドしているのは airframe の ci.yml のほうなので、
+バッジが報告すべきはそちらのビルドになる。
+
+CHANGELOG のリリースリンクは旧リポジトリのままで正しい。0.10.0 までのタグはあちらにあり、
+monorepo に `v0.9.0` は無い（こちらは `llm-safe-sql-v<version>` 形式）。
+次に読む人が直してしまわないよう、その旨のコメントを付けた。
+
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).

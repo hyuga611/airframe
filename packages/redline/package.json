@@ -1,6 +1,6 @@
 {
   "name": "@hyuga/redline",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "A limiter that counts the whole session instead of asking about one call: writes to production, irreversible commands and outward sends add up, the number never goes down, and past the edge it stops only when nobody is in the seat.",
   "type": "module",
   "main": "src/redline.mjs",
@@ -26,7 +26,7 @@
     "developer-tools"
   ],
   "dependencies": {
-    "@hyuga/spar": "^0.1.0"
+    "@hyuga/spar": "^0.2.0"
   },
   "publishConfig": {
     "access": "public"
