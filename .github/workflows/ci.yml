@@ -26,10 +26,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      # npm install, not npm ci: the lockfile is deliberately not committed
-      # (.gitignore says so), and a release that fails on the packaging step
-      # rather than on the code is a waste of everyone's afternoon.
-      - run: npm install --no-audit --no-fund
+      # npm ci, not npm install: it installs the tree package-lock.json names and
+      # nothing else. With `npm install` the resolution happened again on every
+      # run, so a devDependency's own release could turn this red on a day nobody
+      # touched the code — a red build that says nothing about the commit under it
+      # is worse than no build. The lockfile is committed for exactly this; npm
+      # leaves it out of the published tarball on its own, so it costs consumers
+      # nothing.
+      - run: npm ci --no-audit --no-fund
       - run: npm test --workspace=packages/${{ matrix.package }}
 
   sql:
@@ -64,7 +68,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      - run: npm install --no-audit --no-fund
+      - run: npm ci --no-audit --no-fund
       - run: npm run typecheck --workspace=packages/llm-safe-sql
       - run: npm test --workspace=packages/llm-safe-sql
       - run: npm run test:integration --workspace=packages/llm-safe-sql
@@ -78,7 +82,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm install --no-audit --no-fund
+      - run: npm ci --no-audit --no-fund
       # Run in place rather than through `npm run --workspace`: the probe is a
       # nested-quoted `node -e`, and putting another shell between it and the
       # runner is how that stops meaning what it says.
@@ -102,5 +106,5 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install --no-audit --no-fund
+      - run: npm ci --no-audit --no-fund
       - run: npm run lint --workspace=packages/${{ matrix.package }}

@@ -87,7 +87,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "releasing $NAME ${VERSION:-(dispatch, no version)}"
 
-      - run: npm install --no-audit --no-fund
+      - run: npm ci --no-audit --no-fund
 
       - name: The tag and package.json must agree
         if: steps.target.outputs.version != ''
@@ -156,7 +156,7 @@ jobs:
         with:
           node-version: '22.x'
           registry-url: 'https://registry.npmjs.org'
-      - run: npm install --no-audit --no-fund
+      - run: npm ci --no-audit --no-fund
 
       # Provenance and trusted publishing both need a recent npm; the version
       # bundled with the runner's Node is not always new enough.
