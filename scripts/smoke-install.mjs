@@ -40,15 +40,30 @@ const run = (cmd, args, opts = {}) => spawnSync(cmd, args, {
 });
 
 /**
- * npm is a shell script on Windows, and since Node 20 spawning a .cmd without a shell fails
- * with EINVAL rather than running it. Every argument passed to it here comes from ORDER or from
- * a filename npm itself just printed, so there is nothing user-supplied going through a shell.
+ * npm is a .cmd on Windows, and since Node 20 spawning one without a shell fails with EINVAL
+ * rather than running it. So Windows gets a shell and nothing else does.
+ *
+ * The quoting belongs here rather than in the caller, and that is not a style preference: an
+ * argument written already-quoted works under a shell and arrives with literal `"` characters
+ * without one. That is exactly how this check failed its own first CI run — quoted so the
+ * Windows shell would take a path, then handed to `npm pack` on Linux as a destination whose
+ * name contained quote marks.
+ *
+ * Every argument comes from ORDER or from a filename npm itself printed, so nothing
+ * user-supplied goes through a shell either way.
  */
-const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-const runNpm = (args, opts = {}) => run(npm, args, { shell: process.platform === 'win32', ...opts });
+const WINDOWS = process.platform === 'win32';
+const npm = WINDOWS ? 'npm.cmd' : 'npm';
+const quote = (a) => (/[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a);
+const runNpm = (args, opts = {}) => (WINDOWS
+  ? run(npm, args.map(quote), { shell: true, ...opts })
+  : run(npm, args, { shell: false, ...opts }));
 
 function fail(what, detail) {
-  process.stderr.write(`\n  ✗ ${what}\n${String(detail).split('\n').map((l) => `      ${l}`).join('\n')}\n`);
+  // Spelled out because this printed `undefined` on its own first CI run, which is the least
+  // useful thing a failing check can do: it stopped a release and explained nothing.
+  const text = String(detail ?? '').trim() || '(the command produced no output)';
+  process.stderr.write(`\n  ✗ ${what}\n${text.split('\n').map((l) => `      ${l}`).join('\n')}\n`);
   process.exitCode = 1;
   return false;
 }
@@ -63,10 +78,16 @@ function check(pkg) {
   try {
     // Packed from the working tree, so what is installed is this commit rather than whatever
     // the registry already has under this version.
-    const packed = runNpm(['pack', `--workspace=packages/${pkg}`, `--pack-destination="${sandbox}"`, '--silent'], { cwd: ROOT });
-    if (packed.status !== 0) return fail('npm pack', packed.stderr || packed.stdout || packed.error?.message);
-    const tarball = packed.stdout.trim().split('\n').filter(Boolean).pop();
-    if (!tarball) return fail('npm pack', 'printed no tarball name');
+    const packed = runNpm(['pack', `--workspace=packages/${pkg}`, `--pack-destination=${sandbox}`, '--silent'], { cwd: ROOT });
+    if (packed.status !== 0) {
+      return fail('npm pack', packed.stderr || packed.stdout || packed.error?.message
+        || `exit ${packed.status}, signal ${packed.signal}`);
+    }
+    const tarball = (packed.stdout ?? '').trim().split('\n').filter(Boolean).pop();
+    if (!tarball) return fail('npm pack', 'exited 0 but printed no tarball name');
+    if (!existsSync(join(sandbox, tarball))) {
+      return fail('npm pack', `said it wrote ${tarball}, and it is not in ${sandbox}`);
+    }
 
     writeFileSync(join(sandbox, 'package.json'),
       JSON.stringify({ name: 'smoke', private: true, version: '1.0.0', type: 'module' }, null, 2));
