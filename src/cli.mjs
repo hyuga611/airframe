@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// genchi CLI — シェルで完了を検証する。JS を書かないエージェント/スクリプトでも、
-// 「投入した」の後に "実状態を再取得するコマンド" を genchi に判定させて、
+// groundtruth CLI — シェルで完了を検証する。JS を書かないエージェント/スクリプトでも、
+// 「投入した」の後に "実状態を再取得するコマンド" を groundtruth に判定させて、
 // 実態が伴わなければ非ゼロで落とす。生の probe 出力を必ず証拠として出す（捏造しない）。
 //
-//   genchi verify --probe "<実状態を再取得するシェルコマンド>" <期待>
+//   groundtruth verify --probe "<実状態を再取得するシェルコマンド>" <期待>
 //     期待（いずれか）:
 //       --nonempty            出力が空でないこと（既定）
 //       --count N             出力を数として N と一致
@@ -14,7 +14,7 @@
 //     --json                  Verdict を JSON で出す
 //   exit: 0=検証OK / 1=空・不一致 / 3=probe失敗（コマンドが非ゼロ）
 //
-//   genchi guard <contracts.jsonl>
+//   groundtruth guard <contracts.jsonl>
 //     1行1契約 {action, probe, expect:{type,value}} を全部再取得して検証。
 //     未達が1件でもあれば exit 2（Claude Code の Stop フックでブロックする用）。
 //
@@ -54,7 +54,7 @@ const VERIFY_FLAGS = new Set(['probe', 'action', 'json', 'nonempty', 'count', 'a
 
 /** 使い方の誤りで即座に落ちる。ゲートが「たぶんこう」で動くと、止めるべきものを止めない。 */
 function usage(msg) {
-  process.stderr.write(`genchi: ${msg}\n`);
+  process.stderr.write(`groundtruth: ${msg}\n`);
   process.exit(64);
 }
 
@@ -104,7 +104,7 @@ async function cmdVerify(p) {
   rejectUnknownFlags(p.flags, VERIFY_FLAGS, 'verify');
   const cmd = p.flags.probe;
   if (!cmd || cmd === true) {
-    process.stderr.write('genchi verify: --probe "<command that re-fetches real state>" is required\n');
+    process.stderr.write('groundtruth verify: --probe "<command that re-fetches real state>" is required\n');
     process.exit(64);
   }
   const fn = pickExpect(p.flags);
@@ -131,12 +131,12 @@ async function cmdVerify(p) {
 
 async function cmdGuard(p) {
   const file = p._[0];
-  if (!file) { process.stderr.write('genchi guard <contracts.jsonl> is required\n'); process.exit(64); }
+  if (!file) { process.stderr.write('groundtruth guard <contracts.jsonl> is required\n'); process.exit(64); }
   let lines;
   try {
     lines = readFileSync(file, 'utf8').split('\n').map((l) => l.trim()).filter(Boolean);
   } catch (e) {
-    process.stderr.write(`genchi guard: cannot read ${file}: ${e.message}\n`);
+    process.stderr.write(`groundtruth guard: cannot read ${file}: ${e.message}\n`);
     process.exit(64);
   }
   // 契約が1件も無いファイルを「全件確認済み」と言わない。
@@ -144,7 +144,7 @@ async function cmdGuard(p) {
   // 何も確認していないことを確認済みとして報告するのは、このゲートが防ぐための形そのもの。
   if (lines.length === 0) {
     process.stderr.write(
-      `✗ genchi guard: ${file} holds no contracts — nothing was checked, so nothing can be reported as done.\n` +
+      `✗ groundtruth guard: ${file} holds no contracts — nothing was checked, so nothing can be reported as done.\n` +
         '  Write one contract per line, or do not run the gate at all.\n',
     );
     process.exit(2);
@@ -160,7 +160,7 @@ async function cmdGuard(p) {
       failures.push({ action: c.action || '(no action)', reason: 'bad-expect', detail: e.message, evidence: '' });
       continue;
     }
-    if (expectFn.genchiLabel === 'nonEmpty') weakOnly++;
+    if (expectFn.groundtruthLabel === 'nonEmpty') weakOnly++;
     const v = await verify({ action: c.action || c.probe, probe: shellProbe(String(c.probe)), expect: expectFn });
     if (!v.ok) failures.push(v);
   }
@@ -170,10 +170,10 @@ async function cmdGuard(p) {
     ? ` (${weakOnly} of them only asked for non-empty output — that confirms something ran, not that it was right)`
     : '';
   if (failures.length === 0) {
-    process.stderr.write(`✓ genchi guard: all ${lines.length} contract${lines.length === 1 ? '' : 's'} confirmed against real state${weakNote}\n`);
+    process.stderr.write(`✓ groundtruth guard: all ${lines.length} contract${lines.length === 1 ? '' : 's'} confirmed against real state${weakNote}\n`);
     process.exit(0);
   }
-  process.stderr.write(`✗ genchi guard: ${failures.length}/${lines.length} contracts unmet — blocking completion${weakNote}\n`);
+  process.stderr.write(`✗ groundtruth guard: ${failures.length}/${lines.length} contracts unmet — blocking completion${weakNote}\n`);
   for (const f of failures) {
     const x = f.expectation ? ` [${f.expectation}]` : '';
     process.stderr.write(`  - "${f.action}"${x} — ${f.reason}${f.detail ? ': ' + f.detail : ''}\n    the probe returned: ${f.evidence ?? ''}\n`);
@@ -181,14 +181,14 @@ async function cmdGuard(p) {
   process.exit(2); // Claude Code hook: exit 2 で stop をブロック
 }
 
-const HELP = `genchi ${VERSION} — completion verification gate
+const HELP = `groundtruth ${VERSION} — completion verification gate
 
-  genchi verify --probe "<command that re-fetches real state>" [expectation]
+  groundtruth verify --probe "<command that re-fetches real state>" [expectation]
     --nonempty | --count N | --at-least N | --contains STR | --equals STR | --matches REGEX
     --json
     exit 0=ok / 1=empty or mismatched / 3=probe failed
 
-  genchi guard <contracts.jsonl>
+  groundtruth guard <contracts.jsonl>
     One contract per line: {action, probe, expect:{type,value}}. Re-fetches every
     one of them; exits 2 if any is unmet.
 
@@ -209,8 +209,8 @@ async function main() {
   const p = parse(argv.slice(1));
   if (sub === 'verify') return cmdVerify(p);
   if (sub === 'guard') return cmdGuard(p);
-  process.stderr.write(`genchi: unknown subcommand "${sub}"\n\n${HELP}`);
+  process.stderr.write(`groundtruth: unknown subcommand "${sub}"\n\n${HELP}`);
   process.exit(64);
 }
 
-main().catch((e) => { process.stderr.write(`genchi: ${e && e.message ? e.message : e}\n`); process.exit(70); });
+main().catch((e) => { process.stderr.write(`groundtruth: ${e && e.message ? e.message : e}\n`); process.exit(70); });

@@ -1,12 +1,29 @@
 # Changelog
 
+## 0.5.0
+
+**フレーム（[spar](https://github.com/hyuga611/spar)）に載るようになった。**
+
+groundtruth は「完了を名乗る瞬間」だけを見ていて、そこで撥ねた契約は例外として飛ぶだけだった。
+飛んだ先で誰かが握り潰せば、未達だった事実は残らない。次のセッションはそれを知らないまま
+同じところから始まる。
+
+`@hyuga/spar` がインストールされていれば、`verify` の判定を1件の所見として台帳
+（`.spar/ledger.jsonl`）に流す。位相は `claim`、未達は `severity: stop`。フレームはこれを
+**refuse-shot** として扱う——機体を止めるのではなく、この一撃を撃たない。groundtruth が元々
+やっていることと形が同じなので、挙動は何も変わらない。変わるのは、未達が
+**次のセッションの出撃前ブリーフィングに出てくる**ことだけ。
+
+spar が無ければ何もしない。`dependencies` は空のまま（optional peer dependency）で、
+単体で使っている場合の挙動・出力・例外はすべて従来どおり。
+
 ## 0.4.2
 
 dev.to のコメントに答えるため、返信に書こうとした「Stop フックは未達の契約が1件でもあれば
 exit 2 で止める」を投稿前に実測したら、**止まらない経路が2つあった。**
 
-0.4.1 で直したのは `genchi guard`（CLI）の方だけだった。契約の解釈は
-`src/cli.mjs` と `adapters/claude-code/genchi-stop-hook.mjs` に**コピーされていて**、
+0.4.1 で直したのは `groundtruth guard`（CLI）の方だけだった。契約の解釈は
+`src/cli.mjs` と `adapters/claude-code/groundtruth-stop-hook.mjs` に**コピーされていて**、
 README が「これを配線しろ」と書いているのはフックの方だ。つまり、**直っていない側が、
 実際に使われる側**だった。フック側には 0.4.1 以前の緩い挙動がそのまま残っていた:
 
@@ -31,7 +48,7 @@ README が「これを配線しろ」と書いているのはフックの方だ�
 
 README の断定も、コードが支えられる範囲まで落とした:
 
-- 「timeouts are never swallowed」——**genchi はタイムアウトを一切持っていない**。
+- 「timeouts are never swallowed」——**groundtruth はタイムアウトを一切持っていない**。
   返ってこない probe はゲートを止めるだけで、失敗にはならない。probe 側に書くこと。
 - 「evidence は verbatim」——実際は JSON エンコードされ **200文字で切られる**。
 - 「この行に来たなら45行は本当に存在する」——言えるのは「probe が呼ばれて45を返した」まで。
@@ -61,11 +78,11 @@ dev.to で 0.4.0 の話をしていて、読者からこう言われた——「
 - すべての verdict に `expectation` を載せた。`count(45)` / `contains("200")` /
   `matches(/x/)` / `nonEmpty` / 自前の述語は `custom`、`expect` 未指定は
   `nonEmpty (default)` と、**既定であることまで**名乗る。
-- `GenchiIncomplete` のメッセージにも「何を訊いたか」を出す。
-- `genchi verify` で期待フラグを1つも渡さなかったとき、成功時に
+- `GroundtruthIncomplete` のメッセージにも「何を訊いたか」を出す。
+- `groundtruth verify` で期待フラグを1つも渡さなかったとき、成功時に
   「期待を指定していないので非空なら何でも通る」と明示する（黙って緑を返さない）。
   内部でも `nonEmpty` を勝手に組み立てるのをやめ、「指定されなかった」をそのまま verify に渡す。
-- `genchi guard` は、全件通ったときでも `nonempty` だけを訊いた契約が何件あったかを併記する。
+- `groundtruth guard` は、全件通ったときでも `nonempty` だけを訊いた契約が何件あったかを併記する。
   「全12件確認済み」の中身が「うち9件は何か出力があっただけ」なら、そう言う。
 
 **期待が正しい問いだったかどうかは、これでも分からない**（縮小されたスクショは
@@ -83,7 +100,7 @@ dev.to で 0.4.0 の話をしていて、読者からこう言われた——「
 ### タイプミスひとつでゲートが「何か出力があればOK」に化けていた
 
 ```
-genchi verify --probe "…" --bogus value   → exit 0
+groundtruth verify --probe "…" --bogus value   → exit 0
 ```
 
 未知のフラグはどの期待にも当たらず、既定の `nonempty` に落ちていた。CI 設定に
@@ -116,7 +133,7 @@ genchi verify --probe "…" --bogus value   → exit 0
 ### 契約が1件も無いファイルが「全件確認済み」だった
 
 ```
-genchi guard contracts.jsonl   # 空ファイル → ✓ all 0 contracts confirmed / exit 0
+groundtruth guard contracts.jsonl   # 空ファイル → ✓ all 0 contracts confirmed / exit 0
 ```
 
 書き出す前のファイル、空白だけのファイル、どれも通っていた。`expect` を書き忘れた契約と
@@ -125,7 +142,7 @@ genchi guard contracts.jsonl   # 空ファイル → ✓ all 0 contracts confirm
 
 ### `--version` が定数だった
 
-reflint 0.10.0 の CHANGELOG が「定数にしていたせいで genchi が1リリースぶん間違った番号を
+reflint 0.10.0 の CHANGELOG が「定数にしていたせいで groundtruth が1リリースぶん間違った番号を
 答えていた」と名指ししている、その定数がまだ残っていた。`package.json` から読む。
 
 ### テスト
@@ -163,15 +180,15 @@ claim moved. `README.md` now carries a **What this does not buy** section, and
 
 ### The CLI asserted a re-fetch it had not seen
 
-`genchi verify --probe "echo 45" --count 45` printed:
+`groundtruth verify --probe "echo 45" --count 45` printed:
 
 ```
 ✓ verified [count=45] — re-fetched: "45"
 ```
 
-Nothing was re-fetched. genchi knows what the probe returned; whether that came
+Nothing was re-fetched. groundtruth knows what the probe returned; whether that came
 from the world is exactly what it cannot see. All output now says **"the probe
-returned"**, in the CLI, in `GenchiIncomplete`, and in every `expect.*` detail
+returned"**, in the CLI, in `GroundtruthIncomplete`, and in every `expect.*` detail
 message. If you were matching on `re-fetched:` in output, update the match.
 
 ### `--version` had been wrong for a release
@@ -193,7 +210,7 @@ All user-facing output is now English. The README pitched the tool in English wh
 every runtime message, CLI help string, and thrown-error message came out in Japanese —
 so anyone who actually installed it hit output they couldn't read.
 
-- English messages across `verify` / `gate` / `expect`, the CLI, and `GenchiIncomplete`.
+- English messages across `verify` / `gate` / `expect`, the CLI, and `GroundtruthIncomplete`.
   If you were matching on the Japanese text of an error message, that match must be
   updated (`完了と報告できません` → `cannot be reported as done`). Verdict fields —
   `ok`, `reason`, `detail`, `evidence` — are unchanged.
@@ -203,11 +220,11 @@ so anyone who actually installed it hit output they couldn't read.
 
 Initial release. Completion verification gate for AI agents & automation.
 
-- Core library (`src/index.mjs`): `verify`, `gate`, `expect`, `isEmpty`, `GenchiIncomplete`.
+- Core library (`src/index.mjs`): `verify`, `gate`, `expect`, `isEmpty`, `GroundtruthIncomplete`.
   - `probe` (a function that re-fetches real state) is required — no API accepts the action's own return value.
   - Empty / error / timeout is reported as-is (`reason: 'empty' | 'mismatch' | 'probe-error'`), never optimistically filled. A re-fetched count of 0 is treated as "nothing landed".
-  - `gate()` throws `GenchiIncomplete` (carrying the verdict + re-fetched evidence) unless completion is confirmed.
-- CLI (`src/cli.mjs`): `genchi verify --probe "<cmd>"` with `--nonempty|--count|--at-least|--contains|--equals|--matches|--json`; `genchi guard <contracts.jsonl>` (exit 2 to block a Claude Code Stop hook).
+  - `gate()` throws `GroundtruthIncomplete` (carrying the verdict + re-fetched evidence) unless completion is confirmed.
+- CLI (`src/cli.mjs`): `groundtruth verify --probe "<cmd>"` with `--nonempty|--count|--at-least|--contains|--equals|--matches|--json`; `groundtruth guard <contracts.jsonl>` (exit 2 to block a Claude Code Stop hook).
 - Hand-written types (`src/index.d.ts`).
 - Claude Code Stop-hook reference adapter (`adapters/claude-code/`).
 - Zero dependencies, framework-agnostic, no LLM.

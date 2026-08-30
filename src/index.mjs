@@ -1,10 +1,10 @@
-// genchi — 現地現物（go and see）。AIエージェント/自動化に「完了」を名乗らせる前に、
+// groundtruth — 現地現物（go and see）。AIエージェント/自動化に「完了」を名乗らせる前に、
 // 行動した後の"世界の状態"を probe で再取得し、実在を確かめる完了検証ゲート。
 //
 // 最悪のハルシネーションは、文章ではなく「作業をやり遂げた」という事実の捏造だ。
 // 原因は「行動」と「確認」の分離：ツールの戻り値だけを見て「完了しました」と書いてしまう。
 //
-// genchi の完了契約（completion contract）はこれを構造的に禁じる：
+// groundtruth の完了契約（completion contract）はこれを構造的に禁じる：
 //   1. 副作用系（作成・更新・削除・投入・アップロード）は、別 probe で実状態を"再取得"してからしか完了を名乗れない
 //   2. 空・エラー・タイムアウトは想像で埋めない（そのまま失敗として報告する）
 //   3. 台帳に書く値は、再取得で実在確認できた値だけ
@@ -74,27 +74,27 @@ function defaultDescribe(state) {
  * verdict.expectation としてそのまま出すので、CLI の --json も自動化も区別できる。
  */
 function labelled(label, fn) {
-  return Object.defineProperty(fn, 'genchiLabel', { value: label, enumerable: false });
+  return Object.defineProperty(fn, 'groundtruthLabel', { value: label, enumerable: false });
 }
 
 /** contract から「何を訊いたか」を読む。未指定なら既定であることまで含めて名乗る。 */
 export function expectationLabel(contract) {
   if (!contract || typeof contract.expect !== 'function') return 'nonEmpty (default)';
-  return contract.expect.genchiLabel || 'custom';
+  return contract.expect.groundtruthLabel || 'custom';
 }
 
 /**
  * 完了を名乗れないときに throw されるエラー。verdict に再取得の生証拠を保持する。
  */
-export class GenchiIncomplete extends Error {
+export class GroundtruthIncomplete extends Error {
   constructor(verdict) {
     const d = verdict.detail ? `: ${verdict.detail}` : '';
     const x = verdict.expectation ? `\n  the expectation was: ${verdict.expectation}` : '';
     super(
-      `genchi: "${verdict.action}" cannot be reported as done — ${verdict.reason}${d}\n` +
+      `groundtruth: "${verdict.action}" cannot be reported as done — ${verdict.reason}${d}\n` +
       `  the probe returned: ${verdict.evidence}${x}`
     );
-    this.name = 'GenchiIncomplete';
+    this.name = 'GroundtruthIncomplete';
     /** @type {Verdict} */
     this.verdict = verdict;
   }
@@ -105,13 +105,49 @@ export class GenchiIncomplete extends Error {
  * その戻り値だけを根拠に ok/失敗を判定する。失敗でも throw せず Verdict を返す
  * （空・エラーを握りつぶさず、そのまま verdict として報告する）。
  */
+/**
+ * groundtruth をフレームに載せる。
+ *
+ * `@hyuga/spar` があれば、判定を1件の所見として台帳に流す。無ければ何もしない——
+ * 依存はゼロのままで、単体で使っている人には何も起こらない。
+ *
+ * 位相は `claim`。フレームはこれを refuse-shot として扱う（機体を止めるのではなく、
+ * この一撃を撃たない）ので、groundtruth が元々やっていることと形が同じになる。
+ */
+let frame; // undefined = 未試行, null = 無い
+async function file(v) {
+  try {
+    if (frame === undefined) {
+      try { frame = await import('@hyuga/spar'); } catch { frame = null; }
+    }
+    if (!frame) return;
+    frame.report(frame.finding({
+      phase: 'claim',
+      source: 'groundtruth',
+      severity: v.ok ? 'note' : 'stop',
+      subject: v.action,
+      observed: v.evidence,
+      expected: v.expectation,
+      note: v.ok ? undefined : v.reason,
+    }));
+  } catch {
+    // 台帳に書けないことで完了検証そのものを落とさない。判定は既に出ている。
+  }
+}
+
 export async function verify(contract) {
+  const v = await assess(contract);
+  await file(v);
+  return v;
+}
+
+async function assess(contract) {
   const action = (contract && contract.action) ? String(contract.action) : 'operation';
 
   if (!contract || typeof contract.probe !== 'function') {
-    // ここが genchi の背骨。行動の戻り値ではなく「実状態を取り直す関数」を要求する。
+    // ここが groundtruth の背骨。行動の戻り値ではなく「実状態を取り直す関数」を要求する。
     throw new TypeError(
-      'genchi: contract.probe is required — a function that RE-FETCHES real state. ' +
+      'groundtruth: contract.probe is required — a function that RE-FETCHES real state. ' +
       'The return value of the action itself is not acceptable as evidence.'
     );
   }
@@ -157,13 +193,13 @@ export async function verify(contract) {
 }
 
 /**
- * verify と同じだが、完了を名乗れなければ GenchiIncomplete を throw する。
+ * verify と同じだが、完了を名乗れなければ GroundtruthIncomplete を throw する。
  * これを副作用処理の末尾に置くと、実状態が通らない限り「完了」に到達できない。
  * ok のときは再取得した state を返す。
  */
 export async function gate(contract) {
   const v = await verify(contract);
-  if (!v.ok) throw new GenchiIncomplete(v);
+  if (!v.ok) throw new GroundtruthIncomplete(v);
   return v.state;
 }
 
@@ -197,4 +233,4 @@ export const expect = {
   matches: (re) => labelled(`matches(${String(re)})`, (s) => (re.test(String(s)) ? true : { ok: false, detail: `does not match ${re}: ${valueText(s)}` })),
 };
 
-export default { verify, gate, expect, isEmpty, expectationLabel, GenchiIncomplete };
+export default { verify, gate, expect, isEmpty, expectationLabel, GroundtruthIncomplete };

@@ -1,6 +1,6 @@
 // JSONL の完了契約（{action, probe, expect:{type,value}}）を解釈する部分。
 //
-// ここが独立したモジュールなのは、同じ解釈が CLI（`genchi guard`）と Claude Code の
+// ここが独立したモジュールなのは、同じ解釈が CLI（`groundtruth guard`）と Claude Code の
 // Stop フックの2箇所にコピーされていて、0.4.1 で CLI 側だけを直した結果、
 // **README が配線しろと言っている側**（フック）に古い緩い挙動が残ったからだ。
 // 契約の読み方は1つしかないので、置き場所も1つにする。

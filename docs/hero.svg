@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="740" height="328" viewBox="0 0 740 328" role="img" aria-label="Terminal: genchi re-fetches real state, finds 0 rows against an expected 45 and exits 1, then verifies 45 and exits 0">
-  <title>Terminal: genchi re-fetches real state, finds 0 rows against an expected 45 and exits 1, then verifies 45 and exits 0</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="740" height="328" viewBox="0 0 740 328" role="img" aria-label="Terminal: groundtruth re-fetches real state, finds 0 rows against an expected 45 and exits 1, then verifies 45 and exits 0">
+  <title>Terminal: groundtruth re-fetches real state, finds 0 rows against an expected 45 and exits 1, then verifies 45 and exits 0</title>
   <defs>
     <style>
       .t { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace; font-size: 14.5px; }
@@ -14,8 +14,8 @@
   <circle cx="22" cy="19" r="6" fill="#ff5f57"/>
   <circle cx="42" cy="19" r="6" fill="#febc2e"/>
   <circle cx="62" cy="19" r="6" fill="#28c840"/>
-  <text class="t dim" x="370" y="24" text-anchor="middle">genchi — completion gate</text>
-  <text class="t" x="24" y="70"><tspan class="green" font-weight="700" xml:space="preserve">$</tspan><tspan class="fg" xml:space="preserve"> genchi verify --probe "select count(*) from t where batch=123" --count 45</tspan></text>
+  <text class="t dim" x="370" y="24" text-anchor="middle">groundtruth — completion gate</text>
+  <text class="t" x="24" y="70"><tspan class="green" font-weight="700" xml:space="preserve">$</tspan><tspan class="fg" xml:space="preserve"> groundtruth verify --probe "select count(*) from t where batch=123" --count 45</tspan></text>
   <text class="t" x="24" y="100"><tspan class="dim" xml:space="preserve">  the agent said: </tspan><tspan class="fg" xml:space="preserve">"inserted 45 rows. Done."</tspan></text>
   <text class="t" x="24" y="124"><tspan class="fg" xml:space="preserve"></tspan></text>
   <text class="t" x="24" y="148"><tspan class="red" font-weight="700" xml:space="preserve">✗</tspan><tspan class="fg" xml:space="preserve"> mismatch </tspan><tspan class="dim" xml:space="preserve">[count(45)]</tspan><tspan class="fg" xml:space="preserve"> — expected a count of 45, the probe returned </tspan><tspan class="red" xml:space="preserve">"0"</tspan></text>

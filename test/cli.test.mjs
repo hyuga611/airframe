@@ -70,7 +70,7 @@ test('--version は package.json を読む（定数は古びても誰も気づ�
 // ---- guard ----
 
 function withContracts(body, fn) {
-  const dir = mkdtempSync(join(tmpdir(), 'genchi-guard-'));
+  const dir = mkdtempSync(join(tmpdir(), 'groundtruth-guard-'));
   try {
     writeFileSync(join(dir, 'contracts.jsonl'), body);
     return fn(dir);
@@ -104,24 +104,24 @@ test('ちゃんと書かれた契約は通る', () => {
 /**
  * Claude Code の Stop フック（adapters/）を実際に起動して確かめる。
  *
- * 0.4.1 で `genchi guard` の「黙って nonempty に落ちる」を潰したとき、同じ解釈が
+ * 0.4.1 で `groundtruth guard` の「黙って nonempty に落ちる」を潰したとき、同じ解釈が
  * コピーされていたフック側は直っていなかった。README が配線しろと言っているのは
  * フックの方なので、直っていない側が実際に使われる側だった。
  * ここが無テストだったから2つのバージョンが別々に生きられた。
  */
-const HOOK = resolve(HERE, '..', 'adapters', 'claude-code', 'genchi-stop-hook.mjs');
+const HOOK = resolve(HERE, '..', 'adapters', 'claude-code', 'groundtruth-stop-hook.mjs');
 
 function runHook(lines, dir) {
   const file = join(dir, 'pending.jsonl');
   writeFileSync(file, Array.isArray(lines) ? lines.map((l) => JSON.stringify(l)).join('\n') : lines);
   return spawnSync(process.execPath, [HOOK], {
     encoding: 'utf8',
-    env: { ...process.env, GENCHI_PENDING: file },
+    env: { ...process.env, GROUNDTRUTH_PENDING: file },
   });
 }
 
 test('Stop フック: 知らない expect.type を「空でなければ通る」に読み替えない', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'genchi-hook-'));
+  const dir = mkdtempSync(join(tmpdir(), 'groundtruth-hook-'));
   try {
     // probe は "0" を返す。cnt が nonempty に化けると "0" は非空なので通ってしまう。
     const r = runHook([{ action: 'insert 45 rows', probe: 'echo 0', expect: { type: 'cnt', value: 45 } }], dir);
@@ -133,7 +133,7 @@ test('Stop フック: 知らない expect.type を「空でなければ通る」
 });
 
 test('Stop フック: expect を書き忘れた契約は確認済みにしない', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'genchi-hook-'));
+  const dir = mkdtempSync(join(tmpdir(), 'groundtruth-hook-'));
   try {
     const r = runHook([{ action: 'insert 45 rows', probe: 'echo 0' }], dir);
     assert.equal(r.status, 2);
@@ -144,13 +144,13 @@ test('Stop フック: expect を書き忘れた契約は確認済みにしない
 });
 
 test('Stop フック: フック自身が壊れたら通さない（fail closed）', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'genchi-hook-'));
+  const dir = mkdtempSync(join(tmpdir(), 'groundtruth-hook-'));
   try {
     // pending がディレクトリなら readFileSync が EISDIR で throw する。
     // 「検証できなかった」を「検証OK」として返すのが、このゲートが防ぐ形そのもの。
     const r = spawnSync(process.execPath, [HOOK], {
       encoding: 'utf8',
-      env: { ...process.env, GENCHI_PENDING: dir },
+      env: { ...process.env, GROUNDTRUTH_PENDING: dir },
     });
     assert.equal(r.status, 2, 'フックが落ちたときに exit 0 で完了を通さないこと');
     assert.match(r.stderr, /stop-hook error/);
@@ -160,7 +160,7 @@ test('Stop フック: フック自身が壊れたら通さない（fail closed�
 });
 
 test('Stop フック: 満たされた契約は通し、未達はブロックする', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'genchi-hook-'));
+  const dir = mkdtempSync(join(tmpdir(), 'groundtruth-hook-'));
   try {
     const ok = runHook([{ action: 'insert 45 rows', probe: 'echo 45', expect: { type: 'count', value: 45 } }], dir);
     assert.equal(ok.status, 0);
@@ -175,8 +175,8 @@ test('Stop フック: 満たされた契約は通し、未達はブロックす�
 test('契約の解釈は CLI とフックで同じモジュールを使う', async () => {
   // 2つのコピーが別々に生きていたのが 0.4.1 の穴だった。
   const { expectFromSpec } = await import('../src/contract.mjs');
-  assert.equal(expectFromSpec({ type: 'count', value: 45 }).genchiLabel, 'count(45)');
-  assert.equal(expectFromSpec({ type: 'nonEmpty' }).genchiLabel, 'nonEmpty', '大文字小文字は同じ期待として読む');
+  assert.equal(expectFromSpec({ type: 'count', value: 45 }).groundtruthLabel, 'count(45)');
+  assert.equal(expectFromSpec({ type: 'nonEmpty' }).groundtruthLabel, 'nonEmpty', '大文字小文字は同じ期待として読む');
   assert.throws(() => expectFromSpec({ type: 'nope' }), /unknown expect\.type/);
   assert.throws(() => expectFromSpec(undefined), /confirms nothing/);
 });

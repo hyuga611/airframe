@@ -1,6 +1,6 @@
-# genchi 🕵️
+# groundtruth 🕵️
 
-![genchi re-fetches real state: 0 rows against an expected 45, then verified at 45](docs/hero.svg)
+![groundtruth re-fetches real state: 0 rows against an expected 45, then verified at 45](docs/hero.svg)
 
 > Part of a set of zero-dependency CI tools for AI-agent repos — start with **[reflint](https://github.com/hyuga611/reflint)**.
 
@@ -8,12 +8,12 @@
 
 **「完了しました」を、再取得した実結果でしか名乗らせない。** AIエージェント/自動化のための完了検証ゲート。
 
-[![npm](https://img.shields.io/npm/v/@hyuga/genchi.svg)](https://www.npmjs.com/package/@hyuga/genchi)
+[![npm](https://img.shields.io/npm/v/@hyuga/groundtruth.svg)](https://www.npmjs.com/package/@hyuga/groundtruth)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](package.json)
 
 ```bash
-npx @hyuga/genchi verify --probe "psql -tAc 'select count(*) from t where batch=123'" --count 45
+npx @hyuga/groundtruth verify --probe "psql -tAc 'select count(*) from t where batch=123'" --count 45
 ```
 
 ## Why
@@ -24,23 +24,23 @@ When you hand real work to an agent, the scariest hallucination isn't a wrong se
 
 The cause is that *acting* and *checking* are the same step. The agent reads a tool's return value, generates the next sentence, and **claims completion without ever looking at the world it just changed.** Having never looked, it can't notice the failure either.
 
-`genchi` (現地現物 — *go and see the actual thing*) separates the two. **An operation with side effects is not reported as complete until a separate probe has run and what it returned has been checked against an expectation.** Empty, error and mismatch are refusals, and the evidence shown is what the probe returned — never something the model said about it.
+`groundtruth` (現地現物 — *go and see the actual thing*) separates the two. **An operation with side effects is not reported as complete until a separate probe has run and what it returned has been checked against an expectation.** Empty, error and mismatch are refusals, and the evidence shown is what the probe returned — never something the model said about it.
 
 What that does *not* do is guarantee the probe looked at anything. See [What this does not buy](#what-this-does-not-buy).
 
 ## This is not a linter — it works at runtime
 
-[reflint](https://github.com/hyuga611/reflint) (do references resolve), [skills-lint](https://github.com/hyuga611/skills-lint) (do skills collide), and [carrylint](https://github.com/hyuga611/carrylint) (is it portable) all inspect config files **statically**. genchi doesn't. It runs **at runtime, after the action, and re-reads the state of the world to compare against the claim.**
+[reflint](https://github.com/hyuga611/reflint) (do references resolve), [skills-lint](https://github.com/hyuga611/skills-lint) (do skills collide), and [carrylint](https://github.com/hyuga611/carrylint) (is it portable) all inspect config files **statically**. groundtruth doesn't. It runs **at runtime, after the action, and re-reads the state of the world to compare against the claim.**
 
 - guardrails / deepeval / promptfoo — verify the **text** an LLM produced
-- **genchi** — re-fetches the **state of the world** after the action and checks the report against it
+- **groundtruth** — re-fetches the **state of the world** after the action and checks the report against it
 
 "Inserted 45 rows" is flawless as text. What's wrong isn't the text — it's the world behind it. That's why no amount of grading the text catches it.
 
 ## Use as a library
 
 ```js
-import { gate, verify, expect } from '@hyuga/genchi';
+import { gate, verify, expect } from '@hyuga/groundtruth';
 
 // the side effect: insert 45 rows
 await db.insert(rows);
@@ -55,7 +55,7 @@ await gate({
 // reaching this line means the probe was called and returned 45. Otherwise it threw.
 ```
 
-`gate()` throws `GenchiIncomplete` unless the probe's result passes, so **"done" is unreachable without something having been re-read and checked**. If you want the verdict without the throw, use `verify()`:
+`gate()` throws `GroundtruthIncomplete` unless the probe's result passes, so **"done" is unreachable without something having been re-read and checked**. If you want the verdict without the throw, use `verify()`:
 
 ```js
 const v = await verify({ action: 'upload', probe: () => fetchStatus(url), expect: expect.contains('200') });
@@ -69,7 +69,7 @@ if (!v.ok) {
 
 `verify` / `gate` **accept only a probe** — the evidence has to come from calling something, not from a value you hand in alongside the claim. Omit the probe and it throws `TypeError`. That puts the re-read in its own expression, written on purpose, at the moment the completion is asserted.
 
-Empty results and errors are never swallowed. If `probe` throws, it is reported **as-is** with `reason: 'probe-error'` — never imagined into a success. A returned `count` of 0 (nothing landed) is incomplete too. Note that genchi applies **no timeout of its own**: a probe that never settles hangs the gate rather than failing it, so put the timeout in the probe (`curl --max-time`, a statement timeout) where you need one.
+Empty results and errors are never swallowed. If `probe` throws, it is reported **as-is** with `reason: 'probe-error'` — never imagined into a success. A returned `count` of 0 (nothing landed) is incomplete too. Note that groundtruth applies **no timeout of its own**: a probe that never settles hangs the gate rather than failing it, so put the timeout in the probe (`curl --max-time`, a statement timeout) where you need one.
 
 ### What this does not buy
 
@@ -90,7 +90,7 @@ first place. A transaction reading its own uncommitted writes, a cache in front 
 stale read replica, a bug in the client itself — in each case the read is real and still agrees with
 a write that did not land. Reading through an independent path *reduces* that: a different client,
 plain `curl` instead of the SDK, the database CLI instead of the ORM. It does not eliminate it —
-they may still share a backend, a replica, or the same credentials. genchi cannot enforce any of
+they may still share a backend, a replica, or the same credentials. groundtruth cannot enforce any of
 this: a probe is a function, and the library cannot see which connection it used. Treat path
 independence as a practice, and spend it where the write path is the part you doubt.
 
@@ -117,10 +117,10 @@ Every verdict names the question it asked, as `expectation` — `count(45)`, `co
 `custom` for your own predicate, or `nonEmpty (default)` when you passed no expectation at all.
 That last one is the weakest question there is: **anything non-empty passes it.** A pass under it
 is not the same evidence as a pass under `count(45)`, so it no longer looks the same in the CLI,
-in `--json`, or in the `GenchiIncomplete` message.
+in `--json`, or in the `GroundtruthIncomplete` message.
 
 ```
-$ genchi verify --probe "curl -s $URL"
+$ groundtruth verify --probe "curl -s $URL"
 ✓ verified [nonEmpty (default)] — the probe returned: "…"
   Note: no expectation was given, so any non-empty output passes. Pass --count/--contains/--matches to ask a real question.
 ```
@@ -154,14 +154,14 @@ You can write your own: return `true` / `{ok:true}` to pass, `{ok:false, detail}
 
 ## Use from the shell
 
-Agents and scripts that don't write JS can still hand a re-fetch command to genchi. **The probe's own output is what gets emitted as evidence — nothing is invented.** (Shell output is trimmed, and evidence is JSON-encoded and truncated at 200 characters for display; what it is never replaced with is a summary of it.)
+Agents and scripts that don't write JS can still hand a re-fetch command to groundtruth. **The probe's own output is what gets emitted as evidence — nothing is invented.** (Shell output is trimmed, and evidence is JSON-encoded and truncated at 200 characters for display; what it is never replaced with is a summary of it.)
 
 ```bash
 # inserted rows → count them again and check it equals 45
-genchi verify --probe "psql -tAc 'select count(*) from t where batch=123'" --count 45
+groundtruth verify --probe "psql -tAc 'select count(*) from t where batch=123'" --count 45
 
 # uploaded a file → check the URL actually answers 200
-genchi verify --probe "curl -sI https://example.com/out.png" --contains "200"
+groundtruth verify --probe "curl -sI https://example.com/out.png" --contains "200"
 
 # exit 0=verified / 1=empty or mismatched / 3=probe failed (command exited non-zero)
 ```
@@ -170,7 +170,7 @@ Expectations: `--nonempty` (default) / `--count N` / `--at-least N` / `--contain
 
 ## Wire it into Claude Code (Stop hook)
 
-`genchi guard` re-fetches every completion contract an agent declared (one JSON object per line) and **blocks the stop with exit 2** if even one is unmet — so an agent can't end its turn on an unverified "done".
+`groundtruth guard` re-fetches every completion contract an agent declared (one JSON object per line) and **blocks the stop with exit 2** if even one is unmet — so an agent can't end its turn on an unverified "done".
 
 ```jsonl
 {"action":"insert 45 rows","probe":"psql -tAc 'select count(*) from t where batch=123'","expect":{"type":"count","value":45}}
@@ -181,7 +181,7 @@ Expectations: `--nonempty` (default) / `--count N` / `--at-least N` / `--contain
 // .claude/settings.json (excerpt)
 {
   "hooks": {
-    "Stop": [{ "hooks": [{ "type": "command", "command": "node ./node_modules/@hyuga/genchi/adapters/claude-code/genchi-stop-hook.mjs" }] }]
+    "Stop": [{ "hooks": [{ "type": "command", "command": "node ./node_modules/@hyuga/groundtruth/adapters/claude-code/groundtruth-stop-hook.mjs" }] }]
   }
 }
 ```
@@ -200,7 +200,7 @@ the raw result has been shown. Empty output, errors, and timeouts are reported a
 "empty" or "failed" as-is — never filled in with an imagined id, path, or count.
 ```
 
-genchi is the version of that contract enforced **by machinery instead of good intentions**.
+groundtruth is the version of that contract enforced **by machinery instead of good intentions**.
 
 ## Design principles
 
@@ -217,7 +217,7 @@ Zero-dependency CI linters for repos where AI agents do the work. Each one fails
 | [reflint](https://github.com/hyuga611/reflint) | `AGENTS.md` / `llms.txt` / `CLAUDE.md` pointing at commands, scripts, or paths that no longer exist |
 | [skills-lint](https://github.com/hyuga611/skills-lint) | `SKILL.md` broken references + `name`/trigger collisions between skills |
 | [carrylint](https://github.com/hyuga611/carrylint) | Skills with the author's machine or model baked in — absolute paths, undeclared CLIs, unresolved placeholders |
-| **genchi** ← you are here | Agents reporting "done" without re-fetching real-world state |
+| **groundtruth** ← you are here | Agents reporting "done" without re-fetching real-world state |
 | [tracklint](https://github.com/hyuga611/tracklint) | Forms and CTAs that quietly stopped being wired for conversion tracking |
 | [tokenlint](https://github.com/hyuga611/tokenlint) | Hardcoded colors that bypass your design tokens |
 | [reflint for VS Code](https://github.com/hyuga611/reflint-vscode) | The same reflint checks, inline in the editor as you save |

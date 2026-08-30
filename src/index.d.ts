@@ -1,4 +1,4 @@
-// Type definitions for genchi — completion verification gate.
+// Type definitions for groundtruth — completion verification gate.
 
 /** The reason a completion could not be confirmed. */
 export type VerdictReason = 'empty' | 'mismatch' | 'probe-error';
@@ -48,8 +48,8 @@ export function isEmpty(v: unknown): boolean;
 export function expectationLabel(contract: { expect?: unknown } | null | undefined): string;
 
 /** Thrown by `gate()` when the re-fetched state cannot confirm completion. */
-export class GenchiIncomplete extends Error {
-  readonly name: 'GenchiIncomplete';
+export class GroundtruthIncomplete extends Error {
+  readonly name: 'GroundtruthIncomplete';
   readonly verdict: Extract<Verdict, { ok: false }>;
   constructor(verdict: Extract<Verdict, { ok: false }>);
 }
@@ -58,7 +58,7 @@ export class GenchiIncomplete extends Error {
  * empty/error is reported as-is, never optimistically filled. */
 export function verify<T>(contract: Contract<T>): Promise<Verdict<T>>;
 
-/** Like `verify`, but throws `GenchiIncomplete` unless completion is confirmed.
+/** Like `verify`, but throws `GroundtruthIncomplete` unless completion is confirmed.
  * Returns the re-fetched state on success. */
 export function gate<T>(contract: Contract<T>): Promise<T>;
 
@@ -78,6 +78,6 @@ declare const _default: {
   expect: typeof expect;
   isEmpty: typeof isEmpty;
   expectationLabel: typeof expectationLabel;
-  GenchiIncomplete: typeof GenchiIncomplete;
+  GroundtruthIncomplete: typeof GroundtruthIncomplete;
 };
 export default _default;

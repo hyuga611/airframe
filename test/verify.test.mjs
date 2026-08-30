@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { verify, gate, expect, isEmpty, GenchiIncomplete } from '../src/index.mjs';
+import { verify, gate, expect, isEmpty, GroundtruthIncomplete } from '../src/index.mjs';
 
 // ---- isEmpty: 0/NaN/''/[]/{} は「証拠が無い」＝empty ----
 test('isEmpty treats "nothing there" values as empty', () => {
@@ -97,17 +97,17 @@ test('expect throwing → probe-error (not swallowed into success)', async () =>
   assert.equal(v.reason, 'probe-error');
 });
 
-// ---- gate: 成功で state を返し、失敗で GenchiIncomplete を throw ----
+// ---- gate: 成功で state を返し、失敗で GroundtruthIncomplete を throw ----
 test('gate returns re-fetched state on success', async () => {
   const state = await gate({ action: 'insert', probe: () => 45, expect: expect.count(45) });
   assert.equal(state, 45);
 });
 
-test('gate throws GenchiIncomplete on mismatch, carrying the verdict', async () => {
+test('gate throws GroundtruthIncomplete on mismatch, carrying the verdict', async () => {
   await assert.rejects(
     () => gate({ action: 'insert', probe: () => 44, expect: expect.count(45) }),
     (e) => {
-      assert.ok(e instanceof GenchiIncomplete);
+      assert.ok(e instanceof GroundtruthIncomplete);
       assert.equal(e.verdict.ok, false);
       assert.equal(e.verdict.reason, 'mismatch');
       assert.match(e.message, /cannot be reported as done/);
@@ -119,7 +119,7 @@ test('gate throws GenchiIncomplete on mismatch, carrying the verdict', async () 
 test('gate throws on probe-error too (cannot claim done when state is unknowable)', async () => {
   await assert.rejects(
     () => gate({ action: 'insert', probe: () => { throw new Error('db down'); } }),
-    GenchiIncomplete
+    GroundtruthIncomplete
   );
 });
 
@@ -167,7 +167,7 @@ test('買えているもの: 空・probe例外・不一致は拒否される', a
 
 test('evidence は probe が返したものであって、再取得したとは名乗らない', async () => {
   // 0.2.0 の CLI は何も読まない probe に対して "re-fetched: 45" と断言していた。
-  // genchi が知っているのは probe が何を返したかだけである。
+  // groundtruth が知っているのは probe が何を返したかだけである。
   const v = await verify({ action: 'a', probe: () => 45, expect: expect.count(45) });
   assert.equal(v.evidence, '45');
   const e = await verify({ action: 'a', probe: () => 3, expect: expect.count(45) });
@@ -241,9 +241,9 @@ test('組み込みの期待はすべて名札を持つ／自前の述語は cust
   assert.equal(custom.expectation, 'custom');
 });
 
-test('GenchiIncomplete のメッセージにも何を訊いたかが載る', async () => {
+test('GroundtruthIncomplete のメッセージにも何を訊いたかが載る', async () => {
   await assert.rejects(
     () => gate({ action: 'insert', probe: () => '44', expect: expect.count(45) }),
-    (e) => e.name === 'GenchiIncomplete' && /the expectation was: count\(45\)/.test(e.message),
+    (e) => e.name === 'GroundtruthIncomplete' && /the expectation was: count\(45\)/.test(e.message),
   );
 });

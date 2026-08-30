@@ -1,10 +1,10 @@
-// genchi のデモ：投入した"つもり"を、再取得で暴く。
+// groundtruth のデモ：投入した"つもり"を、再取得で暴く。
 //   node examples/db-insert.mjs
 //
 // 依存なしで動くよう、DB はメモリ上の作り物。実務では probe を
 // 本物の再取得（SQLのcount、APIのGET、ファイルのstat 等）に差し替える。
 
-import { gate, verify, expect, GenchiIncomplete } from '../src/index.mjs';
+import { gate, verify, expect, GroundtruthIncomplete } from '../src/index.mjs';
 
 // --- 作り物のDB。drop:true のとき投入が"黙って"失敗する（＝現実の握りつぶされた失敗） ---
 const table = [];
@@ -34,7 +34,7 @@ async function run() {
     });
     console.log('！ここには来ないはず（来たら「やったつもり」を見逃している）');
   } catch (e) {
-    if (e instanceof GenchiIncomplete) {
+    if (e instanceof GroundtruthIncomplete) {
       console.log(`✓ 「やったつもり」をブロック：${e.verdict.reason} / ${e.message.split('\n')[0]}`);
     } else throw e;
   }
