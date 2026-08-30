@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] — 2026-08-30
+
+### Added
+
+**フレーム（[spar](https://github.com/hyuga611/spar)）に載るようになった。**
+
+測った結果は呼び出し元に返るだけで、その場で消えていた。承認されなかった提案も、承認して
+適用した変更も、後から辿れるのは呼び出し元が自分で記録していた場合だけだった。
+
+`@hyuga/spar` があれば、dry run を位相 `pre`（当たるはずだった行数・触る列）、適用を位相
+`post`（実際に変わった行数、`expected` に dry run の値）として台帳に流す。提案と結果が
+1本の記録の中で並ぶ。
+
+spar が無ければ何もしない。`dependencies` は空のまま（optional peer dependency）で、
+単体で使っている場合の挙動・戻り値・例外はすべて従来どおり。
+
 ## [0.9.0] — 2026-08-24
 
 ### Added

@@ -18,6 +18,7 @@ import { keyOf, keyPredicate, qname } from './keys.js';
 import { normalize } from './normalize.js';
 import type { Policy } from './policy.js';
 import { Refusal } from './refusal.js';
+import { file } from './frame.js';
 import { showValue } from './show.js';
 import { lower, tableRefs, whereClause } from './statement.js';
 import {
@@ -656,6 +657,14 @@ export class Applier {
       warnings.push(`The change was applied, but the audit record of it could not be written: ${String(e)}`);
     }
 
+    // 実際に変わった行数を台帳へ。dry run の `pre` と対にすると、提案と結果が並ぶ。
+    await file({
+      phase: 'post',
+      subject: `${plan.op} ${table}`,
+      observed: { rowsAffected, warnings: warnings.length },
+      expected: plan.rowsMatched,
+      severity: warnings.length ? 'warn' : 'note',
+    });
     return { planId: id, table, op: plan.op, rowsAffected, appliedAt, actor, warnings };
   }
 

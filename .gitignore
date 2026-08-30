@@ -13,3 +13,6 @@ llm-safe-sql.config.json
 
 # Build artefacts from `npm pack`, which is run by hand while testing an install.
 *.tgz
+.spar/
+.t/
+.groundtruth/

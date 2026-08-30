@@ -10,6 +10,7 @@ import type { Adapter, Row, TableShape } from './adapter.js';
 import { sameValueAndType as same } from './compare.js';
 import { keyOf, keyPredicate, qname } from './keys.js';
 import { Refusal } from './refusal.js';
+import { file } from './frame.js';
 
 import type { RejectCode } from './normalize.js';
 import type { PolicyCode } from './policy.js';
@@ -272,7 +273,16 @@ export class Engine {
     }
     this.busy = 'A dry run';
     try {
-      return await this.planExclusive(rawSql);
+      const plan = await this.planExclusive(rawSql);
+      // 測って戻した事実を台帳へ。ロールバック済みなので世界は変わっていないが、
+      // 「何行に当たるはずだったか」は残す価値がある——承認されなかった提案ほど。
+      await file({
+        phase: 'pre',
+        subject: `${plan.op} ${plan.table}`,
+        observed: { rowsMatched: plan.rowsMatched, columns: plan.columnsTouched },
+        note: 'dry run, rolled back',
+      });
+      return plan;
     } finally {
       this.busy = undefined;
     }
