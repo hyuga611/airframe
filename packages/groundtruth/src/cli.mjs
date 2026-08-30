@@ -1,32 +1,33 @@
 #!/usr/bin/env node
-// groundtruth CLI — シェルで完了を検証する。JS を書かないエージェント/スクリプトでも、
-// 「投入した」の後に "実状態を再取得するコマンド" を groundtruth に判定させて、
-// 実態が伴わなければ非ゼロで落とす。生の probe 出力を必ず証拠として出す（捏造しない）。
+// groundtruth CLI — the gate from a shell, for the agents and scripts that do not write JS.
+// After "it went in", hand groundtruth a command that RE-FETCHES the real state and let it
+// decide; exit non-zero when nothing is behind the claim. The raw probe output is always
+// printed as the evidence, so what you read is never something this invented.
 //
-//   groundtruth verify --probe "<実状態を再取得するシェルコマンド>" <期待>
-//     期待（いずれか）:
-//       --nonempty            出力が空でないこと（既定）
-//       --count N             出力を数として N と一致
-//       --at-least N          出力を数として N 以上
-//       --contains STR        出力が STR を含む
-//       --equals STR          出力（trim）が STR と一致
-//       --matches REGEX       出力が正規表現に一致
-//     --json                  Verdict を JSON で出す
-//   exit: 0=検証OK / 1=空・不一致 / 3=probe失敗（コマンドが非ゼロ）
+//   groundtruth verify --probe "<shell command that re-fetches real state>" <expectation>
+//     the expectation, one of:
+//       --nonempty            the output is not empty (the default)
+//       --count N             the output, read as a number, equals N
+//       --at-least N          the output, read as a number, is at least N
+//       --contains STR        the output contains STR
+//       --equals STR          the output, trimmed, equals STR
+//       --matches REGEX       the output matches a regular expression
+//     --json                  print the Verdict as JSON
+//   exit: 0=verified / 1=empty or mismatched / 3=the probe itself failed (non-zero command)
 //
 //   groundtruth guard <contracts.jsonl>
-//     1行1契約 {action, probe, expect:{type,value}} を全部再取得して検証。
-//     未達が1件でもあれば exit 2（Claude Code の Stop フックでブロックする用）。
+//     One contract per line: {action, probe, expect:{type,value}}. Every one is re-fetched.
+//     A single unmet contract exits 2 — the shape a Claude Code Stop hook blocks on.
 //
-// 実行時に LLM もAPIキーも使わない。依存ゼロ。
+// No LLM and no API key at runtime. Zero dependencies.
 
 import { readFileSync } from 'node:fs';
 import { verify, expect as X } from './index.mjs';
 import { shellProbe, expectFromSpec } from './contract.mjs';
 
-// package.json から読む。定数にしていたせいで、このCLIが1リリース分ずれた番号を
-// 答えていたことがある（reflint 0.10.0 の CHANGELOG が名指ししているのがそれ）。
-// 定数はリリースのたびに人が思い出す必要がある場所で、しかも古びても誰も気づかない。
+// Read from package.json. Held as a constant, this CLI once answered with a number one release
+// out of date — the thing reflint 0.10.0's CHANGELOG names. A constant is a place a person has
+// to remember at every release, and nothing goes red when they do not.
 const VERSION = (() => {
   try {
     return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -49,36 +50,37 @@ function parse(argv) {
   return out;
 }
 
-// verify が受け付けるフラグ。ここに無いものは黙って無視せず、使い方の誤りとして落とす。
+// The flags verify accepts. Anything absent from this set is a usage error, not something to
+// pass over in silence.
 const VERIFY_FLAGS = new Set(['probe', 'action', 'json', 'nonempty', 'count', 'at-least', 'contains', 'equals', 'matches']);
 
-/** 使い方の誤りで即座に落ちる。ゲートが「たぶんこう」で動くと、止めるべきものを止めない。 */
+/** Die on a usage error. A gate running on a guess about what was meant stops nothing. */
 function usage(msg) {
   process.stderr.write(`groundtruth: ${msg}\n`);
   process.exit(64);
 }
 
 /**
- * 未知のフラグを拒否する。
+ * Refuse a flag this command does not know.
  *
- * `--bogus value` を渡すと、どの期待にも当たらず既定の nonempty に落ちていた。
- * つまり CI 設定のタイプミスひとつで、`--count 45` のつもりのゲートが
- * 「何か出力があればOK」に化ける。reflint 0.10.0 で潰したのと同じ形——
- * それらしいが違うフラグがチェックを黙らせ、緑のまま残るのが一番長く生き延びる。
+ * `--bogus value` matched no expectation and fell through to the default, nonempty. One typo in
+ * a CI file and a gate written to mean `--count 45` quietly becomes "anything that printed
+ * something passes". It is the shape reflint 0.10.0 closed: a plausible-but-wrong flag that
+ * silences a check, and stays green, is the defect that survives longest.
  */
 function rejectUnknownFlags(flags, known, cmd) {
   const bad = Object.keys(flags).filter((k) => !known.has(k));
   if (bad.length > 0) usage(`unknown option${bad.length === 1 ? '' : 's'} for ${cmd}: ${bad.map((b) => `--${b}`).join(', ')}`);
 }
 
-/** 値を伴うべきフラグが裸で置かれていないか。`--count` だけだと Number(true)===1 になっていた。 */
+/** A flag that needs a value must have one. Bare `--count` used to come out as Number(true)===1. */
 function flagValue(flags, key) {
   const v = flags[key];
   if (v === true) usage(`--${key} needs a value`);
   return String(v);
 }
 
-/** 件数のしきい値。NaN や負数は、比較としては成立しても意図ではありえない。 */
+/** A count threshold. NaN and negatives compare fine and cannot be what anybody meant. */
 function threshold(flags, key) {
   const raw = flagValue(flags, key);
   const n = Number(raw);
@@ -87,10 +89,10 @@ function threshold(flags, key) {
   return n;
 }
 
-// フラグから expect 関数を1つ選ぶ。名札は関数自身が持つので、ここでは組み立てない
-// （CLI の表示と --json の verdict.expectation が食い違うのを避ける）。
-// 期待フラグが1つも無いときは expect を渡さない＝「期待は指定されなかった」を
-// verify に正しく伝える。verdict は nonEmpty (default) と名乗る。
+// Pick one expect function from the flags. The label belongs to the function itself and is not
+// assembled here, so what the CLI prints and what --json reports as verdict.expectation cannot
+// disagree. With no expectation flag at all, no expect is passed — that is how verify is told
+// "nobody asked a question", and the verdict then names itself nonEmpty (default).
 function pickExpect(flags) {
   if ('count' in flags) return X.count(threshold(flags, 'count'));
   if ('at-least' in flags) return X.atLeast(threshold(flags, 'at-least'));
@@ -116,7 +118,7 @@ async function cmdVerify(p) {
     const { error, ...rest } = v;
     process.stdout.write(JSON.stringify(error ? { ...rest, error: String(error.message || error) } : rest) + '\n');
   } else if (v.ok) {
-    // 期待を選ばなかったときは、通ったことより「何を訊かなかったか」の方が重要。
+    // With no expectation chosen, what was not asked matters more than the pass.
     const weak = !fn ? '\n  Note: no expectation was given, so any non-empty output passes. Pass --count/--contains/--matches to ask a real question.' : '';
     process.stdout.write(`✓ verified [${label}] — the probe returned: ${v.evidence}${weak}\n`);
   } else if (v.reason === 'probe-error') {
@@ -139,9 +141,9 @@ async function cmdGuard(p) {
     process.stderr.write(`groundtruth guard: cannot read ${file}: ${e.message}\n`);
     process.exit(64);
   }
-  // 契約が1件も無いファイルを「全件確認済み」と言わない。
-  // 空ファイル・空白だけのファイル・書き出す前のファイルは、どれも exit 0 になっていた。
-  // 何も確認していないことを確認済みとして報告するのは、このゲートが防ぐための形そのもの。
+  // A file holding no contracts is not "everything confirmed". An empty file, a file of
+  // whitespace and a file nothing had written yet all exited 0. Reporting "nothing was checked"
+  // as "checked" is the exact shape this gate exists to prevent.
   if (lines.length === 0) {
     process.stderr.write(
       `✗ groundtruth guard: ${file} holds no contracts — nothing was checked, so nothing can be reported as done.\n` +
@@ -150,7 +152,7 @@ async function cmdGuard(p) {
     process.exit(2);
   }
   const failures = [];
-  let weakOnly = 0; // 「空でなければ通る」だけを訊いた契約の数
+  let weakOnly = 0; // how many contracts asked only for non-empty output
   for (const line of lines) {
     let c;
     try { c = JSON.parse(line); } catch { failures.push({ action: line.slice(0, 40), reason: 'bad-json', evidence: line }); continue; }
@@ -164,8 +166,8 @@ async function cmdGuard(p) {
     const v = await verify({ action: c.action || c.probe, probe: shellProbe(String(c.probe)), expect: expectFn });
     if (!v.ok) failures.push(v);
   }
-  // 「全件確認済み」の中身を黙って均さない。nonempty だけの契約は
-  // 「何か出力があった」以上を確かめていないので、件数をそのまま言う。
+  // Do not flatten what "all confirmed" contains. A nonempty-only contract established that
+  // something printed and nothing more, so the count of those is said out loud.
   const weakNote = weakOnly
     ? ` (${weakOnly} of them only asked for non-empty output — that confirms something ran, not that it was right)`
     : '';
@@ -178,7 +180,7 @@ async function cmdGuard(p) {
     const x = f.expectation ? ` [${f.expectation}]` : '';
     process.stderr.write(`  - "${f.action}"${x} — ${f.reason}${f.detail ? ': ' + f.detail : ''}\n    the probe returned: ${f.evidence ?? ''}\n`);
   }
-  process.exit(2); // Claude Code hook: exit 2 で stop をブロック
+  process.exit(2); // Claude Code hook: exit 2 is what blocks the stop
 }
 
 const HELP = `groundtruth ${VERSION} — completion verification gate

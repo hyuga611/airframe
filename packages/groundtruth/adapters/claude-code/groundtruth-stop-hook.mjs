@@ -1,17 +1,17 @@
 #!/usr/bin/env node
-// groundtruth — Claude Code 用 Stop フック参考実装。
+// groundtruth — a reference Stop hook for Claude Code.
 //
-// エージェントがターン中に「宣言した完了契約」を .groundtruth/pending.jsonl に追記しておき、
-// Stop 時にこのフックが全部の probe を再取得して検証する。未達が1件でもあれば
-// exit 2 で stop をブロックし、理由を stderr に返す（Claude はそれを読んで続行できる）。
-// 全部通れば pending をクリアして exit 0。
+// During a turn the agent appends the completion contracts it declares to
+// .groundtruth/pending.jsonl. On Stop this hook re-fetches every one of their probes and checks
+// them. A single unmet contract exits 2, which blocks the stop, and the reasons go to stderr —
+// Claude reads them and can carry on. When they all pass, pending is cleared and it exits 0.
 //
 // .claude/settings.json:
 //   { "hooks": { "Stop": [ { "hooks": [ { "type": "command",
 //       "command": "node ./node_modules/@hyuga/groundtruth/adapters/claude-code/groundtruth-stop-hook.mjs" } ] } ] } }
 //
-// 契約1行の形（.groundtruth/pending.jsonl）:
-//   {"action":"45件を投入","probe":"psql -tAc 'select count(*) ...'","expect":{"type":"count","value":45}}
+// One contract per line in .groundtruth/pending.jsonl:
+//   {"action":"insert 45 rows","probe":"psql -tAc 'select count(*) ...'","expect":{"type":"count","value":45}}
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { verify } from '../../src/index.mjs';
@@ -20,7 +20,7 @@ import { checkContract } from '../../src/contract.mjs';
 const PENDING = process.env.GROUNDTRUTH_PENDING || '.groundtruth/pending.jsonl';
 
 async function main() {
-  if (!existsSync(PENDING)) process.exit(0); // 宣言された契約が無ければ何もしない
+  if (!existsSync(PENDING)) process.exit(0); // nothing was declared, so there is nothing to check
   const lines = readFileSync(PENDING, 'utf8').split('\n').map((l) => l.trim()).filter(Boolean);
   if (lines.length === 0) process.exit(0);
 
@@ -31,26 +31,26 @@ async function main() {
   }
 
   if (failures.length === 0) {
-    writeFileSync(PENDING, ''); // 全部通ったのでクリア
+    writeFileSync(PENDING, ''); // they all passed, so the slate is clean
     process.exit(0);
   }
 
-  // Claude Code: stderr ＋ exit 2 で stop をブロックし、理由をエージェントに返す。
-  let msg = `groundtruth: ${failures.length}/${lines.length} 件の完了契約が実状態で確認できませんでした。完了を主張する前に対処してください:\n`;
+  // Claude Code: stderr plus exit 2 blocks the stop and hands the reasons back to the agent.
+  let msg = `groundtruth: ${failures.length}/${lines.length} completion contract(s) could not be confirmed against real state. Deal with these before claiming to be done:\n`;
   for (const f of failures) {
     const x = f.expectation ? ` [${f.expectation}]` : '';
-    msg += `  - "${f.action}"${x} — ${f.reason}${f.detail ? ': ' + f.detail : ''}\n    probe の出力: ${f.evidence ?? ''}\n`;
+    msg += `  - "${f.action}"${x} — ${f.reason}${f.detail ? ': ' + f.detail : ''}\n    the probe returned: ${f.evidence ?? ''}\n`;
   }
   process.stderr.write(msg);
   process.exit(2);
 }
 
-// フック自身が壊れたときに exit 0 で通すのは、確認できていないものを確認済みとして
-// 扱うことそのもの。ゲートが動かなかったなら、完了も名乗らせない。
+// Exiting 0 because the hook itself broke is precisely the act of treating the unconfirmed as
+// confirmed. If the gate did not run, nothing gets to be reported as done either.
 main().catch((e) => {
   process.stderr.write(
     `groundtruth stop-hook error: ${e && e.message ? e.message : e}\n` +
-      '完了契約を検証できませんでした。検証できていない以上、完了は確認されていません。\n',
+      'The completion contracts could not be verified. Unverified is not confirmed.\n',
   );
   process.exit(2);
 });

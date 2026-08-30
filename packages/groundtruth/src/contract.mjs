@@ -1,14 +1,15 @@
-// JSONL の完了契約（{action, probe, expect:{type,value}}）を解釈する部分。
+// Reading a completion contract out of JSONL: {action, probe, expect:{type,value}}.
 //
-// ここが独立したモジュールなのは、同じ解釈が CLI（`groundtruth guard`）と Claude Code の
-// Stop フックの2箇所にコピーされていて、0.4.1 で CLI 側だけを直した結果、
-// **README が配線しろと言っている側**（フック）に古い緩い挙動が残ったからだ。
-// 契約の読み方は1つしかないので、置き場所も1つにする。
+// This is its own module because the same reading was copied into two places — the CLI's
+// `groundtruth guard` and the Claude Code Stop hook — and 0.4.1 fixed only the CLI. The old,
+// looser behaviour stayed in the hook, which is the side the README tells people to wire up.
+// There is one way to read a contract, so there is one place it is read.
 
 import { spawnSync } from 'node:child_process';
 import { expect as X } from './index.mjs';
 
-// シェルコマンドを実行して stdout を返す probe。非ゼロ終了は throw（＝probe失敗として扱う）。
+// A probe that runs a shell command and returns its stdout. A non-zero exit throws, which is
+// how it is reported as a probe failure rather than as an answer.
 export function shellProbe(cmd) {
   return () => {
     const r = spawnSync(cmd, { shell: true, encoding: 'utf8' });
@@ -21,8 +22,9 @@ export function shellProbe(cmd) {
 }
 
 export function expectFromSpec(spec) {
-  // 期待を書いていない契約は契約ではない。以前はここで黙って nonempty に落ちていたので、
-  // `expect` を書き忘れた行が「出力が空でなければ達成」に化けて確認済みとして数えられた。
+  // A contract with no expectation is not a contract. This used to fall through to nonempty in
+  // silence, so a line that simply forgot `expect` became "met if the output is not empty" and
+  // was counted among the confirmed.
   if (!spec || typeof spec !== 'object' || !spec.type) {
     throw new Error('contract has no expect.type — a contract without an expectation confirms nothing');
   }
@@ -33,8 +35,8 @@ export function expectFromSpec(spec) {
     case 'contains': return X.contains(String(spec.value));
     case 'equals': return X.equals(String(spec.value));
     case 'matches': return X.matches(new RegExp(String(spec.value)));
-    // 綴り違いを「空でなければ通る」に読み替えない。`nonEmpty` はライブラリ側の
-    // API 名そのものなので、最も出やすい打ち間違いが最も弱い問いに化けていた。
+    // A misspelling is not silently read as "passes if non-empty". `nonEmpty` is the library's
+    // own API name, so the most likely typo of all was turning into the weakest question.
     default: throw new Error(
       `unknown expect.type: ${spec.type} `+
         '(expected one of: nonempty, count, at-least, contains, equals, matches)',
@@ -42,9 +44,9 @@ export function expectFromSpec(spec) {
   }
 }
 
-// 1行の契約を検証して、未達なら失敗を返す（達成なら null）。
-// throw ではなく失敗として返すのは、1件の不備で残りの契約を検証しないまま
-// 終わらせないため。
+// Verify one contract, returning the failure when it is unmet and null when it is met.
+// A failure rather than a throw, so that one bad line does not end the run with the remaining
+// contracts never checked.
 export async function checkContract(line, verify) {
   let c;
   try {

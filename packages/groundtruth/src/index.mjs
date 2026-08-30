@@ -1,23 +1,30 @@
-// groundtruth — 現地現物（go and see）。AIエージェント/自動化に「完了」を名乗らせる前に、
-// 行動した後の"世界の状態"を probe で再取得し、実在を確かめる完了検証ゲート。
+// groundtruth — 現地現物 ("go and see"). The completion gate: before an agent or an automation
+// is allowed to report that something is done, it has to re-fetch the state of the world with a
+// probe and show that the thing is really there.
 //
-// 最悪のハルシネーションは、文章ではなく「作業をやり遂げた」という事実の捏造だ。
-// 原因は「行動」と「確認」の分離：ツールの戻り値だけを見て「完了しました」と書いてしまう。
+// The worst hallucination is not a sentence. It is a fabricated fact about work having been
+// carried out, and its cause is that acting and confirming have collapsed into one step: the
+// tool returned without an error, so "done" gets written.
 //
-// groundtruth の完了契約（completion contract）はこれを構造的に禁じる：
-//   1. 副作用系（作成・更新・削除・投入・アップロード）は、別 probe で実状態を"再取得"してからしか完了を名乗れない
-//   2. 空・エラー・タイムアウトは想像で埋めない（そのまま失敗として報告する）
-//   3. 台帳に書く値は、再取得で実在確認できた値だけ
+// The completion contract makes that impossible to express:
+//   1. Anything with a side effect — create, update, delete, insert, upload — can only be
+//      reported as done after a separate probe RE-FETCHES the real state
+//   2. Empty, error and timeout are never filled in from imagination; they are reported as the
+//      failures they are
+//   3. Only a value the re-fetch confirmed to exist is written to the ledger
 //
-// 設計上の要：verify/gate は probe（実状態を取り直す関数）しか受け取らない。
-// 「行動の戻り値」を証拠として渡すAPIは存在しない ＝「やったつもり」を書けないようにしてある。
+// The load-bearing decision: verify and gate accept a probe and nothing else. There is no API
+// that takes the return value of the action as evidence, so "I believe I did it" has nowhere to
+// be written down.
 //
-// 実行時に LLM もAPIキーも使わない。依存ゼロ。フレームワーク非依存。
+// No LLM and no API key at runtime. Zero dependencies. Framework-agnostic.
 
 /**
- * 「何も無い」判定。完了検証の文脈では 0 / NaN / '' / [] / {} / null / undefined は
- * すべて「再取得しても証拠が無い＝反映されていない」を意味するので empty 扱いにする。
- * （count が 0 = 1行も入っていない、を成功にしないため）
+ * Is there nothing here?
+ *
+ * In a completion check, 0 / NaN / '' / [] / {} / null / undefined all mean one thing: the
+ * re-fetch found no evidence, so the change did not land. A count of 0 is "not one row went in",
+ * and that must never read as success.
  */
 export function isEmpty(v) {
   if (v == null) return true;
@@ -36,14 +43,14 @@ function errText(e) {
 }
 
 /**
- * 数の期待のために値を数に読む。読めなければ NaN。
+ * Read a value as a number, for the numeric expectations. NaN when it cannot be read.
  *
- * `Number('')` も `Number('   ')` も 0 を返すので、何も返さなかった probe が
- * `--count 0` と `--at-least 0`（さらに負のしきい値）を満たしていた。**測っていない**を
- * **0件だった**として通すのは、このツールが存在する理由そのものの裏返し。
+ * `Number('')` and `Number('   ')` are both 0, so a probe that returned nothing at all satisfied
+ * `--count 0`, `--at-least 0` and every negative threshold. Passing "was not measured" off as
+ * "measured zero" is the exact inversion of the reason this tool exists.
  *
- * 文字列 '0' や数値 0 は本物の測定結果なので通す——判定は比較側の仕事。
- * 文字列以外の従来の型変換（配列など）は変えない。
+ * The string '0' and the number 0 are real measurements and go through — deciding what they mean
+ * is the comparison's job. Conversion of non-strings (arrays and the rest) is left as it was.
  */
 function asNumber(s) {
   if (s == null) return NaN;
@@ -65,27 +72,28 @@ function defaultDescribe(state) {
 }
 
 /**
- * 期待に「何を訊いたか」の名札を付ける。
+ * Label an expectation with the question it actually asked.
  *
- * 合否だけを返していたので、`nonEmpty`（＝何か出ていれば通る、最も弱い問い）で通った
- * verdict と `count(45)` で通った verdict が、出力上まったく同じに見えていた。
- * **考えずに済ませた確認が、考えて書いた確認と同じ顔で並ぶ**のはこのツールが
- * 潰すべき形そのもの（0.4.0 の「拒否せずに静かに退化する」の残り）。
- * verdict.expectation としてそのまま出すので、CLI の --json も自動化も区別できる。
+ * Only pass or fail came back, so a verdict that passed `nonEmpty` — the weakest question there
+ * is, satisfied by anything at all — was indistinguishable in the output from one that passed
+ * `count(45)`. A check nobody thought about, standing in the record with the same face as one
+ * written deliberately, is the precise shape this tool exists to destroy; it was what remained
+ * of 0.4.0's "degrades quietly instead of refusing".
+ *
+ * It is emitted verbatim as verdict.expectation, so the CLI's --json and anything automated can
+ * tell the two apart.
  */
 function labelled(label, fn) {
   return Object.defineProperty(fn, 'groundtruthLabel', { value: label, enumerable: false });
 }
 
-/** contract から「何を訊いたか」を読む。未指定なら既定であることまで含めて名乗る。 */
+/** Read back which question a contract asked. An unspecified one says that it is the default. */
 export function expectationLabel(contract) {
   if (!contract || typeof contract.expect !== 'function') return 'nonEmpty (default)';
   return contract.expect.groundtruthLabel || 'custom';
 }
 
-/**
- * 完了を名乗れないときに throw されるエラー。verdict に再取得の生証拠を保持する。
- */
+/** Thrown when completion cannot be claimed. It carries the raw re-fetched evidence on verdict. */
 export class GroundtruthIncomplete extends Error {
   constructor(verdict) {
     const d = verdict.detail ? `: ${verdict.detail}` : '';
@@ -101,20 +109,16 @@ export class GroundtruthIncomplete extends Error {
 }
 
 /**
- * 完了契約を検証する。probe（実状態を"再取得"する関数）を必ず走らせ、
- * その戻り値だけを根拠に ok/失敗を判定する。失敗でも throw せず Verdict を返す
- * （空・エラーを握りつぶさず、そのまま verdict として報告する）。
- */
-/**
- * groundtruth をフレームに載せる。
+ * Mount groundtruth on the frame.
  *
- * `@hyuga/spar` があれば、判定を1件の所見として台帳に流す。無ければ何もしない——
- * 依存はゼロのままで、単体で使っている人には何も起こらない。
+ * When `@hyuga/spar` is installed, the verdict goes to the ledger as one finding. When it is
+ * not, nothing happens — the dependency list stays empty and somebody using this on its own
+ * sees no difference.
  *
- * 位相は `claim`。フレームはこれを refuse-shot として扱う（機体を止めるのではなく、
- * この一撃を撃たない）ので、groundtruth が元々やっていることと形が同じになる。
+ * The phase is `claim`, which the frame reads as refuse-shot: not the machine halting, this one
+ * shot declining to fire. That is the same thing groundtruth was already doing.
  */
-let frame; // undefined = 未試行, null = 無い
+let frame; // undefined = not tried yet, null = not installed
 async function file(v) {
   try {
     if (frame === undefined) {
@@ -131,7 +135,7 @@ async function file(v) {
       note: v.ok ? undefined : v.reason,
     }));
   } catch {
-    // 台帳に書けないことで完了検証そのものを落とさない。判定は既に出ている。
+    // Not being able to write the record must not cost the check. The verdict already exists.
   }
 }
 
@@ -145,7 +149,8 @@ async function assess(contract) {
   const action = (contract && contract.action) ? String(contract.action) : 'operation';
 
   if (!contract || typeof contract.probe !== 'function') {
-    // ここが groundtruth の背骨。行動の戻り値ではなく「実状態を取り直す関数」を要求する。
+    // The backbone. What is demanded is a function that re-fetches real state, never the
+    // return value of the action itself.
     throw new TypeError(
       'groundtruth: contract.probe is required — a function that RE-FETCHES real state. ' +
       'The return value of the action itself is not acceptable as evidence.'
@@ -158,7 +163,7 @@ async function assess(contract) {
   try {
     state = await contract.probe();
   } catch (error) {
-    // probe が失敗＝実状態を確かめられなかった。想像で成功にしない。
+    // The probe failed, so the real state was never established. That is not a pass.
     return { ok: false, action, expectation, reason: 'probe-error', error, evidence: `probe failed: ${errText(error)}` };
   }
 
@@ -168,7 +173,7 @@ async function assess(contract) {
 
   const empty = isEmpty(state);
 
-  // expect 未指定 → 既定は「何かが実在すること（非empty）」
+  // No expect given: the default question is "does anything actually exist" (non-empty).
   if (typeof contract.expect !== 'function') {
     if (empty && !contract.allowEmpty) {
       return { ok: false, action, expectation, reason: 'empty', state, evidence };
@@ -176,7 +181,7 @@ async function assess(contract) {
     return { ok: true, action, expectation, state, evidence };
   }
 
-  // expect 指定 → それを唯一の合否基準にする（明示 expect は emptiness より優先）
+  // An expect was given: it is the only criterion. An explicit question outranks emptiness.
   let res;
   try {
     res = await contract.expect(state);
@@ -193,9 +198,10 @@ async function assess(contract) {
 }
 
 /**
- * verify と同じだが、完了を名乗れなければ GroundtruthIncomplete を throw する。
- * これを副作用処理の末尾に置くと、実状態が通らない限り「完了」に到達できない。
- * ok のときは再取得した state を返す。
+ * verify, except that a claim it cannot support throws GroundtruthIncomplete.
+ *
+ * Put this at the end of anything with a side effect and the code physically cannot reach "done"
+ * unless the re-fetched state passes. On success it returns that state.
  */
 export async function gate(contract) {
   const v = await verify(contract);
@@ -204,32 +210,33 @@ export async function gate(contract) {
 }
 
 /**
- * よく使う合否基準。expect に渡す関数を作る。
- * true か {ok:true} で合格、{ok:false, detail} で不合格（理由つき）。
+ * The questions worth asking most often. Each builds a function for `expect`.
+ *
+ * Return true or {ok:true} to pass, {ok:false, detail} to fail with a reason.
  */
 export const expect = {
-  /** 実状態が何か存在する（非empty）。最も弱い問いなので、通っても名札でそう分かる。 */
+  /** Something exists (non-empty). The weakest question there is, and its label says so. */
   nonEmpty: () => labelled('nonEmpty', (s) => (!isEmpty(s) ? true : { ok: false, detail: `the probe returned nothing: ${valueText(s)}` })),
-  /** 数として n と一致（例：投入件数） */
+  /** Reads as a number equal to n — the count of rows that went in, say. */
   count: (n) => labelled(`count(${n})`, (s) => {
     const got = asNumber(s);
     if (Number.isNaN(got)) return { ok: false, detail: `expected a count of ${n}, but nothing countable came back: ${valueText(s)}` };
     return got === n ? true : { ok: false, detail: `expected a count of ${n}, the probe returned ${valueText(s)}` };
   }),
-  /** 数として n 以上 */
+  /** Reads as a number of at least n. */
   atLeast: (n) => labelled(`atLeast(${n})`, (s) => {
     const got = asNumber(s);
     if (Number.isNaN(got)) return { ok: false, detail: `expected at least ${n}, but nothing countable came back: ${valueText(s)}` };
     return got >= n ? true : { ok: false, detail: `expected at least ${n}, the probe returned ${valueText(s)}` };
   }),
-  /** 文字列として sub を含む（例：再取得したURLが 200 を返す本文に含む語） */
+  /** Contains sub as a string — a word in the body a re-fetched URL served, say. */
   contains: (sub) => labelled(`contains(${JSON.stringify(String(sub))})`, (s) => (String(s).includes(sub) ? true : { ok: false, detail: `does not contain "${sub}": ${valueText(s)}` })),
-  /** 値が一致（文字列は trim 比較） */
+  /** Equal to a value; strings are compared trimmed. */
   equals: (v) => labelled(`equals(${valueText(v)})`, (s) => {
     const eq = (typeof s === 'string') ? s.trim() === String(v).trim() : s === v;
     return eq ? true : { ok: false, detail: `expected ${valueText(v)}, the probe returned ${valueText(s)}` };
   }),
-  /** 正規表現に一致 */
+  /** Matches a regular expression. */
   matches: (re) => labelled(`matches(${String(re)})`, (s) => (re.test(String(s)) ? true : { ok: false, detail: `does not match ${re}: ${valueText(s)}` })),
 };
 

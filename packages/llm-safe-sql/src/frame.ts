@@ -1,23 +1,24 @@
 /**
- * フレーム（[spar](https://github.com/hyuga611/spar)）への接続。
+ * The connection to the frame, [spar](https://github.com/hyuga611/airframe/tree/main/packages/spar).
  *
- * llm-safe-sql は「提案 → 実行 → 実測 → 必ずロールバック」を1回の dry run の中で完結させる。
- * 測った結果は呼び出し元に返るだけで、**その場で消える**。人が承認しなかった提案も、
- * 承認して適用した変更も、後から辿れるのは呼び出し元が自分で記録していた場合だけだった。
+ * A dry run here is complete in itself: propose, execute, measure, always roll back. What was
+ * measured goes back to the caller and then *disappears*. A proposal a human declined and a
+ * change a human approved were both traceable afterwards only if the caller had kept its own
+ * record.
  *
- * `@hyuga/spar` があれば、それを1件の所見として台帳に流す。無ければ何もしない——
- * `dependencies` は空のまま（optional peer dependency）で、単体で使っている場合の挙動は
- * すべて従来どおり。
+ * When `@hyuga/spar` is installed, that measurement goes to the ledger as one finding. When it
+ * is not, nothing happens — `dependencies` stays empty (this is an optional peer) and anybody
+ * using the library on its own sees exactly what they saw before.
  *
- *   dry run（plan）   位相 `pre`  —— 撃つ前に威力を実測して戻した記録
- *   適用（apply）      位相 `post` —— 実際に変わった行数
+ *   dry run (plan)   phase `pre`   the force measured before the shot, and rolled back
+ *   apply            phase `post`  the rows that actually changed
  */
 type Frame = {
   finding: (f: Record<string, unknown>) => unknown;
   report: (f: unknown) => unknown;
 } | null;
 
-let frame: Frame | undefined; // undefined = 未試行, null = 無い
+let frame: Frame | undefined; // undefined = not tried yet, null = not installed
 
 export async function file(f: {
   phase: 'pre' | 'post';
@@ -30,8 +31,9 @@ export async function file(f: {
   try {
     if (frame === undefined) {
       try {
-        // 変数越しに読むのは、型を持たない任意依存を型検査に探させないため。
-        // リテラルで書くと、spar を入れていない環境で build が落ちる。
+        // Through a variable so the type checker does not go looking for an optional
+        // dependency that ships no types. Written as a literal, the build fails anywhere spar
+        // is not installed.
         const optional = '@hyuga/spar';
         frame = (await import(optional)) as unknown as Frame;
       } catch {
@@ -49,6 +51,7 @@ export async function file(f: {
       note: f.note,
     }));
   } catch {
-    // 台帳に書けないことで、測定そのものや適用を落とさない。結果は既に出ている。
+    // Not being able to write the record must not cost the measurement or the apply. The
+    // result already exists.
   }
 }

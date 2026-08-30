@@ -5,23 +5,23 @@ import { mkdtempSync, symlinkSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-// `npm i -g` と `npx` は、どちらもシンボリックリンク越しに CLI を呼ぶ。そのとき argv[1] は
-// リンクのパスで、解決済みの実パスである import.meta.url とは一致しない。リンクを解決せずに
-// 比較していたため、install した版の CLI は何もせず exit 0 で終わっていた。リンタにとって
-// これは最悪の壊れ方で、「問題を見つけなかった」と「一度も動いていない」が区別できず、
-// 終了コードを見る CI からも同じに見える。0.9.1 はその状態で公開されていた。
+// `npm i -g` and `npx` both reach the CLI through a symlink. argv[1] is then the link's path,
+// which does not equal import.meta.url — that one is already resolved. Compared without
+// resolving the link, an installed CLI did nothing and exited 0. For a linter that is the worst
+// available breakage: "found no problems" and "never ran" are indistinguishable, and a CI job
+// reading the exit code cannot tell them apart either. 0.9.1 shipped in that state.
 //
-// 既存のテストはすべて関数を import して確かめており、bin を一度も実行していなかったので
-// 何も気づけなかった。このテストは install と同じ経路で入口を叩く。
-// src/habit.mjs の realpathSync を戻すと、出力ゼロで落ちる。
-test('シンボリックリンク経由でも CLI が動く（npm i -g / npx と同じ経路）', () => {
+// Every test that existed imported the functions and never ran the bin, so nothing could have
+// caught it. This one reaches the entry point the way an install does. Take the realpathSync in
+// src/habit.mjs back out and it fails, with no output at all.
+test('the CLI runs through a symlink, the way npm i -g and npx reach it', () => {
   const dir = mkdtempSync(join(tmpdir(), 'entrypoint-'));
   try {
     const link = join(dir, 'cli.mjs');
     try {
       symlinkSync(resolve('src/habit.mjs'), link);
     } catch {
-      return; // シンボリックリンクを作る権限が無い環境（開発者モード無効の Windows 等）
+      return; // no permission to create a symlink here (Windows without developer mode, say)
     }
     writeFileSync(join(dir, 'AGENTS.md'), '# t\n');
     writeFileSync(join(dir, 'package.json'), '{"name":"p","scripts":{}}');
@@ -32,7 +32,7 @@ test('シンボリックリンク経由でも CLI が動く（npm i -g / npx と
     } catch (e) {
       out = String(e.stdout ?? '') + String(e.stderr ?? '');
     }
-    assert.notEqual(out.trim(), '', 'リンク経由で呼ぶと CLI が何も出力しない＝入口判定が壊れている');
+    assert.notEqual(out.trim(), '', 'no output through the link means the entry-point check is broken');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

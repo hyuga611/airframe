@@ -274,8 +274,9 @@ export class Engine {
     this.busy = 'A dry run';
     try {
       const plan = await this.planExclusive(rawSql);
-      // 測って戻した事実を台帳へ。ロールバック済みなので世界は変わっていないが、
-      // 「何行に当たるはずだったか」は残す価値がある——承認されなかった提案ほど。
+      // File the fact that this was measured and rolled back. The world did not change, and
+      // how many rows it would have hit is still worth keeping — most of all for a proposal
+      // nobody approved.
       await file({
         phase: 'pre',
         subject: `${plan.op} ${plan.table}`,

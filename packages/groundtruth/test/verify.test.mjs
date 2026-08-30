@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { verify, gate, expect, isEmpty, GroundtruthIncomplete } from '../src/index.mjs';
 
-// ---- isEmpty: 0/NaN/''/[]/{} は「証拠が無い」＝empty ----
+// ---- isEmpty: 0/NaN/''/[]/{} all mean "no evidence came back", so all are empty ----
 test('isEmpty treats "nothing there" values as empty', () => {
   for (const v of [null, undefined, '', '   ', 0, NaN, [], {}, new Map(), new Set(), false]) {
     assert.equal(isEmpty(v), true, `${String(v)} should be empty`);
@@ -12,13 +12,13 @@ test('isEmpty treats "nothing there" values as empty', () => {
   }
 });
 
-// ---- 背骨：probe は必須（行動の戻り値を証拠にできない） ----
+// ---- The backbone: a probe is required, and the action's return value is not one ----
 test('verify requires a probe function (cannot pass an action return value)', async () => {
   await assert.rejects(() => verify({ action: 'x' }), TypeError);
   await assert.rejects(() => verify({ action: 'x', probe: 42 }), TypeError);
 });
 
-// ---- 既定（expect 無し）＝非empty を要求 ----
+// ---- The default, with no expect: something non-empty must exist ----
 test('default expect: non-empty re-fetched state passes', async () => {
   const v = await verify({ action: 'insert', probe: () => [1, 2, 3] });
   assert.equal(v.ok, true);
@@ -42,7 +42,7 @@ test('allowEmpty lets an empty state count as complete', async () => {
   assert.equal(v.ok, true);
 });
 
-// ---- probe 失敗を握りつぶさない（想像で成功にしない） ----
+// ---- A failed probe is not swallowed, and never filled in as a success ----
 test('probe throwing → reason=probe-error, error preserved, does NOT throw', async () => {
   const boom = new Error('connection refused');
   const v = await verify({ action: 'insert', probe: () => { throw boom; } });
@@ -78,7 +78,7 @@ test('expect.count parses string probe output (CLI shape)', async () => {
   assert.equal(v.ok, true);
 });
 
-// ---- 他の expect ----
+// ---- The other expectations ----
 test('expect.atLeast', async () => {
   assert.equal((await verify({ probe: () => 10, expect: expect.atLeast(5) })).ok, true);
   assert.equal((await verify({ probe: () => 3, expect: expect.atLeast(5) })).ok, false);
@@ -97,7 +97,7 @@ test('expect throwing → probe-error (not swallowed into success)', async () =>
   assert.equal(v.reason, 'probe-error');
 });
 
-// ---- gate: 成功で state を返し、失敗で GroundtruthIncomplete を throw ----
+// ---- gate: returns the state on success, throws GroundtruthIncomplete on failure ----
 test('gate returns re-fetched state on success', async () => {
   const state = await gate({ action: 'insert', probe: () => 45, expect: expect.count(45) });
   assert.equal(state, 45);
@@ -123,7 +123,7 @@ test('gate throws on probe-error too (cannot claim done when state is unknowable
   );
 });
 
-// ---- evidence は常に実状態を写す（捏造しない） ----
+// ---- The evidence is always what came back, never something invented ----
 test('evidence reflects the actually re-fetched state', async () => {
   const v = await verify({ action: 'upload', probe: () => 'https://x/y.png returned 200', expect: expect.contains('200') });
   assert.match(v.evidence, /200/);
@@ -138,36 +138,37 @@ test('describeState customizes the evidence string', async () => {
   assert.equal(v.evidence, '3 rows');
 });
 
-// ---- 買えないものを固定する ----
+// ---- Pinning down what this does not buy ----
 //
-// README は 0.2.0 まで「行為の戻り値を証拠として渡す API は無いので『たぶん
-// やった』は書けない」「構造的に不可能」と書いていた。書けた。probe は関数で
-// あって、JavaScript には関数に I/O を強制する手段がない。
+// Up to 0.2.0 the README said there was no API for passing an action's return value as
+// evidence, so "I think I did it" could not be written down — structurally impossible, it
+// said. It could. A probe is a function, and JavaScript has no way to force a function to
+// do I/O.
 //
-// ここに置くのは「直すべき挙動」ではなく「直せない限界」である。テストが無い
-// と、次に読んだ人がまた不可能だと書く。実際そうなった。
+// What is pinned here is a limit that cannot be fixed, not behaviour that should be. Without
+// a test the next reader writes "impossible" again — which is exactly what happened.
 
-test('既知の限界: 何も読まない probe は通る（構造的には防げない）', async () => {
+test('known limit: a probe that reads nothing passes, and no structure can stop it', async () => {
   const v = await verify({ action: 'insert 45 rows', probe: () => 45, expect: expect.count(45) });
-  assert.equal(v.ok, true, 'これが false になったなら、防ぐ手段が見つかったということ。README を直すこと');
+  assert.equal(v.ok, true, 'if this ever goes false somebody found a way to prevent it — fix the README');
 });
 
-test('既知の限界: 行為の戻り値そのものを probe にしても通る', async () => {
-  // 「実際には何も起きていないが、戻り値だけはそれらしい」という一番危ない形。
+test('known limit: handing the action\'s own return value back as the probe passes', async () => {
+  // Nothing happened, and the return value looks convincing. The most dangerous shape there is.
   const result = { inserted: 45 };
   const v = await verify({ action: 'insert 45 rows', probe: () => result.inserted, expect: expect.count(45) });
   assert.equal(v.ok, true);
 });
 
-test('買えているもの: 空・probe例外・不一致は拒否される', async () => {
+test('what it does buy: empty, a throwing probe and a mismatch are all refused', async () => {
   assert.equal((await verify({ action: 'a', probe: () => [], expect: expect.count(45) })).reason, 'empty');
   assert.equal((await verify({ action: 'a', probe: () => { throw new Error('x'); }, expect: expect.count(45) })).reason, 'probe-error');
   assert.equal((await verify({ action: 'a', probe: () => 3, expect: expect.count(45) })).reason, 'mismatch');
 });
 
-test('evidence は probe が返したものであって、再取得したとは名乗らない', async () => {
-  // 0.2.0 の CLI は何も読まない probe に対して "re-fetched: 45" と断言していた。
-  // groundtruth が知っているのは probe が何を返したかだけである。
+test('the evidence is what the probe returned, and does not claim to have been re-fetched', async () => {
+  // The 0.2.0 CLI asserted "re-fetched: 45" for a probe that read nothing at all. What
+  // groundtruth knows is what the probe returned, and only that.
   const v = await verify({ action: 'a', probe: () => 45, expect: expect.count(45) });
   assert.equal(v.evidence, '45');
   const e = await verify({ action: 'a', probe: () => 3, expect: expect.count(45) });
@@ -175,40 +176,41 @@ test('evidence は probe が返したものであって、再取得したとは�
   assert.doesNotMatch(e.detail, /re-fetched/);
 });
 
-// ---- 何も測っていないものを「0件だった」として通さない（2026-08 の監査） ----
-// Number('') も Number('   ') も 0 なので、空を返した probe が --count 0 と
-// --at-least 0（さらに負のしきい値）を満たしていた。測っていないことを測定結果
-// として通すのは、このツールが存在する理由そのものの裏返し。
+// ---- "was not measured" must not pass as "measured zero" (found in the 2026-08 audit) ----
+// Number('') and Number('   ') are both 0, so a probe that returned nothing satisfied
+// --count 0, --at-least 0 and every negative threshold. Letting the unmeasured through as a
+// measurement is the exact inversion of the reason this tool exists.
 
-test('count/atLeast: 空の出力は 0 件の測定結果ではない', async () => {
+test('count/atLeast: empty output is not a measurement of zero', async () => {
   for (const empty of ['', '   ', null, undefined]) {
     const c = await verify({ action: 'a', probe: () => empty, expect: expect.count(0) });
-    assert.equal(c.ok, false, `count(0) が ${JSON.stringify(empty)} を通した`);
+    assert.equal(c.ok, false, `count(0) let ${JSON.stringify(empty)} through`);
     const a = await verify({ action: 'a', probe: () => empty, expect: expect.atLeast(0) });
-    assert.equal(a.ok, false, `atLeast(0) が ${JSON.stringify(empty)} を通した`);
+    assert.equal(a.ok, false, `atLeast(0) let ${JSON.stringify(empty)} through`);
   }
 });
 
-test('count/atLeast: 本物の 0 は測定結果なので通る', async () => {
+test('count/atLeast: a real zero is a measurement, and goes through', async () => {
   const c = await verify({ action: 'a', probe: () => '0', expect: expect.count(0) });
-  assert.equal(c.ok, true, '文字列の "0" は測った結果');
+  assert.equal(c.ok, true, 'the string "0" is something that was measured');
   const a = await verify({ action: 'a', probe: () => '0', expect: expect.atLeast(0) });
   assert.equal(a.ok, true);
   const n = await verify({ action: 'a', probe: () => '3', expect: expect.atLeast(3) });
   assert.equal(n.ok, true);
 });
 
-test('count: 数として読めない出力は不一致として扱う', async () => {
+test('count: output that cannot be read as a number is a mismatch', async () => {
   const v = await verify({ action: 'a', probe: () => 'done', expect: expect.count(1) });
   assert.equal(v.ok, false);
   assert.match(v.detail, /nothing countable/);
 });
 
-// --- 0.4.1: 何を訊いたかを verdict に載せる ---
-// 「空でなければ通る」で通った verdict と count(45) で通った verdict が、出力上
-// 見分けられなかった。考えずに済ませた確認が、考えて書いた確認と同じ顔で並ぶ形。
+// --- 0.4.1: the verdict carries the question that was asked ---
+// A verdict that passed "not empty" and one that passed count(45) were indistinguishable in
+// the output: a check nobody thought about standing beside one written deliberately, wearing
+// the same face.
 
-test('verdict は何を訊いたかを名乗る（成功・失敗の両方で）', async () => {
+test('the verdict names the question it asked, on a pass and on a failure alike', async () => {
   const ok = await verify({ action: 'a', probe: () => '45', expect: expect.count(45) });
   assert.equal(ok.expectation, 'count(45)');
   const ng = await verify({ action: 'a', probe: () => '44', expect: expect.count(45) });
@@ -217,17 +219,17 @@ test('verdict は何を訊いたかを名乗る（成功・失敗の両方で）
   assert.equal(err.expectation, 'count(45)');
 });
 
-test('expect 未指定は「既定である」ことまで名乗る（nonEmpty そのものと区別する）', async () => {
+test('an unspecified expect says that it is the default, distinct from nonEmpty itself', async () => {
   const implicit = await verify({ action: 'a', probe: () => 'anything' });
   assert.equal(implicit.expectation, 'nonEmpty (default)');
   const explicit = await verify({ action: 'a', probe: () => 'anything', expect: expect.nonEmpty() });
   assert.equal(explicit.expectation, 'nonEmpty');
-  // どちらも ok なのは変わらない。変わるのは「何を訊いたか」が見えること。
+  // Both still pass. What changes is that the question asked is now visible.
   assert.equal(implicit.ok, true);
   assert.equal(explicit.ok, true);
 });
 
-test('組み込みの期待はすべて名札を持つ／自前の述語は custom', async () => {
+test('every built-in expectation carries a label; a hand-written predicate is custom', async () => {
   const labels = [
     [expect.atLeast(3), 'atLeast(3)'],
     [expect.contains('200'), 'contains("200")'],
@@ -241,7 +243,7 @@ test('組み込みの期待はすべて名札を持つ／自前の述語は cust
   assert.equal(custom.expectation, 'custom');
 });
 
-test('GroundtruthIncomplete のメッセージにも何を訊いたかが載る', async () => {
+test('the GroundtruthIncomplete message carries the question too', async () => {
   await assert.rejects(
     () => gate({ action: 'insert', probe: () => '44', expect: expect.count(45) }),
     (e) => e.name === 'GroundtruthIncomplete' && /the expectation was: count\(45\)/.test(e.message),

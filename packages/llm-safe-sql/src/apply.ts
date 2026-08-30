@@ -657,7 +657,8 @@ export class Applier {
       warnings.push(`The change was applied, but the audit record of it could not be written: ${String(e)}`);
     }
 
-    // 実際に変わった行数を台帳へ。dry run の `pre` と対にすると、提案と結果が並ぶ。
+    // File the rows that actually changed. Paired with the dry run's `pre`, the proposal and
+    // the result stand side by side.
     await file({
       phase: 'post',
       subject: `${plan.op} ${table}`,
