@@ -93,8 +93,17 @@ function check(pkg) {
       JSON.stringify({ name: 'smoke', private: true, version: '1.0.0', type: 'module' }, null, 2));
 
     // No --workspaces, no link: dependencies come from the registry, which is the point.
-    const install = runNpm(['i', `./${tarball}`, '--no-audit', '--no-fund'], { cwd: sandbox });
+    //
+    // Peers are installed alongside, optional ones included. `@hyuga/llm-safe-sql/mysql` imports
+    // mysql2, which is an optional peer — somebody who wants the MySQL adapter installs it, and
+    // somebody who does not never touches that subpath. Checking every subpath against a bare
+    // install therefore fails on a package that is behaving exactly as documented, which is the
+    // one thing a release gate must not do: a check that cries wolf is a check somebody deletes.
+    // Installing them means the adapters are really loaded rather than skipped.
+    const peers = Object.keys(manifest.peerDependencies ?? {});
+    const install = runNpm(['i', `./${tarball}`, ...peers, '--no-audit', '--no-fund'], { cwd: sandbox });
     if (install.status !== 0) return fail('npm install from the tarball', install.stderr || install.stdout || install.error?.message);
+    if (peers.length) process.stdout.write(`  · peers installed: ${peers.join(', ')}\n`);
 
     // Every subpath the package says it exports has to import. A subpath that resolves in the
     // workspace and not from a registry install is the exact failure this exists for.
