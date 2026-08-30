@@ -51,7 +51,7 @@ That is the whole contract. What a part does **not** write:
 - how severity becomes a stop
 - anything about sessions
 
-The first part built on this, [`redline`](https://github.com/hyuga611/redline), came to 286 lines —
+The first part built on this, [`redline`](https://github.com/hyuga611/airframe/tree/main/packages/redline), came to 286 lines —
 smaller than any tool it sits beside, and it carries the most policy of any of them. A melee case
 written into it turned out to be unreachable: the frame had already handled it.
 

@@ -38,10 +38,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hyuga611/redline.git"
+    "url": "git+https://github.com/hyuga611/airframe.git",
+    "directory": "packages/redline"
   },
-  "homepage": "https://github.com/hyuga611/redline",
+  "homepage": "https://github.com/hyuga611/airframe/tree/main/packages/redline",
   "bugs": {
-    "url": "https://github.com/hyuga611/redline/issues"
+    "url": "https://github.com/hyuga611/airframe/issues"
   }
 }

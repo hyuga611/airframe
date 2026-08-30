@@ -178,3 +178,56 @@ test('an outward PowerShell call is charged like curl is', (t) => {
   );
   assert.equal(charges.some((c) => c.kind === 'outward'), true);
 });
+
+test('quoting a dangerous command is not running one', (t) => {
+  fresh(t, { production: ['X:/01-client/'] });
+  // What cost this limiter its own credibility: a session that only ever searched for the
+  // words reached 20 against a limit of 3, and every charge was a quotation.
+  assert.deepEqual(price(bash('grep "npm publish" README.md')), []);
+  assert.deepEqual(price(bash('rg "rm -rf" packages/')), []);
+  assert.deepEqual(price(bash('cat .github/workflows/release.yml')), []);
+  assert.deepEqual(price(bash('echo "git push --force is what we do not do"')), []);
+  assert.deepEqual(price(bash('grep -r X:/01-client/ notes/')), [],
+    'naming a production path is not reaching one');
+  // And the words still cost what they cost when they are the command.
+  assert.deepEqual(price(bash('npm publish --access public')).map((c) => c.kind), ['outward']);
+});
+
+test('a command is cut into the things it actually runs', (t) => {
+  fresh(t);
+  // The reading half is dropped; the half after it is not.
+  assert.deepEqual(price(bash('grep "npm publish" README.md && npm publish')).map((c) => c.kind),
+    ['outward'], 'the publish after the grep is still a publish');
+  // A separator inside quotes is a character, not a break.
+  assert.deepEqual(price(bash('grep "a; rm -rf /" notes.md')), []);
+  // The charge names the part that earned it, not the whole line.
+  const [charge] = price(bash('cat notes.md | head -20 ; rm -rf build'));
+  assert.equal(charge.on, 'rm -rf build');
+});
+
+test('a command that takes another command is not treated as reading', (t) => {
+  fresh(t);
+  // find, sed, awk and xargs each take an argument that is itself a command, so their
+  // arguments are not merely text.
+  assert.deepEqual(price(bash('find . -name "*.tmp" -exec rm -rf {} +')).map((c) => c.kind),
+    ['irreversible']);
+  assert.deepEqual(price(bash('git ls-files | xargs rm -rf')).map((c) => c.kind), ['irreversible']);
+});
+
+test('what a heredoc writes is a file, not a command', (t) => {
+  fresh(t);
+  const write = [
+    "cat >> test.mjs <<'ZZEOF'",
+    "  assert.deepEqual(price(bash('rm -rf build')).map((c) => c.kind), ['irreversible']);",
+    "  assert.deepEqual(price(bash('npm publish')).map((c) => c.kind), ['outward']);",
+    'ZZEOF',
+  ].join('\n');
+  assert.deepEqual(price(bash(write)), [], 'the body is what is being written down');
+
+  // The command after the heredoc still runs, and is still charged.
+  assert.deepEqual(price(bash(`${write}\nnpm publish`)).map((c) => c.kind), ['outward']);
+
+  // A heredoc nobody closed takes the rest: the body is the part not meant to run, and
+  // guessing where it ends in favour of charging is the wrong way to be wrong.
+  assert.deepEqual(price(bash("cat > x <<'EOF'\nrm -rf /\n")), []);
+});

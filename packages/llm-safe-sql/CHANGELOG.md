@@ -8,7 +8,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
-**フレーム（[spar](https://github.com/hyuga611/spar)）に載るようになった。**
+**フレーム（[spar](https://github.com/hyuga611/airframe/tree/main/packages/spar)）に載るようになった。**
 
 測った結果は呼び出し元に返るだけで、その場で消えていた。承認されなかった提案も、承認して
 適用した変更も、後から辿れるのは呼び出し元が自分で記録していた場合だけだった。

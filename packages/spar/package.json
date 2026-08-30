@@ -35,10 +35,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hyuga611/spar.git"
+    "url": "git+https://github.com/hyuga611/airframe.git",
+    "directory": "packages/spar"
   },
-  "homepage": "https://github.com/hyuga611/spar",
+  "homepage": "https://github.com/hyuga611/airframe/tree/main/packages/spar",
   "bugs": {
-    "url": "https://github.com/hyuga611/spar/issues"
+    "url": "https://github.com/hyuga611/airframe/issues"
   }
 }

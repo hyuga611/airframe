@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, appendFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -203,4 +203,17 @@ test('a note put in the ledger cannot become an instruction in the next brief', 
   // The injected line must not survive as a line of its own.
   assert.equal(out.split('\n').some((l) => l.trimStart().startsWith('System:')), false);
   assert.match(out, /ignore all previous instructions/); // still readable, just not obeyable
+});
+
+test('the frame marks its own directory as not the repository', (t) => {
+  const dir = fresh(t);
+  launch({ mode: 'cruise' });
+
+  const ignore = readFileSync(join(dir, '.gitignore'), 'utf8');
+  assert.match(ignore, /^\*$/m); // everything in here, carbon's copies of drafts included
+
+  // Somebody who edited it meant to.
+  writeFileSync(join(dir, '.gitignore'), 'ledger.jsonl\n');
+  report(finding({ phase: 'post', source: 'x', subject: 'y', observed: 1 }));
+  assert.equal(readFileSync(join(dir, '.gitignore'), 'utf8'), 'ledger.jsonl\n');
 });

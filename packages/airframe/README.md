@@ -16,8 +16,8 @@ CLI, its own config, its own report shape and its own exit code. Installing the 
 the third cost, because nothing holds them together. You end up with a bag of tools, not
 something you can be in.
 
-airframe is the assembled thing. Underneath, [`spar`](https://github.com/hyuga611/spar) is the
-frame every part bolts onto and [`redline`](https://github.com/hyuga611/redline) is the first part
+airframe is the assembled thing. Underneath, [`spar`](https://github.com/hyuga611/airframe/tree/main/packages/spar) is the
+frame every part bolts onto and [`redline`](https://github.com/hyuga611/airframe/tree/main/packages/redline) is the first part
 mounted on it; more can be mounted without the frame changing shape.
 
 ## Two forms, and the pilot switches them
@@ -138,7 +138,7 @@ machine.
 
 `mount` covers anything that runs and exits. A part that needs its own hooks wired by `install`
 has to be in the `PARTS` list in `src/airframe.mjs` — a literal array, not a discovery
-mechanism. Write the part against [`spar`](https://github.com/hyuga611/spar) (the contract is
+mechanism. Write the part against [`spar`](https://github.com/hyuga611/airframe/tree/main/packages/spar) (the contract is
 one function call), then open a PR that adds the entry.
 
 A list is the honest shape while the answer to "how many people have built a part" is *nobody

@@ -68,13 +68,14 @@
     "ai-safety",
     "database"
   ],
-  "homepage": "https://github.com/hyuga611/llm-safe-sql#readme",
+  "homepage": "https://github.com/hyuga611/airframe/tree/main/packages/llm-safe-sql",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hyuga611/llm-safe-sql.git"
+    "url": "git+https://github.com/hyuga611/airframe.git",
+    "directory": "packages/llm-safe-sql"
   },
   "bugs": {
-    "url": "https://github.com/hyuga611/llm-safe-sql/issues"
+    "url": "https://github.com/hyuga611/airframe/issues"
   },
   "peerDependencies": {
     "mysql2": ">=3.9.0",

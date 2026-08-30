@@ -1,0 +1,182 @@
+name: Release
+
+# Publishing by hand works until the day it does not: the tag says one version,
+# package.json says another, and the tarball that reached everyone was built from
+# a working tree nobody can reconstruct. This runs the tests first, refuses to
+# publish anything whose version numbers disagree, and attaches provenance so that
+# "this package came from this commit" is a checkable statement rather than
+# something the reader has to take on trust.
+#
+# Seven packages share one repository, so a tag has to say *which* one it releases.
+# A bare v0.1.0 cannot: spar 0.1.0 and habit 0.4.1 would both match it, and the
+# version check would fail against whichever package.json the workflow happened to
+# read. Tags are <package>-v<version>:
+#
+#   spar-v0.1.0        habit-v0.4.1        llm-safe-sql-v0.10.0
+#
+# Publishing uses npm trusted publishing: no token is stored anywhere. It needs a
+# one-time setup on npmjs.com, per package, under Settings -> Trusted publisher,
+# naming this repository and this workflow file. A name that has never been
+# published has nothing to attach that setting to, so its first version goes up by
+# hand once; every version after that comes from here.
+on:
+  push:
+    tags: ["*-v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      package:
+        description: 'Which package to check (e.g. spar)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Run the checks, but do not publish'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      package: ${{ steps.target.outputs.package }}
+      version: ${{ steps.target.outputs.version }}
+    services:
+      # Only llm-safe-sql uses these. They cost half a minute on a release that
+      # does not, and the alternative is a second job that exists to hold two
+      # service definitions.
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: llmsafesql
+          MYSQL_DATABASE: llmsafesql
+        ports: ['13306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pllmsafesql"
+          --health-interval=3s --health-timeout=5s --health-retries=30
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: llmsafesql
+          POSTGRES_DB: llmsafesql
+        ports: ['15432:5432']
+        options: >-
+          --health-cmd="pg_isready -U postgres -d llmsafesql"
+          --health-interval=3s --health-timeout=5s --health-retries=30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.x'
+
+      - name: Which package is this tag for
+        id: target
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            NAME="${{ inputs.package }}"
+            VERSION=""
+          else
+            TAG="$GITHUB_REF_NAME"
+            NAME="${TAG%-v*}"
+            VERSION="${TAG##*-v}"
+          fi
+          test -f "packages/$NAME/package.json" || {
+            echo "::error::no such package: packages/$NAME"; exit 1; }
+          echo "package=$NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "releasing $NAME ${VERSION:-(dispatch, no version)}"
+
+      - run: npm install --no-audit --no-fund
+
+      - name: The tag and package.json must agree
+        if: steps.target.outputs.version != ''
+        env:
+          NAME: ${{ steps.target.outputs.package }}
+          VERSION: ${{ steps.target.outputs.version }}
+        run: |
+          PKG=$(node -p "require('./packages/$NAME/package.json').version")
+          echo "tag=$VERSION package.json=$PKG"
+          test "$VERSION" = "$PKG" || {
+            echo "::error::tag says $VERSION, packages/$NAME/package.json says $PKG"; exit 1; }
+
+      # Two packages carry their version somewhere a stale value is a lie rather
+      # than a typo, and both have shipped one before. llm-safe-sql's MCP server
+      # reports src/version.ts to its client; groundtruth's CLI answers --version,
+      # and a broken read there produces 'unknown' rather than an error.
+      - name: The version the code reports must agree too
+        if: steps.target.outputs.version != ''
+        env:
+          NAME: ${{ steps.target.outputs.package }}
+          VERSION: ${{ steps.target.outputs.version }}
+        run: |
+          case "$NAME" in
+            llm-safe-sql)
+              SRC=$(node -p "require('fs').readFileSync('packages/llm-safe-sql/src/version.ts','utf8').match(/'([^']+)'/)[1]")
+              echo "src/version.ts=$SRC"
+              test "$VERSION" = "$SRC" || {
+                echo "::error::tag says $VERSION, src/version.ts says $SRC"; exit 1; } ;;
+            groundtruth)
+              CLI=$(node packages/groundtruth/src/cli.mjs --version)
+              echo "cli --version=$CLI"
+              test "$VERSION" = "$CLI" || {
+                echo "::error::tag says $VERSION, the CLI reports $CLI"; exit 1; } ;;
+          esac
+
+      - name: Typecheck
+        if: steps.target.outputs.package == 'llm-safe-sql'
+        run: npm run typecheck --workspace=packages/llm-safe-sql
+
+      - run: npm test --workspace=packages/${{ steps.target.outputs.package }}
+
+      - name: Against a real database
+        if: steps.target.outputs.package == 'llm-safe-sql'
+        run: npm run test:integration --workspace=packages/llm-safe-sql
+
+      # The published tarball is a security surface of its own: a config file, a
+      # dump or an env file would be republished to everyone who installs.
+      - name: The tarball must not contain a config, a dump or an env file
+        run: |
+          npm pack --dry-run --json --workspace=packages/${{ steps.target.outputs.package }} > /tmp/pack.json
+          if grep -Eq '"path": *"(.*[.]config[.]json|.*[.]sql|.*[.]env)"' /tmp/pack.json; then
+            echo "::error::a configuration file, SQL dump or env file is in the package"
+            exit 1
+          fi
+
+  publish:
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/') && !inputs.dry_run
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # to create the GitHub release
+      id-token: write   # to sign the provenance attestation
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.x'
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm install --no-audit --no-fund
+
+      # Provenance and trusted publishing both need a recent npm; the version
+      # bundled with the runner's Node is not always new enough.
+      - run: npm install -g npm@latest
+
+      # No NODE_AUTH_TOKEN on purpose. A long-lived npm token in a repository
+      # secret can publish as you from anywhere, forever, and it only has to leak
+      # once. With a trusted publisher configured, npm verifies this workflow's
+      # short-lived OIDC identity instead and there is nothing to leak.
+      - name: Publish with provenance
+        run: npm publish --workspace=packages/${{ needs.verify.outputs.package }} --provenance --access public
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: ${{ needs.verify.outputs.package }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "See [packages/$NAME/CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/packages/$NAME/CHANGELOG.md) for what changed.
+
+          Published with [provenance](https://docs.npmjs.com/generating-provenance-statements): the npm package is attested to have been built from this commit by this workflow." \
+            --verify-tag

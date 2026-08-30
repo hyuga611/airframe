@@ -49,6 +49,12 @@ pricing it as one of those would be the cheaper reading of the two.
 **Reading production is free.** Charging for it would make the careful thing cost the same as the
 dangerous one, which teaches skipping the read.
 
+**Quoting is not doing.** A command is cut into the things it actually runs before the tariff is
+applied: `grep "npm publish" README.md` costs nothing, `grep "npm publish" README.md && npm
+publish` costs 3, and what a heredoc writes into a file is not read as commands at all. This
+limiter learned that on itself — a session that only ever *searched* for the words reached 20
+against a limit of 3, and a number that is mostly noise gets read as noise.
+
 The numbers are meant to be argued with — spend a week disagreeing with them and change them. The
 structure is what is being claimed, not the weights.
 
@@ -92,7 +98,7 @@ redline score      # what this sortie has spent so far
 ## Where the number lives
 
 Nowhere in this package. redline has no store: it sums its own findings back out of the
-[`spar`](https://github.com/hyuga611/spar) ledger, which is also what resets it when a new
+[`spar`](https://github.com/hyuga611/airframe/tree/main/packages/spar) ledger, which is also what resets it when a new
 sortie launches, keeps it quiet while you are drafting, and holds it silent inside a committed
 deploy.
 
@@ -123,9 +129,14 @@ aircraft together.
 ## What this does not buy
 
 **It does not know what is dangerous.** It knows what you told it to charge for, plus a list of
-command shapes. A destructive thing spelled in a way the tariff does not match is free — and it
-over-charges too: a command that merely *mentions* `rm -rf` in a string is charged like one that
-runs it. Erring toward charging is deliberate. The other direction fails quietly.
+command shapes. A destructive thing spelled in a way the tariff does not match is free.
+
+**It still over-charges, in one place on purpose.** A verb that prints — `grep`, `cat`, `echo` —
+has its arguments treated as text, and so does a heredoc body. A verb that takes another command
+does not: `node -e "…rm -rf…"`, `sed`, `awk`, `xargs` and `find -exec` are charged on what they
+contain, because nothing here can tell whether that string is about to run or about to be
+printed. Erring toward charging is deliberate where the answer is genuinely unknown. Erring
+toward it where the answer was obvious is what cost this limiter 20 points for reading a README.
 
 **Advice is advice.** With you in the seat, the message is text the model can reason its way past,
 and sometimes it will. Only the unattended case is enforced.

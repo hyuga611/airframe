@@ -70,9 +70,11 @@ the third paragraph is copied like any other draft.
 
 ```bash
 npm install     # one command: npm workspaces links every part to every other
-npm test        # all seven, 467 tests
+npm test        # all seven, 472 tests
 ```
 
 Node 18+. No daemon, no network, no LLM, and no dependency outside this repository.
+
+Releases are a tag per package (`spar-v0.1.0`) — see [RELEASING.md](RELEASING.md).
 
 MIT.

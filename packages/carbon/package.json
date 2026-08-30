@@ -38,10 +38,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hyuga611/carbon.git"
+    "url": "git+https://github.com/hyuga611/airframe.git",
+    "directory": "packages/carbon"
   },
-  "homepage": "https://github.com/hyuga611/carbon",
+  "homepage": "https://github.com/hyuga611/airframe/tree/main/packages/carbon",
   "bugs": {
-    "url": "https://github.com/hyuga611/carbon/issues"
+    "url": "https://github.com/hyuga611/airframe/issues"
   }
 }

@@ -108,6 +108,81 @@ const norm = (p) => String(p || '').replace(/\\/g, '/').toLowerCase();
 
 const WRITES = /^(Write|Edit|MultiEdit|NotebookEdit)$/;
 
+/**
+ * One command, cut into the things it actually runs.
+ *
+ * The tariff matches a regular expression against the command, and a command is not one action:
+ * `grep "npm publish" README.md && npm publish` contains the words twice and performs the
+ * publish once. Charging the whole string charges both, and there is no way to tell which of
+ * them was real.
+ *
+ * Quotes are respected, because a separator inside them is a character rather than a break —
+ * `grep "a; rm -rf /" notes.md` is one command that reads a file. Escapes are not; a limiter is
+ * not a shell, and the case it would buy is rarer than the complexity it would cost.
+ */
+/**
+ * A heredoc body is the file being written, not a list of commands to run.
+ *
+ * `cat > test.mjs <<'EOF'` followed by a test that asserts `rm -rf build` is charged — which is
+ * how this limiter charged 6 points for the commit that taught it not to. Every line of the
+ * body reads as a command because every line ends in a newline, and a newline is a separator.
+ * What the shell does with those lines is write them to a file.
+ *
+ * An unterminated heredoc takes the rest of the string: the body is the part that was not
+ * meant to run, and guessing where it ends in favour of charging is the wrong way to be wrong.
+ */
+export function stripHeredocs(s) {
+  return s.replace(
+    /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1\r?\n[\s\S]*?(?:\r?\n[ \t]*\2[ \t]*(?=\r?\n|$)|$)/g,
+    '<<',
+  );
+}
+
+export function segments(command) {
+  const s = stripHeredocs(String(command || ''));
+  const out = [];
+  let cur = '';
+  let quote = null;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (quote) {
+      if (c === quote) quote = null;
+      cur += c;
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; cur += c; continue; }
+    if (c === ';' || c === '\n' || c === '&' || c === '|') {
+      out.push(cur);
+      cur = '';
+      if ((c === '&' || c === '|') && s[i + 1] === c) i += 1; // && and || are one separator
+      continue;
+    }
+    cur += c;
+  }
+  out.push(cur);
+  return out.map((x) => x.trim()).filter(Boolean);
+}
+
+/**
+ * Commands whose arguments are text, not actions.
+ *
+ * This limiter cost itself its own credibility before it cost anybody else anything: a session
+ * that only ever *searched* for the string `npm publish` — grepping a README, reading a
+ * workflow file — reached 20 against a limit of 3, and every one of those charges was a
+ * quotation. A number that is mostly noise gets read as noise, and then the one call that
+ * should have stopped somebody reads like the twenty that should not have.
+ *
+ * These are matched on the verb only, and only ones that print. `find`, `sed`, `awk` and
+ * `xargs` are absent on purpose: each of them takes an argument that is itself a command, so
+ * their arguments are not merely text.
+ */
+const READS = /^(grep|egrep|fgrep|rg|ag|ack|cat|head|tail|less|more|echo|printf|ls|dir|wc|Select-String|Get-Content|Get-ChildItem|Write-Host|Write-Output)\b/i;
+
+/** What this command actually does, with the parts that only read something dropped. */
+export function acts(command) {
+  return segments(command).filter((seg) => !READS.test(seg));
+}
+
 const inProduction = (text, cfg) => !!text && cfg.production.some((pat) => norm(text).includes(norm(pat)));
 
 /**
@@ -116,10 +191,11 @@ const inProduction = (text, cfg) => !!text && cfg.production.some((pat) => norm(
  * Reading production is how you find out what is there, and charging for it would make the
  * careful thing cost the same as the dangerous one — which teaches skipping the read.
  */
-function isProduction(tool, path, command, cfg) {
+function isProduction(tool, path, doing, cfg) {
   if (WRITES.test(tool)) return inProduction(path, cfg);
-  if (command) return inProduction(command, cfg);
-  return false;
+  // `doing` is already the command minus its read-only parts, so `grep X:/site/ -r` names a
+  // production path without touching one and is not charged for it.
+  return doing.some((seg) => inProduction(seg, cfg));
 }
 
 /** The files the human named in their own words. Everything else is the agent's own idea. */
@@ -147,19 +223,23 @@ export function price(payload, cwd = process.cwd(), cfg = config(cwd)) {
   const input = payload.tool_input || payload.toolInput || {};
   const command = String(input.command || '');
   const path = input.file_path || input.path || input.notebook_path || '';
+  // What the command does, rather than what it says. A charge names the part that earned it, so
+  // the pilot is told which half of a compound command was the expensive one.
+  const doing = acts(command);
   const charges = [];
 
   for (const rule of TARIFF) {
-    if (rule.bash && command && rule.bash.some((re) => re.test(command))) {
-      charges.push({ kind: rule.kind, points: rule.points, why: rule.why, on: command.slice(0, 120) });
+    const hit = rule.bash && doing.find((seg) => rule.bash.some((re) => re.test(seg)));
+    if (hit) {
+      charges.push({ kind: rule.kind, points: rule.points, why: rule.why, on: hit.slice(0, 120) });
       continue;
     }
     if (rule.file && path && rule.file.some((re) => re.test(path))) {
       charges.push({ kind: rule.kind, points: rule.points, why: rule.why, on: path });
       continue;
     }
-    if (rule.path && isProduction(tool, path, command, cfg)) {
-      charges.push({ kind: rule.kind, points: rule.points, why: rule.why, on: path || command.slice(0, 120) });
+    if (rule.path && isProduction(tool, path, doing, cfg)) {
+      charges.push({ kind: rule.kind, points: rule.points, why: rule.why, on: path || doing.join(' ').slice(0, 120) });
       continue;
     }
     if (rule.scope && path && WRITES.test(tool)) {

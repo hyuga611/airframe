@@ -1,0 +1,106 @@
+name: ci
+
+# One repository, seven packages, one place GitHub actually looks.
+#
+# Until this file existed the workflows lived under packages/*/.github/, which is
+# where they sat when each part was its own repository. GitHub only reads
+# .github/workflows/ at the root, so after the merge not one of them ran — three
+# CI files, three release files, zero runs, and nothing said so.
+
+on: [push, pull_request]
+
+jobs:
+  frame:
+    # The parts that are plain ESM and declare engines >=18. orogami declared the
+    # same floor, was broken on 18, on 20.18 and on 22.0-22.6, and its single Node
+    # 20 job stayed green throughout: the break was not monotonic, so one version
+    # cannot stand in for the others.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18.x', '20.x', '22.x', '24.x']
+        package: [spar, redline, carbon, airframe, groundtruth, habit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # npm install, not npm ci: the lockfile is deliberately not committed
+      # (.gitignore says so), and a release that fails on the packaging step
+      # rather than on the code is a waste of everyone's afternoon.
+      - run: npm install --no-audit --no-fund
+      - run: npm test --workspace=packages/${{ matrix.package }}
+
+  sql:
+    # llm-safe-sql is the one part that is TypeScript, needs Node 20+, and has
+    # tests that only mean anything against a real database.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.x', '24.x']
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: llmsafesql
+          MYSQL_DATABASE: llmsafesql
+        ports: ['13306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pllmsafesql"
+          --health-interval=3s --health-timeout=5s --health-retries=30
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: llmsafesql
+          POSTGRES_DB: llmsafesql
+        ports: ['15432:5432']
+        options: >-
+          --health-cmd="pg_isready -U postgres -d llmsafesql"
+          --health-interval=3s --health-timeout=5s --health-retries=30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm install --no-audit --no-fund
+      - run: npm run typecheck --workspace=packages/llm-safe-sql
+      - run: npm test --workspace=packages/llm-safe-sql
+      - run: npm run test:integration --workspace=packages/llm-safe-sql
+
+  dogfood:
+    # groundtruth verifies its own claim by RE-FETCHING reality: re-import the
+    # module and count its exports. The tool must survive being pointed at itself.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --no-audit --no-fund
+      # Run in place rather than through `npm run --workspace`: the probe is a
+      # nested-quoted `node -e`, and putting another shell between it and the
+      # runner is how that stops meaning what it says.
+      - working-directory: packages/groundtruth
+        run: node src/cli.mjs verify --probe "node -e \"import('./src/index.mjs').then(m=>process.stdout.write(String(Object.keys(m).length)))\"" --at-least 4
+      # habit's own agent config is checked by the linter it ships alongside. The
+      # package is scoped; `tenken` is only the bin name, so bare `npx tenken`
+      # looks up a package that does not exist and 404s.
+      - run: npx @hyuga/tenken packages/habit/AGENTS.md
+
+  lint:
+    # Correctness rules only, no formatter. Each package's biome.jsonc records
+    # which rules are off and why.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [groundtruth, habit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npm run lint --workspace=packages/${{ matrix.package }}

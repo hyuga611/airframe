@@ -188,6 +188,16 @@ Expectations: `--nonempty` (default) / `--count N` / `--at-least N` / `--contain
 
 See [`adapters/claude-code/`](adapters/claude-code/) for details.
 
+> **What this hook actually runs.** Every `probe` in `pending.jsonl` is executed as a shell
+> command when the turn ends. The file is the one the agent appends to — that is how the
+> contract gets declared — so a probe is a command the agent wrote, run at Stop, *without*
+> passing the permission prompt a `Bash` call would have gone through. That is the price of
+> checking a claim against the real world from outside the claim, and it is worth knowing you
+> are paying it: on a machine where the agent is not allowed to run commands freely, this hook
+> is a way around that, not an exception to it. Keep `pending.jsonl` in the repository where you
+> can read it, and if that trade is not one you want, call `verify()` from your own code instead
+> — there the probe is a function you wrote.
+
 ## The completion contract (works as prompt text alone)
 
 Before installing anything, dropping this paragraph into your agent's rules (`CLAUDE.md` / `AGENTS.md` / system prompt) visibly reduces false completion reports:

@@ -42,7 +42,10 @@ because carbon does not open a file to decide whether to keep it.
 That is a choice and not an oversight — a paragraph about a password is not a password, and a
 part that reads every draft to judge it is a part that reads every draft. What it costs you is
 real: **if you paste secrets into prose, carbon keeps them**, in `.spar/carbon/`, in plain text.
-Put `.spar/` in your `.gitignore` — the installer does not do it for you.
+
+They stay out of git: the frame writes `.spar/.gitignore` when it first creates the directory,
+so `git add -A` does not sweep the copies into your history. Nothing keeps them off your disk —
+`carbon list` shows what is there, and deleting a copy is deleting a file.
 
 ## It never says anything
 
@@ -82,7 +85,7 @@ your eyes on both versions.
 **It only sees writes that go through a hook.** A shell command that rewrites the file —
 `sed -i`, a formatter, a codemod — is not a `Write`, and nothing is kept.
 
-Node 18+. One dependency, [the frame](https://github.com/hyuga611/spar). No daemon, no
+Node 18+. One dependency, [the frame](https://github.com/hyuga611/airframe/tree/main/packages/spar). No daemon, no
 network, no LLM.
 
 MIT.

@@ -55,8 +55,28 @@ const nowIso = () => new Date().toISOString();
  */
 const sortieId = () => `${nowIso().replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}`;
 
+/**
+ * Make the frame's own directory, and say that it is not the repository's.
+ *
+ * `.spar/` is created inside somebody else's repository and fills with things that repository
+ * never asked for: the ledger, and — in cruise — carbon's copies of untracked drafts. Those
+ * copies are the whole point of carbon, and they are also the files most likely to be a draft
+ * with something private in it, kept precisely because git was not keeping them. One `git add
+ * -A` and they are in the history for good.
+ *
+ * carbon's README asks the reader to add the line themselves. That is the wrong place for it: a
+ * directory this code creates on its own should arrive already marked, and the person who never
+ * read that README is exactly the one it has to protect.
+ */
 function ensure(dir) {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const ignore = join(dir, '.gitignore');
+  // Only when absent: somebody who edited it meant to.
+  if (!existsSync(ignore)) {
+    try {
+      writeFileSync(ignore, '# Written by spar. Nothing in here belongs in the repository.\n*\n');
+    } catch { /* not being able to write the marker must not cost the record itself */ }
+  }
 }
 
 // ---------------- sortie ----------------
