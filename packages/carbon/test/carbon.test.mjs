@@ -154,3 +154,18 @@ test('the names the audit found missing are refused', () => {
     assert.equal(isSensitive(name), true, `${name} should never be kept`);
   }
 });
+
+test('a copy is bytes, so what comes back out is what went in', (t) => {
+  const dir = fresh(t);
+  // A png header: valid bytes, invalid UTF-8. Decoding this and writing the result back
+  // replaced every byte it could not read with U+FFFD, and the copy no longer restored
+  // anything — the worst thing a part like this can do, because `carbon list` still shows it.
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xd8, 0xfe]);
+  const file = join(dir, 'diagram.png');
+  writeFileSync(file, png);
+  launch({ mode: 'cruise' });
+
+  const kept = keep(write(file), dir);
+  assert.ok(kept, 'an untracked file in cruise is kept');
+  assert.deepEqual(readFileSync(kept), png, 'byte for byte');
+});

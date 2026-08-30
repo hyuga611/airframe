@@ -207,8 +207,18 @@ export function namedInPrompt(text) {
   return [...out];
 }
 
+/**
+ * What the human named, this sortie.
+ *
+ * Filtered by sortie, because the ledger outlives the session. Without it the first writes of a
+ * new sortie — before anybody has typed anything — are judged against yesterday's prompt, and a
+ * file nobody has mentioned today gets charged for not being in a list from a conversation that
+ * is over. The score is meant to be a reading of this flight.
+ */
 function scope(cwd) {
-  const named = ledger(cwd).filter((f) => f.source === 'redline' && f.phase === 'brief');
+  const s = sortie(cwd);
+  const named = ledger(cwd)
+    .filter((f) => f.source === 'redline' && f.phase === 'brief' && f.sortie === s.id);
   return named.length ? named[named.length - 1].observed : null;
 }
 

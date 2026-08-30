@@ -231,3 +231,17 @@ test('what a heredoc writes is a file, not a command', (t) => {
   // guessing where it ends in favour of charging is the wrong way to be wrong.
   assert.deepEqual(price(bash("cat > x <<'EOF'\nrm -rf /\n")), []);
 });
+
+test('the scope is this sortie\'s, not the one before it', (t) => {
+  fresh(t);
+  launch({ mode: 'strike' });
+  // what the prompt hook files when the human names a file in their own words
+  report(finding({ phase: 'brief', source: 'redline', subject: 'scope', observed: ['a.md'], actor: 'human' }));
+  assert.deepEqual(price(write('b.md')).map((c) => c.kind), ['unnamed'],
+    'inside the sortie that named a.md, b.md is the agent\'s own idea');
+
+  // A new sortie, and nobody has typed anything yet. Judging the first writes against
+  // yesterday's prompt charges for a list from a conversation that is over.
+  launch({ mode: 'strike' });
+  assert.deepEqual(price(write('b.md')), []);
+});

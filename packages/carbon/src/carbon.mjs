@@ -130,7 +130,11 @@ export function keep(payload, cwd = process.cwd()) {
   const id = `${stamp()}-${createHash('sha256').update(resolve(path)).digest('hex').slice(0, 8)}`;
   const kept = join(dir, `${id}${extname(name) || '.txt'}`);
 
-  const body = size <= MAX_BYTES ? readFileSync(path, 'utf8') : null;
+  // Bytes, not text. Decoding as UTF-8 and writing the result back is lossless only for files
+  // that were UTF-8 to begin with: a png, a pdf or a sqlite file dragged into the store came
+  // back out with every invalid byte replaced by U+FFFD. That is the worst thing a part like
+  // this can do — the copy is there, `carbon list` shows it, and it does not restore.
+  const body = size <= MAX_BYTES ? readFileSync(path) : null;
   if (body === null) {
     writeFileSync(kept, `carbon: ${name} was ${size} bytes, too large to keep. Only this note is.\n`);
   } else {
@@ -186,7 +190,7 @@ export function main(argv) {
   if (cmd === 'show') {
     const hit = list().find((k) => k.id.startsWith(sub || ''));
     if (!hit) { console.error('carbon: no such copy'); return 1; }
-    process.stdout.write(readFileSync(hit.path, 'utf8'));
+    process.stdout.write(readFileSync(hit.path)); // bytes, so `carbon show x > x.png` restores
     return 0;
   }
 

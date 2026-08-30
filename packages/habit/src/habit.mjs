@@ -833,11 +833,36 @@ export function loadRules() {
  * does not reach it on its own, so hand it over here. Say nothing when there is nothing
  * worth saying — an empty warning is just wasted context.
  */
+/**
+ * One rule, one line.
+ *
+ * A rule is text a model distilled out of a pile of edits, saved into a file, and handed back
+ * at the start of every session from then on. `habit validate --save` is run by a person and
+ * drops rules whose cited evidence is not real, which is the check that matters — but the text
+ * itself was never anybody's sentence, and it arrives in the next session's context as part of
+ * its briefing. A rule that carried its own blank line and heading would arrive looking like a
+ * section of the briefing rather than a line inside one.
+ *
+ * So: flattened and capped. Not quoted, unlike the frame's ledger — these lines are meant to be
+ * followed, which is the whole point of the part, and quoting something you are asking an agent
+ * to act on only makes it harder to read. What is taken away is the ability to be more than one
+ * line, which is what the trick needs.
+ */
+export const MAX_RULE = 300;
+
+const oneLine = (s) => {
+  const flat = String(s ?? '').replace(/\s+/g, ' ').trim();
+  return flat.length > MAX_RULE ? `${flat.slice(0, MAX_RULE)}…` : flat;
+};
+
 /** The learned rules, as lines to hand to an agent. Empty when there are none. */
 function ruleLines(rules) {
   if (!rules.length) return [];
   const out = ['habit — how this user works, learned from their own corrections:'];
-  for (const r of rules.slice(0, 12)) out.push(`- ${r.rule}${r.scope && r.scope !== '*' ? `  (${r.scope})` : ''}`);
+  for (const r of rules.slice(0, 12)) {
+    const scope = r.scope && r.scope !== '*' ? `  (${oneLine(r.scope)})` : '';
+    out.push(`- ${oneLine(r.rule)}${scope}`);
+  }
   return out;
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "@hyuga/carbon",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Keeps the draft your agent is about to write over. Only while you are diverging, only for files git does not already have, never for anything that looks like a credential — and it never says a word, because interrupting a draft is the failure it exists to prevent.",
   "type": "module",
   "main": "src/carbon.mjs",
