@@ -1,0 +1,48 @@
+{
+  "name": "@hyuga/airframe",
+  "version": "0.1.0",
+  "description": "The machine: a frame plus whichever agent-watching parts are installed, wired into Claude Code with one command. A sortie converges or diverges on the pilot's call, one ledger records both, and a limiter stops the machine only when nobody is in the seat.",
+  "type": "module",
+  "main": "src/airframe.mjs",
+  "exports": {
+    ".": "./src/airframe.mjs"
+  },
+  "bin": {
+    "airframe": "src/airframe.mjs"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "claude-code",
+    "hooks",
+    "ai",
+    "agent",
+    "coding-agent",
+    "guardrails",
+    "developer-tools"
+  ],
+  "dependencies": {
+    "@hyuga/spar": "^0.1.0",
+    "@hyuga/redline": "^0.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "author": "hyuga611",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyuga611/airframe.git"
+  },
+  "homepage": "https://github.com/hyuga611/airframe",
+  "bugs": {
+    "url": "https://github.com/hyuga611/airframe/issues"
+  }
+}

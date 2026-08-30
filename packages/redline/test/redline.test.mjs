@@ -1,0 +1,180 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { launch, enterMelee, finding, report, ledger } from '@hyuga/spar';
+import { price, score, check, namedInPrompt, THRESHOLDS } from '../src/redline.mjs';
+
+function fresh(t, { production = [] } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'redline-'));
+  const prevHome = process.env.SPAR_HOME;
+  const prevProd = process.env.REDLINE_PRODUCTION;
+  process.env.SPAR_HOME = dir;
+  process.env.REDLINE_PRODUCTION = production.join(';');
+  t.after(() => {
+    if (prevHome === undefined) delete process.env.SPAR_HOME; else process.env.SPAR_HOME = prevHome;
+    if (prevProd === undefined) delete process.env.REDLINE_PRODUCTION; else process.env.REDLINE_PRODUCTION = prevProd;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  return dir;
+}
+
+const bash = (command) => ({ tool_name: 'Bash', tool_input: { command } });
+const write = (file_path) => ({ tool_name: 'Write', tool_input: { file_path } });
+
+test('the tariff prices what it says it prices', (t) => {
+  fresh(t, { production: ['X:/01-client/'] });
+  assert.deepEqual(price(bash('rm -rf build')).map((c) => c.kind), ['irreversible']);
+  assert.deepEqual(price(bash('npm publish --access public')).map((c) => c.kind), ['outward']);
+  assert.deepEqual(price(bash('npm install left-pad')).map((c) => c.kind), ['dependency']);
+  assert.deepEqual(price(write('X:/01-client/acme/index.html')).map((c) => c.kind), ['production']);
+  assert.deepEqual(price(bash('ls -la')), []);
+  assert.deepEqual(price(bash('git status')), []);
+});
+
+test('one call can be charged twice, and is', (t) => {
+  fresh(t);
+  const kinds = price(bash('git push --force origin main')).map((c) => c.kind);
+  assert.deepEqual(kinds, ['irreversible', 'outward'], 'a force push is both, and pricing it as one would be the cheaper reading');
+});
+
+test('reading production is not writing to it', (t) => {
+  fresh(t, { production: ['/var/www/'] });
+  assert.deepEqual(price({ tool_name: 'Read', tool_input: { file_path: '/var/www/site/index.html' } }), []);
+  assert.deepEqual(price(write('/var/www/site/index.html')).map((c) => c.kind), ['production']);
+  assert.deepEqual(price(bash('cp local.html /var/www/site/index.html')).map((c) => c.kind), ['production'],
+    'the shell reaches production too');
+});
+
+test('the score only goes up, and it is the sortie that is counted', (t) => {
+  fresh(t, { production: ['/var/www/'] });
+  launch({ mode: 'strike' });
+  assert.equal(score(), 0);
+  check(write('/var/www/a.html'));
+  assert.equal(score(), 2);
+  check(write('/var/www/b.html'));
+  assert.equal(score(), 4, 'two defensible writes are still four');
+  launch({ mode: 'strike' });
+  assert.equal(score(), 0, 'a new sortie starts empty');
+});
+
+test('under the edge it says nothing', (t) => {
+  fresh(t);
+  launch({ mode: 'strike' });
+  assert.equal(check(bash('npm install left-pad')), null, '1 point is recorded, not announced');
+  assert.equal(ledger().length, 1, 'recorded all the same');
+});
+
+test('halfway there, it advises', (t) => {
+  fresh(t, { production: ['/var/www/'] });
+  launch({ mode: 'strike' });
+  const out = check(write('/var/www/a.html'));
+  assert.equal(out.verdict, 'advise');
+  assert.match(out.message, /redline: 2/);
+  assert.match(out.message, /Halfway/);
+});
+
+test('past the edge with a pilot aboard, it is the pilot\'s call', (t) => {
+  fresh(t);
+  launch({ mode: 'strike' });
+  const out = check(bash('npm publish'));
+  assert.equal(out.verdict, 'advise', 'a pilot is told, never overruled');
+  assert.match(out.message, /your call/);
+});
+
+test('past the edge with nobody in the seat, it stops', (t) => {
+  fresh(t);
+  launch({ mode: 'strike', autonomy: true, reason: 'wired into a nightly loop on purpose' });
+  const out = check(bash('npm publish'));
+  assert.equal(out.verdict, 'halt', 'denied, not narrated');
+  assert.match(out.message, /Stopping here/);
+});
+
+test('in melee it does not stop the swing — it refuses the next one', (t) => {
+  fresh(t, { production: ['/var/www/'] });
+  launch({ mode: 'strike', autonomy: true, reason: 'scheduled deploy' });
+  enterMelee({ action: 'deploy to /var/www', exit: 'backup at 09:00 restored', state: 'sha 4f2a' });
+  const msg = check(bash('rm -rf /var/www/old'));
+  assert.equal(msg, null, 'the frame defers findings mid-swing; nothing interrupts');
+  const held = ledger().filter((f) => f.source === 'redline');
+  assert.equal(held.length, 1, 'still written down, to be judged on the way out');
+});
+
+test('cruise is not policed', (t) => {
+  fresh(t);
+  launch({ mode: 'cruise' });
+  assert.equal(check(bash('npm publish')), null, 'a draft is not a deployment');
+});
+
+test('an unnamed file is only charged when the scope is actually known', (t) => {
+  fresh(t);
+  launch({ mode: 'strike' });
+  assert.deepEqual(price(write('src/whatever.mjs')), [], 'no prompt hook installed — never guess the scope');
+
+  report(finding({ phase: 'brief', source: 'redline', subject: 'scope', observed: ['readme.md'], actor: 'human' }));
+  assert.deepEqual(price(write('src/whatever.mjs')).map((c) => c.kind), ['unnamed']);
+  assert.deepEqual(price(write('docs/README.md')), [], 'the file the human named is free');
+});
+
+test('the files a human named are pulled out of their own words', () => {
+  assert.deepEqual(namedInPrompt('fix the bug in src/app.mjs and update README.md').sort(), ['app.mjs', 'readme.md']);
+  assert.deepEqual(namedInPrompt('make it faster'), []);
+});
+
+test('the limit is where the tariff says it is', () => {
+  assert.equal(THRESHOLDS.stop, 3);
+});
+
+test('a committed-looking call is told where melee is', (t) => {
+  fresh(t, { production: ['/var/www/'] });
+  launch({ mode: 'strike' });
+  const out = check(write('/var/www/index.html'));
+  assert.match(out.message, /close to melee first/);
+  assert.match(out.message, /exit route/);
+});
+
+test('a harmless call is not', (t) => {
+  fresh(t);
+  launch({ mode: 'strike' });
+  check(bash('npm install a'));
+  const out = check(bash('npm install b'));
+  assert.doesNotMatch(out.message, /melee/);
+});
+
+test('already committed, it does not say it twice', (t) => {
+  fresh(t, { production: ['/var/www/'] });
+  launch({ mode: 'strike' });
+  enterMelee({ action: 'deploy', exit: 'backup', state: 'now' });
+  assert.equal(check(write('/var/www/index.html')), null, 'nothing interrupts a swing at all');
+});
+
+// ---- the shell the session is actually in (added after the pre-publish audit) ----
+
+test('PowerShell and cmd destructive commands are charged, not just bash ones', (t) => {
+  const dir = fresh(t);
+  const bash = (command) => price({ tool_name: 'Bash', tool_input: { command } }, dir);
+
+  for (const command of [
+    'Remove-Item -Recurse -Force C:\build',
+    'Clear-Content .\notes.md',
+    'rmdir /s /q build',
+    'del /s /q *.tmp',
+  ]) {
+    const charges = bash(command);
+    assert.equal(
+      charges.some((c) => c.kind === 'irreversible'), true,
+      `${command} should be charged as irreversible`,
+    );
+  }
+});
+
+test('an outward PowerShell call is charged like curl is', (t) => {
+  const dir = fresh(t);
+  const charges = price(
+    { tool_name: 'Bash', tool_input: { command: 'Invoke-RestMethod -Uri $u -Method POST' } },
+    dir,
+  );
+  assert.equal(charges.some((c) => c.kind === 'outward'), true);
+});

@@ -1,0 +1,47 @@
+{
+  "name": "@hyuga/redline",
+  "version": "0.1.0",
+  "description": "A limiter that counts the whole session instead of asking about one call: writes to production, irreversible commands and outward sends add up, the number never goes down, and past the edge it stops only when nobody is in the seat.",
+  "type": "module",
+  "main": "src/redline.mjs",
+  "exports": {
+    ".": "./src/redline.mjs"
+  },
+  "bin": {
+    "redline": "src/redline.mjs"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "claude-code",
+    "hooks",
+    "ai",
+    "agent",
+    "coding-agent",
+    "guardrails",
+    "developer-tools"
+  ],
+  "dependencies": {
+    "@hyuga/spar": "^0.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "author": "hyuga611",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyuga611/redline.git"
+  },
+  "homepage": "https://github.com/hyuga611/redline",
+  "bugs": {
+    "url": "https://github.com/hyuga611/redline/issues"
+  }
+}

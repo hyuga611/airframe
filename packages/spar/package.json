@@ -1,0 +1,44 @@
+{
+  "name": "@hyuga/spar",
+  "version": "0.1.0",
+  "description": "The frame agent tools bolt onto: one mode (converge or diverge), one phase set, one finding shape, one ledger per repo, and one rule for who may stop what. Zero dependencies, no daemon, no LLM.",
+  "type": "module",
+  "main": "src/spar.mjs",
+  "exports": {
+    ".": "./src/spar.mjs"
+  },
+  "bin": {
+    "spar": "src/spar.mjs"
+  },
+  "files": [
+    "src",
+    "FRAME.ja.md"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "claude-code",
+    "hooks",
+    "ai",
+    "agent",
+    "coding-agent",
+    "developer-tools"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "author": "hyuga611",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyuga611/spar.git"
+  },
+  "homepage": "https://github.com/hyuga611/spar",
+  "bugs": {
+    "url": "https://github.com/hyuga611/spar/issues"
+  }
+}
