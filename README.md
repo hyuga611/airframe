@@ -70,10 +70,14 @@ the third paragraph is copied like any other draft.
 
 ```bash
 npm install     # one command: npm workspaces links every part to every other
-npm test        # all seven, 532 tests
+npm test        # all seven, 547 tests
 ```
 
 Node 18+. No daemon, no network, no LLM, and no dependency outside this repository.
+
+CI runs every part on Node 18, 20, 22 and 24, `llm-safe-sql` against a real MySQL and
+PostgreSQL, and holds each package to a coverage floor — low enough not to go red on an
+ordinary change, high enough that a file arriving with nothing behind it shows.
 
 Releases are a tag per package (`spar-v0.1.0`) — see [RELEASING.md](RELEASING.md).
 

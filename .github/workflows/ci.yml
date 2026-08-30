@@ -93,6 +93,45 @@ jobs:
       # looks up a package that does not exist and 404s.
       - run: npx @hyuga/tenken packages/habit/AGENTS.md
 
+  coverage:
+    # A floor, not a target. The point is to notice a whole file arriving with no
+    # tests behind it, which is how the four CLIs in this repository went
+    # unexecuted until somebody thought to measure — spar, redline, carbon and
+    # airframe all had their entire command table at zero, in a repository where
+    # two other parts had already shipped a CLI that did nothing and exited 0.
+    #
+    # The numbers sit a few points under where every package actually is
+    # (lowest today: 86.48 lines, 71.51 branches, 87.41 functions). Set at the
+    # current reading they would go red on an ordinary change and get raised
+    # until they meant nothing.
+    #
+    # --test-coverage-include=src/** because the default counts whatever was
+    # imported: a package that depends on spar otherwise reports spar's lines as
+    # its own, and the number moves when a dependency changes.
+    #
+    # llm-safe-sql is absent. It compiles to dist/ and runs through its own
+    # runner, so what node would measure there is generated output.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [spar, redline, carbon, airframe, groundtruth, habit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # The thresholds are Node 22+. The packages themselves still declare
+          # >=18, and the `frame` job above is what checks that.
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - working-directory: packages/${{ matrix.package }}
+        run: >-
+          node --test --experimental-test-coverage
+          --test-coverage-include='src/**'
+          --test-coverage-lines=80
+          --test-coverage-branches=65
+          --test-coverage-functions=80
+
   lint:
     # Correctness rules only, no formatter. Each package's biome.jsonc records
     # which rules are off and why.
