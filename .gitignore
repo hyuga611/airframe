@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Written into the repository at runtime by the parts themselves.
+.spar/
+.groundtruth/
+
+# Generated. Releases go through npm install, so a machine's own resolution is not shipped.
+package-lock.json
