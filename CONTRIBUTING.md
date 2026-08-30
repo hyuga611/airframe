@@ -4,7 +4,7 @@
 
 ```bash
 npm ci          # one command: npm workspaces links every part to every other
-npm test        # all seven, 475 tests
+npm test        # all seven, 532 tests
 ```
 
 Node 18+ for everything except `llm-safe-sql`, which needs Node 20+. There is no

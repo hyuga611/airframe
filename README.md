@@ -70,7 +70,7 @@ the third paragraph is copied like any other draft.
 
 ```bash
 npm install     # one command: npm workspaces links every part to every other
-npm test        # all seven, 475 tests
+npm test        # all seven, 532 tests
 ```
 
 Node 18+. No daemon, no network, no LLM, and no dependency outside this repository.
