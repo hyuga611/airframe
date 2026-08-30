@@ -20,9 +20,9 @@ import {
 import { join, basename, extname, resolve, relative, isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { pathToFileURL, fileURLToPath } from 'node:url';
 import { realpathSync } from 'node:fs';
 import { home, sortie, finding, report } from '@hyuga/spar';
+import { runDirectly, readStdin } from '@hyuga/spar/cli';
 
 /** Above this, keep the fact and not the body. A draft is prose; something huge is not. */
 export const MAX_BYTES = 512 * 1024;
@@ -162,10 +162,6 @@ export function list(cwd = process.cwd()) {
 
 // ---------------- CLI ----------------
 
-function readStdin() {
-  try { return readFileSync(0, 'utf8'); } catch { return ''; }
-}
-
 export function main(argv) {
   const [cmd, sub] = argv;
 
@@ -213,11 +209,4 @@ export function main(argv) {
   return 0;
 }
 
-function runDirectly() {
-  const arg = process.argv[1];
-  if (!arg) return false;
-  if (import.meta.url === pathToFileURL(arg).href) return true;
-  try { return import.meta.url === pathToFileURL(realpathSync(arg)).href; } catch { return false; }
-}
-
-if (runDirectly()) process.exit(main(process.argv.slice(2)));
+if (runDirectly(import.meta.url)) process.exit(main(process.argv.slice(2)));

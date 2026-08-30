@@ -22,12 +22,12 @@
  * The spec this implements is FRAME.ja.md, next to this file.
  */
 import {
-  readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, realpathSync,
+  readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync,
   statSync, openSync, readSync, closeSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
+import { runDirectly, emit } from './cli.mjs';
 
 export const PHASES = ['brief', 'pre', 'post', 'claim'];
 export const MODES = ['strike', 'cruise'];
@@ -408,13 +408,6 @@ export function brief(cwd = process.cwd()) {
 
 // ---------------- CLI ----------------
 
-function emit(eventName, context) {
-  if (!context) return;
-  process.stdout.write(
-    JSON.stringify({ hookSpecificOutput: { hookEventName: eventName, additionalContext: context } }),
-  );
-}
-
 export function main(argv) {
   const [cmd, ...rest] = argv;
   const val = (name) => {
@@ -496,11 +489,4 @@ export function main(argv) {
   return 0;
 }
 
-function runDirectly() {
-  const arg = process.argv[1];
-  if (!arg) return false;
-  if (import.meta.url === pathToFileURL(arg).href) return true;
-  try { return import.meta.url === pathToFileURL(realpathSync(arg)).href; } catch { return false; }
-}
-
-if (runDirectly()) process.exit(main(process.argv.slice(2)));
+if (runDirectly(import.meta.url)) process.exit(main(process.argv.slice(2)));

@@ -5,7 +5,9 @@
   "type": "module",
   "main": "src/spar.mjs",
   "exports": {
-    ".": "./src/spar.mjs"
+    ".": "./src/spar.mjs",
+    "./cli": "./src/cli.mjs",
+    "./package.json": "./package.json"
   },
   "bin": {
     "spar": "src/spar.mjs"

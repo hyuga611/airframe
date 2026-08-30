@@ -18,9 +18,8 @@
  */
 import { readFileSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { realpathSync } from 'node:fs';
 import { finding, report, ledger, sortie } from '@hyuga/spar';
+import { runDirectly, readStdin } from '@hyuga/spar/cli';
 
 export const THRESHOLDS = { record: 1, advise: 2, stop: 3 };
 
@@ -356,10 +355,6 @@ function emit(out) {
   }));
 }
 
-function readStdin() {
-  try { return readFileSync(0, 'utf8'); } catch { return ''; }
-}
-
 export function main(argv) {
   const [cmd, sub] = argv;
 
@@ -414,11 +409,4 @@ export function main(argv) {
   return 0;
 }
 
-function runDirectly() {
-  const arg = process.argv[1];
-  if (!arg) return false;
-  if (import.meta.url === pathToFileURL(arg).href) return true;
-  try { return import.meta.url === pathToFileURL(realpathSync(arg)).href; } catch { return false; }
-}
-
-if (runDirectly()) process.exit(main(process.argv.slice(2)));
+if (runDirectly(import.meta.url)) process.exit(main(process.argv.slice(2)));

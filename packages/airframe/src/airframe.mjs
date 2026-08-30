@@ -25,9 +25,9 @@ import { join, dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
-import { pathToFileURL, fileURLToPath } from 'node:url';
-import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { launch, sortie, fuel, brief, ledger, discard, transform, burn, finding, report } from '@hyuga/spar';
+import { runDirectly, emit } from '@hyuga/spar/cli';
 
 const require_ = createRequire(import.meta.url);
 
@@ -340,13 +340,6 @@ export function status(cwd = process.cwd()) {
 
 // ---------------- CLI ----------------
 
-function emit(eventName, context) {
-  if (!context) return;
-  process.stdout.write(
-    JSON.stringify({ hookSpecificOutput: { hookEventName: eventName, additionalContext: context } }),
-  );
-}
-
 export function main(argv) {
   const [cmd, ...rest] = argv;
   const val = (n) => { const i = rest.indexOf(`--${n}`); return i === -1 ? undefined : rest[i + 1]; };
@@ -444,11 +437,4 @@ export function main(argv) {
   return 0;
 }
 
-function runDirectly() {
-  const arg = process.argv[1];
-  if (!arg) return false;
-  if (import.meta.url === pathToFileURL(arg).href) return true;
-  try { return import.meta.url === pathToFileURL(realpathSync(arg)).href; } catch { return false; }
-}
-
-if (runDirectly()) process.exit(main(process.argv.slice(2)));
+if (runDirectly(import.meta.url)) process.exit(main(process.argv.slice(2)));
