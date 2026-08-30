@@ -1,0 +1,48 @@
+{
+  "name": "@hyuga/habit",
+  "version": "0.4.1",
+  "description": "Tells your coding agent when you edited what it wrote, so it stops silently reverting your fixes. Claude Code hooks, no daemon, no network. The accumulated edits distill into rules, the rules are handed back at session start, and the ledger says whether they held.",
+  "type": "module",
+  "main": "src/habit.mjs",
+  "exports": {
+    ".": "./src/habit.mjs",
+    "./learn": "./src/learn.mjs"
+  },
+  "bin": {
+    "habit": "src/habit.mjs"
+  },
+  "files": [
+    "src",
+    "skills"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "lint": "npx --yes @biomejs/biome@2.5.8 lint src test"
+  },
+  "keywords": [
+    "claude-code",
+    "hooks",
+    "ai",
+    "agent",
+    "agents.md",
+    "coding-agent",
+    "feedback-loop",
+    "developer-tools"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "author": "hyuga611",
+  "homepage": "https://github.com/hyuga611/habit",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyuga611/habit.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hyuga611/habit/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
