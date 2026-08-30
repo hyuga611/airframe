@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="740" height="328" viewBox="0 0 740 328" role="img" aria-label="Terminal: groundtruth re-fetches real state, finds 0 rows against an expected 45 and exits 1, then verifies 45 and exits 0">
+  <title>Terminal: groundtruth re-fetches real state, finds 0 rows against an expected 45 and exits 1, then verifies 45 and exits 0</title>
+  <defs>
+    <style>
+      .t { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace; font-size: 14.5px; }
+      .fg { fill: #c9d1d9; } .dim { fill: #7d8590; } .red { fill: #ff7b72; }
+      .green { fill: #3fb950; } .cyan { fill: #79c0ff; } .yel { fill: #d29922; } .mag { fill: #d2a8ff; }
+    </style>
+  </defs>
+  <rect x="0" y="0" width="740" height="328" rx="10" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
+  <rect x="1" y="1" width="738" height="36" rx="9" fill="#161b22"/>
+  <rect x="1" y="28" width="738" height="9" fill="#161b22"/>
+  <line x1="1" y1="37" x2="739" y2="37" stroke="#30363d" stroke-width="1"/>
+  <circle cx="22" cy="19" r="6" fill="#ff5f57"/>
+  <circle cx="42" cy="19" r="6" fill="#febc2e"/>
+  <circle cx="62" cy="19" r="6" fill="#28c840"/>
+  <text class="t dim" x="370" y="24" text-anchor="middle">groundtruth — completion gate</text>
+  <text class="t" x="24" y="70"><tspan class="green" font-weight="700" xml:space="preserve">$</tspan><tspan class="fg" xml:space="preserve"> groundtruth verify --probe "select count(*) from t where batch=123" --count 45</tspan></text>
+  <text class="t" x="24" y="100"><tspan class="dim" xml:space="preserve">  the agent said: </tspan><tspan class="fg" xml:space="preserve">"inserted 45 rows. Done."</tspan></text>
+  <text class="t" x="24" y="124"><tspan class="fg" xml:space="preserve"></tspan></text>
+  <text class="t" x="24" y="148"><tspan class="red" font-weight="700" xml:space="preserve">✗</tspan><tspan class="fg" xml:space="preserve"> mismatch </tspan><tspan class="dim" xml:space="preserve">[count(45)]</tspan><tspan class="fg" xml:space="preserve"> — expected a count of 45, the probe returned </tspan><tspan class="red" xml:space="preserve">"0"</tspan></text>
+  <text class="t" x="24" y="172"><tspan class="dim" xml:space="preserve">  the probe returned: </tspan><tspan class="red" xml:space="preserve">"0"</tspan><tspan class="dim" xml:space="preserve">     exit 1  ← nothing landed</tspan></text>
+  <text class="t" x="24" y="196"><tspan class="fg" xml:space="preserve"></tspan></text>
+  <text class="t" x="24" y="220"><tspan class="green" font-weight="700" xml:space="preserve">$</tspan><tspan class="fg" xml:space="preserve"> # after the insert is actually fixed</tspan></text>
+  <text class="t" x="24" y="244"><tspan class="green" font-weight="700" xml:space="preserve">✓</tspan><tspan class="fg" xml:space="preserve"> verified </tspan><tspan class="dim" xml:space="preserve">[count(45)]</tspan><tspan class="fg" xml:space="preserve"> — the probe returned: </tspan><tspan class="green" xml:space="preserve">"45"</tspan></text>
+  <text class="t" x="24" y="292"><tspan class="dim" xml:space="preserve">only a re-fetched real result gets to say "done".</tspan></text>
+</svg>
