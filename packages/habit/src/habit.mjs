@@ -44,8 +44,8 @@ export {
   lastUserMessage, undistilled, distillNudge,
 } from './hooks.mjs';
 
-import { STORE, readStdin } from './store.mjs';
-import { buildExport, listCorrections, listSignals } from './record.mjs';
+import { STORE, RULES, SAID, ensure, nowIso, readStdin } from './store.mjs';
+import { buildExport, listCorrections, listSignals, recordSignal } from './record.mjs';
 import { hookSync, hookPost, hookPre, hookSubagent, hookSession } from './hooks.mjs';
 
 function cmdExport(args) {
