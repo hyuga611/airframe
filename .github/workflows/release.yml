@@ -143,6 +143,28 @@ jobs:
             exit 1
           fi
 
+      # Everything above this line runs against the working tree, where npm
+      # workspaces has linked every part to every other and node resolves
+      # anything. That is not the machine the package lands on.
+      #
+      # This packs it, installs the tarball into an empty project, and lets npm
+      # resolve its dependencies from the registry — then imports every subpath
+      # the package claims to export and starts every bin it declares.
+      #
+      # It exists because redline, carbon and airframe were one command away from
+      # being published importing `@hyuga/spar/cli` while declaring
+      # `@hyuga/spar: ^0.1.0`, whose exports are `{ ".": "./src/spar.mjs" }` and
+      # nothing else. Tests, typecheck and the tarball contents all passed. On
+      # anybody else's machine all three would have thrown
+      # ERR_PACKAGE_PATH_NOT_EXPORTED inside a hook, where nothing reports an
+      # error: a limiter that had stopped counting, silently.
+      #
+      # It also enforces the publish order in RELEASING.md rather than describing
+      # it. Releasing redline before spar is on the registry fails here, with
+      # ETARGET, instead of succeeding and breaking installs.
+      - name: Install it the way somebody else would, and use it
+        run: node scripts/smoke-install.mjs ${{ steps.target.outputs.package }}
+
   publish:
     needs: verify
     if: startsWith(github.ref, 'refs/tags/') && !inputs.dry_run

@@ -69,6 +69,33 @@ spar → redline → carbon, habit, groundtruth → airframe → llm-safe-sql
 To rehearse without publishing, run the workflow manually from the Actions tab
 with **dry run** left on, naming the package.
 
+## The check that runs against a real install
+
+Everything else in the release runs against the working tree, where npm workspaces
+has linked every part to every other and node resolves anything. That is not the
+machine the package lands on.
+
+```bash
+node scripts/smoke-install.mjs <package>   # one
+node scripts/smoke-install.mjs --all       # every package, in dependency order
+```
+
+It packs the package, installs the tarball into an empty project, lets npm resolve
+its dependencies **from the registry**, then imports every subpath the package
+claims to export and starts every bin it declares.
+
+This is not a formality. redline, carbon and airframe were one command away from
+being published importing `@hyuga/spar/cli` while declaring `@hyuga/spar: ^0.1.0`
+— a version whose `exports` are `{ ".": "./src/spar.mjs" }` and nothing else.
+Tests passed, typecheck passed, the tarball contents passed. On anybody else's
+machine all three would have thrown `ERR_PACKAGE_PATH_NOT_EXPORTED` inside a hook,
+where nothing reports an error.
+
+It is also what makes the order above real rather than advisory: releasing
+`redline` before `spar` is on the registry fails here with `ETARGET`, instead of
+succeeding and breaking every install. So run it locally after bumping, and expect
+a dependent package to fail until what it depends on is actually published.
+
 ## Renames
 
 `groundtruth` was published as `@hyuga/genchi` and `habit` as `@hyuga/narai`. npm
