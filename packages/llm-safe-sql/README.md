@@ -441,7 +441,7 @@ That is why `CASCADES_UNKNOWN` and `AUTO_COLUMNS_UNKNOWN` are refusal reasons of
 their own rather than folded into "no triggers", and why `check` reports that it
 could not establish an answer in those words rather than staying quiet.
 
-The shape was named in [discussion #3](https://github.com/hyuga611/airframe/discussions/3)
+The shape was named in [discussion #3](https://github.com/hyuga611/llm-safe-sql/discussions/3)
 by [@joeyycli](https://github.com/joeyycli), who ran the same test against a
 system of their own, confirmed both paths this side predicted, and found a third
 that the prediction had missed. That thread is also a longer write-up of the

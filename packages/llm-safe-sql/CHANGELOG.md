@@ -1939,6 +1939,11 @@ produced a plan describing something other than what would happen:
 - No runtime dependencies. Drivers are optional peers; the MCP server implements
   the wire protocol directly.
 
+<!-- These name hyuga611/llm-safe-sql on purpose. Every release up to 0.10.0 was cut in
+     that repository and its tags are still there; the monorepo has no v0.9.0 to point at,
+     and never will — its tags are llm-safe-sql-v<version>. Releases from here on are the
+     monorepo's, and get the new form. -->
+
 [0.9.0]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.9.0
 [0.8.0]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.8.0
 [0.7.0]: https://github.com/hyuga611/llm-safe-sql/releases/tag/v0.7.0

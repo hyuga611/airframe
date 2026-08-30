@@ -29,6 +29,18 @@
         "noUselessEscapeInRegex": "off"
       },
 
+      "correctness": {
+        "recommended": true,
+        // Off by default in biome, and on here because this repository has now
+        // produced the bug twice: a name used in one file and imported into
+        // another, missed when code moved between them. Both times the
+        // ReferenceError landed inside a `catch {}` that exists so a hook cannot
+        // interrupt somebody's work — so the failure was a silent no-op, and the
+        // only reason either was found is that a test asserted on the output.
+        // A linter catches this in the file rather than in a symptom.
+        "noUndeclaredVariables": "error"
+      },
+
       "suspicious": {
         "recommended": true,
         // while ((m = re.exec(s))) is the intended way to walk a global regex.
