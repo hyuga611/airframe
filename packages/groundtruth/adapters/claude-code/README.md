@@ -29,6 +29,24 @@ A reference implementation that stops an agent ending its turn on an unverified 
 }
 ```
 
+### Its own entry, not a pipe
+
+Where other hooks are already wired to `Stop`, add this one **beside** them. Do not chain it
+onto the end of an existing command with `|`:
+
+```jsonc
+"Stop": [
+  { "hooks": [{ "type": "command", "command": "node ./other-stop-hook.mjs" }] },
+  { "hooks": [{ "type": "command", "command": "node ./node_modules/@hyuga/groundtruth/adapters/claude-code/groundtruth-stop-hook.mjs" }] }
+]
+```
+
+A pipeline reports the **last** command's exit status, so a gate anywhere but the end has its
+`2` discarded and the turn ends on an unverified claim. Claude Code hands each command the hook
+payload on stdin, and a pipe replaces that with the previous command's output — so a gate that
+reads the payload (for the session id, say) gets the wrong bytes instead. Both failures are
+silent, and both leave a gate that appears to be installed.
+
 ## What a contract looks like (`.groundtruth/pending.jsonl`)
 
 ```jsonl
