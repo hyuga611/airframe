@@ -192,6 +192,26 @@ test('two configs are added together, never ranked', (t) => {
   assert.deepEqual(price(write('/var/www/x.html'), started).map((c) => c.kind), ['production']);
 });
 
+test('a shell command names the trees it touches, and those are asked too', (t) => {
+  const root = fresh(t);
+  const share = join(root, 'share');
+  const web = join(share, 'acme', 'web');
+  mkdirSync(web, { recursive: true });
+  writeFileSync(join(share, '.redline.json'), JSON.stringify({ production: ['/share/acme/web/'] }), 'utf8');
+  const started = join(root, 'home');
+  mkdirSync(started, { recursive: true });
+
+  // The last step of publishing anything is a shell command, and it was the one call whose
+  // charge depended on where the config had been filed: staging the file into the client tree
+  // was priced, and the upload that put it in front of the public was free.
+  const local = `${web.replace(/\\/g, '/')}/`;
+  const upload = `powershell -File winscp-put.ps1 -LocalDir "${local}" -RemoteDir /home/site/public_html/`;
+  assert.deepEqual(price(bash(upload), started).map((c) => c.kind), ['production']);
+
+  // Reading is still free, and a read is dropped before any of this happens.
+  assert.deepEqual(price(bash(`ls "${local}"`), started), []);
+});
+
 test('the files a human named are pulled out of their own words', () => {
   assert.deepEqual(namedInPrompt('fix the bug in src/app.mjs and update README.md').sort(), ['app.mjs', 'readme.md']);
   assert.deepEqual(namedInPrompt('make it faster'), []);

@@ -47,6 +47,12 @@ payload on stdin, and a pipe replaces that with the previous command's output â€
 reads the payload (for the session id, say) gets the wrong bytes instead. Both failures are
 silent, and both leave a gate that appears to be installed.
 
+**Add it by hand.** On a locked-down machine an agent cannot edit `settings.json` for you: one
+reported four separate refusals â€” a deny rule on `Edit(**/.claude/settings.json)`, and a
+classifier that stopped the `Write`, the `cp` backup and even the generation of a script that
+would have done it. That is the right outcome. A gate whose own installation the agent can
+perform is a gate the agent can remove, so this is one edit worth typing yourself.
+
 ## What a contract looks like (`.groundtruth/pending.jsonl`)
 
 ```jsonl

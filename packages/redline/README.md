@@ -77,9 +77,9 @@ Yours to say, in `.redline.json`:
 { "production": ["X:/01-client/", "/var/www/"] }
 ```
 
-Looked for in two places at once: from the directory the session was started in, and from the
-directory of the file being written — each walking upwards, then falling back to your home
-directory.
+Looked for from every tree a call touches at once: the directory the session was started in, the
+directory of the file being written, and up to four absolute paths a shell command names — each
+walking upwards, then falling back to your home directory.
 
 Both, because a hook's working directory is not where the work is. It is where the *session*
 started, and an agent started in a home directory writes to a client tree on a network share all
@@ -93,8 +93,15 @@ write path shorten the list the session started with — a quieter limiter, chos
 being written to. A union can only make more things count as production, which is the direction a
 limiter is allowed to be wrong in.
 
-A shell command is not given a look-up of its own: its paths would have to be guessed out of a
-string, and guessing wrong means reading a file off wherever the guess pointed.
+**A shell command gets one too**, from the absolute paths it names — because the last step of
+publishing anything is a shell command, and it was the one call whose charge depended on where
+you had filed the config. Staging a file into a client tree was priced; the upload that put it in
+front of the public was free.
+
+Taking a path out of a string is a guess, and the reason a wrong guess is tolerable here is the
+union: anything found this way can only *add* to what counts as production. A guess that lands
+nowhere costs a few `existsSync` calls and changes no number. Read-only segments are dropped
+first, so `grep /var/www -r` is not asked about the tree it is reading.
 
 Or `REDLINE_PRODUCTION`, semicolon-separated. A substring match, on the path for a write tool and on
 the command line for a shell call — so `cp build/index.html /var/www/site/` is charged too.

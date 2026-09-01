@@ -300,18 +300,51 @@ function scope(cwd) {
  * Charges are not exclusive: a `git push --force` to a production checkout is irreversible and
  * outward at once, and pricing it as one of those would be the cheaper reading of the two.
  */
+/**
+ * The absolute paths a command names, as further places to look for a config.
+ *
+ * 0.4.0 gave the look-up to written files and withheld it from shell commands, on the grounds
+ * that a path taken out of a string is a guess and a wrong guess reads a file off wherever the
+ * guess pointed. A day of use turned that around: the last step of publishing anything on the
+ * machine that reported it is a shell command — WinSCP, over twenty times in its work log — and
+ * that step was the one call whose charge depended on where the config had been filed. The tool
+ * call that stages a file into a client tree was priced correctly, and the upload that put it in
+ * front of the public was free.
+ *
+ * The objection survives only if a stray read could make the limiter quieter, and it cannot:
+ * configs are unioned, so anything found this way can only add paths to what counts as
+ * production. A guess that lands nowhere costs a handful of `existsSync` calls and changes no
+ * number. Four distinct paths per call is plenty for the shape this actually takes — a source
+ * and a destination — and keeps a command full of slashes from walking the disk.
+ *
+ * Read-only segments are already gone by the time this is called: `grep /var/www -r` names a
+ * production path without touching one, and is not asked about it.
+ */
+export function absolutePathsIn(doing, max = 4) {
+  const out = [];
+  for (const seg of doing) {
+    for (const m of String(seg).matchAll(/(?:[A-Za-z]:[\\/]|\/)[^\s"';|&]*/g)) {
+      if (!out.includes(m[0])) out.push(m[0]);
+      if (out.length >= max) return out;
+    }
+  }
+  return out;
+}
+
 export function price(payload, cwd = process.cwd(), cfg = null) {
   const tool = payload.tool_name || payload.toolName || '';
   const input = payload.tool_input || payload.toolInput || {};
   const command = String(input.command || '');
   const path = input.file_path || input.path || input.notebook_path || '';
-  // The file being written is asked where its own tree keeps the rules, alongside the session's
-  // directory. A shell command is not: its paths would have to be guessed out of a string, and
-  // guessing wrong here means reading a file off whatever the guess pointed at.
-  const conf = cfg || config(cwd, path ? [dirname(resolve(String(path)))] : []);
   // What the command does, rather than what it says. A charge names the part that earned it, so
   // the pilot is told which half of a compound command was the expensive one.
   const doing = acts(command);
+  // Every tree this call touches is asked where the rules are kept, alongside the session's own
+  // directory.
+  const conf = cfg || config(cwd, [
+    ...(path ? [dirname(resolve(String(path)))] : []),
+    ...absolutePathsIn(doing),
+  ]);
   const charges = [];
 
   for (const rule of TARIFF) {
