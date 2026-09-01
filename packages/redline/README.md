@@ -104,6 +104,10 @@ the command line for a shell call — so `cp build/index.html /var/www/site/` is
 The `UserPromptSubmit` hook records the filenames you mentioned in your own words. A write to
 something else is the agent's own idea — written down, and free.
 
+Naming nothing is recorded too, and is not the same as the hook being absent. "`/karte <client>`"
+names a task and no files, so everything the run writes is the agent's own idea — which is when
+the record is worth most, and was the one case that used to leave none.
+
 Without that hook redline **does not guess** — it charges nothing for scope rather than pricing every
 file in the repo as unasked-for. It matches on filename only, so two files with the same basename
 in different directories look alike to it.

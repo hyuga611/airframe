@@ -339,9 +339,15 @@ export function price(payload, cwd = process.cwd(), cfg = null) {
     }
     if (rule.scope && path && WRITES.test(tool)) {
       const named = scope(cwd);
-      // No scope recorded means the prompt hook is not installed. Charging for it then would
-      // price every file in the repo as unasked-for, which is noise, not a limit.
-      if (named && named.length && !named.includes(norm(path).split('/').pop())) {
+      // `null` means no scope was recorded at all — the prompt hook is not installed, and
+      // judging without it would price every file in the repo as unasked-for.
+      //
+      // An empty list is a different fact, and it used to be read as the same one. It means the
+      // hook is installed and the person named nothing, which is what a skill invocation looks
+      // like: "/karte <client>" names a task, and the filenames are the skill's to know. That is
+      // the case where what got written unasked-for is most worth having on the record, and it
+      // was the one case that left no record at all.
+      if (named && !named.includes(norm(path).split('/').pop())) {
         charges.push({ kind: rule.kind, points: rule.points, why: rule.why, on: path });
       }
     }
@@ -463,10 +469,11 @@ export function main(argv) {
     try {
       if (sub === 'pre') emit(check(payload));
       else if (sub === 'prompt') {
+        // Filed even when it is empty. "The person named no files" and "nobody was asked" are
+        // different states, and only one of them means the scope is unknowable — but with the
+        // finding withheld they arrive downstream as the same silence.
         const named = namedInPrompt(payload.prompt || payload.user_prompt || '');
-        if (named.length) {
-          report(finding({ phase: 'brief', source: 'redline', subject: 'scope', observed: named, actor: 'human' }));
-        }
+        report(finding({ phase: 'brief', source: 'redline', subject: 'scope', observed: named, actor: 'human' }));
       }
     } catch {
       // a limiter that breaks the session is worse than no limiter

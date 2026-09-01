@@ -12,7 +12,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -216,6 +216,29 @@ test('the prompt hook records the scope, and a file outside it is written down f
     assert.equal(said(run(home, ['hook', 'pre'], { stdin: write(f) })), null, f + ' is silent');
   }
   assert.match(run(home, ['score']).out, /0 spent/, 'written down, not charged');
+});
+
+/**
+ * The shape of a skill invocation: a task is named and no filenames are. Everything the run
+ * writes is then the agent's own idea, which is exactly when it is worth having on the record —
+ * and it was the one case that left no record at all, because a prompt naming nothing filed
+ * nothing, and a missing brief reads as "the hook is not installed".
+ */
+test('a prompt that names no file still says so, and what follows is written down', (t) => {
+  const home = frame(t);
+  launch(home);
+  const p = run(home, ['hook', 'prompt'], { stdin: spoke('run the karte for the ski resort') });
+  assert.equal(p.out.trim(), '', 'still silent');
+
+  assert.equal(said(run(home, ['hook', 'pre'], { stdin: write('/tmp/_targets.yml') })), null,
+    'unnamed costs nothing, so it interrupts nobody');
+  assert.match(run(home, ['score']).out, /0 spent/);
+
+  const filed = readFileSync(join(home, 'ledger.jsonl'), 'utf8')
+    .split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    .filter((f) => f.source === 'redline');
+  assert.deepEqual(filed[0].observed, [], 'the brief says: they named none');
+  assert.deepEqual(filed[1].observed.kinds, ['unnamed'], 'and the write is on the record');
 });
 
 test('an unknown subcommand prints the help rather than pretending to have worked', (t) => {
