@@ -45,6 +45,16 @@ independent of each other; `groundtruth` and `llm-safe-sql` take `spar` as an
 spar → redline → carbon, habit, groundtruth → airframe → llm-safe-sql
 ```
 
+**Wait for each arrow, do not just push the tags in that order.** Tags pushed back to back run
+concurrently, and `verify` installs the tarball the way somebody else would — from the registry.
+Five tags pushed in one loop failed exactly here: `airframe@0.2.3` asked for
+`@hyuga/redline@^0.5.0` while redline's own release was still running, and got `ETARGET No
+matching version found`. Nothing was published broken; the release simply refused, which is what
+it is for. Push the dependency's tag, watch it go green, then push the dependent's.
+
+Recovering from that is `gh run rerun <id>` once the dependency is up — the tag is already
+correct, so there is nothing to re-tag.
+
 ## Each release
 
 1. Update that package's `CHANGELOG.md`.
