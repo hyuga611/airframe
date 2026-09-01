@@ -83,7 +83,7 @@ the command line for a shell call — so `cp build/index.html /var/www/site/` is
 ## "Unnamed" needs to know what you asked for
 
 The `UserPromptSubmit` hook records the filenames you mentioned in your own words. A write to
-something else is the agent's own idea, and costs a point.
+something else is the agent's own idea — written down, and free.
 
 Without that hook redline **does not guess** — it charges nothing for scope rather than pricing every
 file in the repo as unasked-for. It matches on filename only, so two files with the same basename
