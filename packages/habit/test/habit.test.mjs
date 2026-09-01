@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, statSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -498,6 +498,40 @@ test('rewriting across a turn boundary is recorded as a correction', () => {
     assert.match(c.askedFor, /drop the emoji/);
     assert.ok(c.removed.some((l) => /Great news/.test(l)));
     assert.ok(c.added.some((l) => /Monthly figures/.test(l)));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * The sentence is not near the end of the file. Between it and the write sits every tool call
+ * and every tool result of that turn, and those are the large records — 15.6% of turns measured
+ * locally put more than the old 256KB window between the two, and every correction filed from
+ * one of those turns lost its `askedFor`.
+ */
+test('the sentence is found even when the turn buried it under tool traffic', () => {
+  const dir = work();
+  const before = listCorrections().length;
+  try {
+    const f = join(dir, 'buried.md');
+    const tp = join(dir, 'buried.jsonl');
+    const noise = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'x'.repeat(2000) }] } });
+    writeFileSync(tp, [
+      JSON.stringify({ type: 'user', message: { content: 'use British spelling throughout' } }),
+      ...Array.from({ length: 200 }, () => noise), // ~400KB, comfortably past the tail
+      '',
+    ].join('\n'));
+    assert.ok(statSync(tp).size > 256 * 1024, 'the point of the test is that the tail cannot reach it');
+
+    writeFileSync(f, 'The color of the labels.\n');
+    hookPost(turn(f, 'P1', tp));
+    writeFileSync(f, 'The colour of the labels.\n');
+    hookPost(turn(f, 'P2', tp));
+
+    const all = listCorrections();
+    assert.equal(all.length, before + 1);
+    assert.equal(all[all.length - 1].askedFor, 'use British spelling throughout',
+      'the diff without the sentence is the outcome with its reason stripped off');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
