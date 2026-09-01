@@ -61,6 +61,19 @@ working; a rewrite under a new one means you spoke in between.
 }
 ```
 
+**`instructed` also catches you asking for the next thing.** "You spoke in between" is a fact
+about turns, not about what you said, so a session that keeps working on one file across several
+of your messages files a correction at each boundary — and being asked to carry on is not being
+corrected. Measured on one machine: of 15 corrections, 6 were this, and their `askedFor` was a
+path to a file the user had pasted in. Distillation is where they get dropped, on the rule that
+*your words beat the diff*: a sentence that does not ask for a change is not evidence of a habit,
+whatever the diff next to it shows.
+
+This is deliberately not filtered at recording time. The tests that would do it — a short
+message, one with no imperative in it — throw away real corrections too, because *"shorter"* and
+*"no, the other one"* are how people actually correct things. A diluted pile that a reader can
+sort beats a clean one with your corrections quietly missing from it.
+
 ## How it works
 
 Hooks only. No daemon, no watcher, no LLM in the hot path.
