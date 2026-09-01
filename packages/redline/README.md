@@ -30,6 +30,11 @@ redline keeps one number per sortie. It only ever goes up.
 While you are flying it, past the edge you get told and you decide. Unattended, the tool call is
 denied.
 
+The number never goes down inside a sortie. What is per-call is *which* call gets stopped: one
+that adds nothing to the total is not stopped for the last one that did. Otherwise a scheduled
+task that deletes a single temporary file spends the rest of its run being refused permission to
+write to a scratch directory, and cannot even hand back.
+
 ## The tariff
 
 | | |

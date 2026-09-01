@@ -324,7 +324,18 @@ export function check(payload, cwd = process.cwd()) {
   const points = charges.reduce((n, c) => n + c.points, 0);
   const before = score(cwd);
   const total = before + points;
-  const severity = severityFor(total);
+  // A call that adds nothing cannot be the call that takes you past the edge.
+  //
+  // The number is the sortie's and it still only goes up — that is the claim this tool makes,
+  // and a window over the last N calls would give it up. What has to be per-call is *which*
+  // call gets stopped. Without this line the first irreversible command in a sortie converts
+  // every later call into a stop, and with nobody in the seat every later call is then denied:
+  // a scheduled task that deletes one temporary file spends the rest of its run being refused
+  // permission to write to a scratch directory. Observed on a work machine at 40 seconds in.
+  //
+  // So the reading stays honest — the finding carries the running total either way — and the
+  // interruption is spent on the calls that are actually buying more exposure.
+  const severity = points ? severityFor(total) : 'note';
 
   const r = report(finding({
     phase: 'pre',

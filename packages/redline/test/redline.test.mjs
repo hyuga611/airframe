@@ -92,6 +92,19 @@ test('past the edge with nobody in the seat, it stops', (t) => {
   assert.match(out.message, /Stopping here/);
 });
 
+test('past the edge, a call that costs nothing is not the one that gets stopped', (t) => {
+  fresh(t);
+  launch({ mode: 'strike', autonomy: true, reason: 'wired into a nightly loop on purpose' });
+  report(finding({ phase: 'brief', source: 'redline', subject: 'scope', observed: ['readme.md'], actor: 'human' }));
+  assert.equal(check(bash('rm -rf build')).verdict, 'halt', 'the irreversible one is stopped');
+  assert.equal(score(), 3, 'and the sortie has spent it');
+
+  // The shape that deadlocked a scheduled run: everything after the deletion was denied,
+  // including writing a scratch file, so the task could not even hand back.
+  assert.equal(check(write('scratch/notes.json')), null, 'a free call is not denied for the last one');
+  assert.equal(score(), 3, 'and it is still 3 — the score never went down to get here');
+});
+
 test('in melee it does not stop the swing — it refuses the next one', (t) => {
   fresh(t, { production: ['/var/www/'] });
   launch({ mode: 'strike', autonomy: true, reason: 'scheduled deploy' });
