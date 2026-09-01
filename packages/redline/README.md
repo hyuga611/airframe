@@ -38,10 +38,16 @@ denied.
 | outward — `npm publish`, `git push`, `gh pr create`, a POST, sending mail | **+3** |
 | production — a write to a path you called production | **+2** |
 | dependency — new code entering the tree | **+1** |
-| unnamed — a file nobody asked for | **+1** |
+| unnamed — a file nobody asked for | **+0**, recorded only |
 
 Irreversible and outward sit at the limit on their own, because the first instance is already the
 whole event: there is no such thing as half a publish.
+
+**Unnamed is written down and not charged.** A skill is handed a task and knows its own filenames,
+so a file the prompt never mentions is the normal case, not the runaway — measured over a day,
+19 of 22 charges were a skill writing its own declared output, and one skill crossed the limit in
+41 seconds. The finding is still filed, so the question is still answerable; it just no longer
+moves the number.
 
 Charges are **not exclusive**. `git push --force` is irreversible and outward at once, and
 pricing it as one of those would be the cheaper reading of the two.

@@ -179,9 +179,10 @@ test('production is whatever this repository says it is', (t) => {
 
 /**
  * Without the prompt hook redline cannot tell a file you asked for from one it chose itself,
- * and does not charge for that at all rather than guessing.
+ * and does not charge for that at all rather than guessing. With it, it can tell — and still
+ * does not charge, because a skill knows its own filenames and the human never says them.
  */
-test('the prompt hook records the scope, and files outside it then cost something', (t) => {
+test('the prompt hook records the scope, and a file outside it is written down for free', (t) => {
   const home = frame(t);
   launch(home);
   assert.equal(run(home, ['hook', 'pre'], { stdin: write('/tmp/whatever.md') }).out.trim(), '',
@@ -192,13 +193,13 @@ test('the prompt hook records the scope, and files outside it then cost somethin
   run(home, ['hook', 'pre'], { stdin: write('/tmp/notes.md') });
   assert.match(run(home, ['score']).out, /0 spent/, 'a file the human named is free');
 
-  // One point is `recorded`, not `advised` — the tariff's first tier says nothing out loud, so
-  // what proves the charge landed is the score, not the hook's reply.
-  run(home, ['hook', 'pre'], { stdin: write('/tmp/whatever.md') });
-  assert.match(run(home, ['score']).out, /1 spent/);
-  const out = said(run(home, ['hook', 'pre'], { stdin: write('/tmp/another.md') }));
-  assert.match(out.additionalContext, /unnamed \+1/, 'the second one reaches the advise tier');
-  assert.match(out.additionalContext, /Halfway to the limit/);
+  // And so is one they did not name. Three writes nobody asked for used to be a stop, and a
+  // skill reaches three before it has finished starting — which is how the whole limit got
+  // spent on the work instead of on the exposure.
+  for (const f of ['/tmp/whatever.md', '/tmp/another.md', '/tmp/third.md']) {
+    assert.equal(said(run(home, ['hook', 'pre'], { stdin: write(f) })), null, f + ' is silent');
+  }
+  assert.match(run(home, ['score']).out, /0 spent/, 'written down, not charged');
 });
 
 test('an unknown subcommand prints the help rather than pretending to have worked', (t) => {

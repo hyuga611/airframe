@@ -83,9 +83,28 @@ export const TARIFF = [
     bash: [/\bnpm\s+(i|install|add)\s+[^-\s]/, /\b(yarn|pnpm|bun)\s+add\s+\S/],
     file: [/(^|[\\/])package\.json$/],
   },
+  /**
+   * Recorded, and not charged.
+   *
+   * A file the prompt did not name is worth writing down. It is not worth points, and a day of
+   * field data says so plainly: 22 charges on a work machine, 19 of them unnamed, and every one
+   * of those 19 was a skill writing the files it exists to write. Three runs of the same skill
+   * reached the stop threshold in 41, 63 and 40 seconds, on nothing but its own declared output.
+   *
+   * There is no version of the scope test a skill can pass. The whole point of a skill is that
+   * the human names the *task* and the skill knows the filenames — so "did the human say this
+   * name out loud" cannot separate routine work from a runaway, which is the one distinction
+   * the charge was for. A limiter that is 86% noise gets read as noise, and then the call that
+   * should have stopped somebody reads like the nineteen that should not have. That is the same
+   * ground on which quoting stopped being charged.
+   *
+   * Zero keeps the reading and drops the claim: the finding still lands in the ledger, so what
+   * was written that nobody asked for stays answerable after the fact — by someone reading it,
+   * which is where that question was always going to be settled.
+   */
   {
     kind: 'unnamed',
-    points: 1,
+    points: 0,
     why: 'nobody asked for this file',
     scope: true, // decided against what the prompt named
   },

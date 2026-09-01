@@ -118,6 +118,25 @@ test('an unnamed file is only charged when the scope is actually known', (t) => 
   assert.deepEqual(price(write('docs/README.md')), [], 'the file the human named is free');
 });
 
+test('unnamed is a reading, not a charge', (t) => {
+  fresh(t);
+  launch({ mode: 'strike' });
+  report(finding({ phase: 'brief', source: 'redline', subject: 'scope', observed: ['readme.md'], actor: 'human' }));
+
+  // The shape that spent a whole limit in 41 seconds: a skill writing the files it exists to
+  // write, none of which the human could have named, four of them before it has really begun.
+  for (const f of ['_targets.yml', '_industry_topics.yml', '_content_queue.yml', '_action_ledger.yml']) {
+    assert.equal(check(write(f)), null, f + ' says nothing');
+  }
+  assert.equal(score(), 0, 'four files nobody asked for is still nothing spent');
+
+  // Filed all the same. What it wrote that nobody asked for stays answerable afterwards; it
+  // just is not answered by the number.
+  const filed = ledger().filter((f) => f.source === 'redline' && f.phase === 'pre');
+  assert.equal(filed.length, 4);
+  assert.deepEqual(filed[0].observed, { points: 0, total: 0, kinds: ['unnamed'] });
+});
+
 test('the files a human named are pulled out of their own words', () => {
   assert.deepEqual(namedInPrompt('fix the bug in src/app.mjs and update README.md').sort(), ['app.mjs', 'readme.md']);
   assert.deepEqual(namedInPrompt('make it faster'), []);
