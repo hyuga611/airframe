@@ -77,7 +77,13 @@ Yours to say, in `.redline.json`:
 { "production": ["X:/01-client/", "/var/www/"] }
 ```
 
-or `REDLINE_PRODUCTION`, semicolon-separated. A substring match, on the path for a write tool and on
+Looked for in the working directory, then in every directory above it, then in your home
+directory. An agent works wherever the work is — a client folder deep inside a network share, a
+package inside a monorepo — which is nowhere near where anybody would think to write this down,
+and a config that is not found fails silently: the most exposed write of the day gets charged as
+an ordinary one.
+
+Or `REDLINE_PRODUCTION`, semicolon-separated. A substring match, on the path for a write tool and on
 the command line for a shell call — so `cp build/index.html /var/www/site/` is charged too.
 
 ## "Unnamed" needs to know what you asked for

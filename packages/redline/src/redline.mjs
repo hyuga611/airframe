@@ -17,7 +17,8 @@
  * frame's ledger. That is the whole reason the frame exists.
  */
 import { readFileSync, existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { finding, report, ledger, sortie } from '@hyuga/spar';
 import { runDirectly, readStdin } from '@hyuga/spar/cli';
 
@@ -110,12 +111,43 @@ export const TARIFF = [
   },
 ];
 
+/**
+ * Where to look for the config, in order: the working directory, every directory above it,
+ * then the home directory.
+ *
+ * It used to be the working directory and nothing else, which reads as reasonable and is the
+ * shape of an ordinary tool's config. It is the wrong shape for this one. An agent's working
+ * directory is wherever the work is — a client folder eight levels into a network share, a
+ * subdirectory of a monorepo — and it is nowhere near where anybody would think to write down
+ * which paths are production.
+ *
+ * The cost of not finding the file is the whole point of the tool, and it is silent. Measured
+ * on a work machine over a day: every client-facing HTML file published to a live web server
+ * was charged as an unnamed file rather than as production, because the config the machine
+ * needed had nowhere to sit that the lookup would reach. The most exposed write of the day was
+ * the cheapest one on the sheet.
+ */
+const lookIn = (cwd) => {
+  const dirs = [];
+  for (let dir = resolve(cwd); ; dir = dirname(dir)) {
+    dirs.push(dir);
+    if (dirname(dir) === dir) break;
+  }
+  const home = resolve(homedir() || '');
+  if (home && !dirs.includes(home)) dirs.push(home);
+  return dirs;
+};
+
 /** Production paths are per-repository and nobody else's business, so they come from config. */
 export function config(cwd = process.cwd()) {
-  for (const name of ['.redline.json', 'redline.json']) {
-    const p = join(resolve(cwd), name);
-    if (existsSync(p)) {
-      try { return { production: [], ...JSON.parse(readFileSync(p, 'utf8')) }; } catch { /* fall through */ }
+  for (const dir of lookIn(cwd)) {
+    for (const name of ['.redline.json', 'redline.json']) {
+      const p = join(dir, name);
+      if (existsSync(p)) {
+        // A file that will not parse is not a reason to stop looking. The nearest readable one
+        // wins, and if none of them is readable the environment still gets its say.
+        try { return { production: [], ...JSON.parse(readFileSync(p, 'utf8')) }; } catch { /* keep looking */ }
+      }
     }
   }
   const env = process.env.REDLINE_PRODUCTION;
@@ -427,7 +459,8 @@ export function main(argv) {
   Without the prompt hook, redline cannot tell a file you asked for from one it chose itself,
   and simply does not charge for that — it never guesses the scope.
 
-  Which paths count as production is yours to say, in .redline.json:
+  Which paths count as production is yours to say, in .redline.json — looked for in the
+  working directory, then every directory above it, then your home directory:
 
     { "production": ["X:/01-client/", "/var/www/"] }
 

@@ -177,6 +177,22 @@ test('production is whatever this repository says it is', (t) => {
   assert.match(charged.additionalContext, /production \+2/);
 });
 
+test('the config is found in the home directory when the work is somewhere else entirely', (t) => {
+  const home = frame(t);
+  launch(home);
+  const elsewhere = mkdtempSync(join(tmpdir(), 'redline-work-'));
+  t.after(() => rmSync(elsewhere, { recursive: true, force: true }));
+  writeFileSync(join(home, '.redline.json'), JSON.stringify({ production: ['/var/www/'] }), 'utf8');
+
+  const out = said(run(home, ['hook', 'pre'], {
+    stdin: write('/var/www/index.html'),
+    cwd: elsewhere,
+    env: { HOME: home, USERPROFILE: home },
+  }));
+  assert.match(out.additionalContext, /production \+2/,
+    'nothing above the working directory says anything, so the home directory has the last word');
+});
+
 /**
  * Without the prompt hook redline cannot tell a file you asked for from one it chose itself,
  * and does not charge for that at all rather than guessing. With it, it can tell — and still

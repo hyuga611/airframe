@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -148,6 +148,18 @@ test('unnamed is a reading, not a charge', (t) => {
   const filed = ledger().filter((f) => f.source === 'redline' && f.phase === 'pre');
   assert.equal(filed.length, 4);
   assert.deepEqual(filed[0].observed, { points: 0, total: 0, kinds: ['unnamed'] });
+});
+
+test('the config is found from wherever the work is, not only from the top of it', (t) => {
+  const root = fresh(t);
+  writeFileSync(join(root, '.redline.json'), JSON.stringify({ production: ['/var/www/'] }), 'utf8');
+  const deep = join(root, 'clients', 'acme', 'web');
+  mkdirSync(deep, { recursive: true });
+
+  // The working directory is wherever the work is, and it is nowhere near where anybody would
+  // think to write down which paths are production. Not finding the file is silent, and what it
+  // costs is the whole tool: the most exposed write of the day gets charged as an ordinary one.
+  assert.deepEqual(price(write('/var/www/site/index.html'), deep).map((c) => c.kind), ['production']);
 });
 
 test('the files a human named are pulled out of their own words', () => {
