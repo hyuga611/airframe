@@ -111,22 +111,7 @@ export const TARIFF = [
   },
 ];
 
-/**
- * Where to look for the config, in order: the working directory, every directory above it,
- * then the home directory.
- *
- * It used to be the working directory and nothing else, which reads as reasonable and is the
- * shape of an ordinary tool's config. It is the wrong shape for this one. An agent's working
- * directory is wherever the work is — a client folder eight levels into a network share, a
- * subdirectory of a monorepo — and it is nowhere near where anybody would think to write down
- * which paths are production.
- *
- * The cost of not finding the file is the whole point of the tool, and it is silent. Measured
- * on a work machine over a day: every client-facing HTML file published to a live web server
- * was charged as an unnamed file rather than as production, because the config the machine
- * needed had nowhere to sit that the lookup would reach. The most exposed write of the day was
- * the cheapest one on the sheet.
- */
+/** One directory, then every directory above it, then the home directory. */
 const lookIn = (cwd) => {
   const dirs = [];
   for (let dir = resolve(cwd); ; dir = dirname(dir)) {
@@ -211,11 +196,17 @@ const WRITES = /^(Write|Edit|MultiEdit|NotebookEdit)$/;
  *
  * An unterminated heredoc takes the rest of the string: the body is the part that was not
  * meant to run, and guessing where it ends in favour of charging is the wrong way to be wrong.
+ *
+ * The marker does not have to end the line, and reading it as if it did is how this file's own
+ * commit was charged three points for the phrase `rm -rf` inside its message. `git commit -F -
+ * <<'MSG' && git log -1` is an ordinary thing to type: the body starts on the next line either
+ * way, and the rest of *this* line is a real command that still has to be read. So it is put
+ * back rather than swallowed with the body.
  */
 export function stripHeredocs(s) {
   return s.replace(
-    /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1\r?\n[\s\S]*?(?:\r?\n[ \t]*\2[ \t]*(?=\r?\n|$)|$)/g,
-    '<<',
+    /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1([^\n]*)\r?\n[\s\S]*?(?:\r?\n[ \t]*\2[ \t]*(?=\r?\n|$)|$)/g,
+    (_all, _quote, _tag, rest) => `<<${rest}`,
   );
 }
 

@@ -301,6 +301,22 @@ test('what a heredoc writes is a file, not a command', (t) => {
   // The command after the heredoc still runs, and is still charged.
   assert.deepEqual(price(bash(`${write}\nnpm publish`)).map((c) => c.kind), ['outward']);
 
+  // The marker does not have to end the line. Reading it as if it did charged this repository's
+  // own commit three points for the words in its message.
+  const chained = [
+    "git commit -F - <<'ZZEOF' && git log --oneline -1",
+    'Stop charging for the phrase rm -rf build in a commit message',
+    'ZZEOF',
+  ].join('\n');
+  assert.deepEqual(price(bash(chained)), [], 'the body is still the body');
+
+  // And the rest of that line is a real command, so it is put back rather than swallowed.
+  assert.deepEqual(
+    price(bash(chained.replace('git log --oneline -1', 'npm publish'))).map((c) => c.kind),
+    ['outward'],
+    'what follows the marker on the same line still runs',
+  );
+
   // A heredoc nobody closed takes the rest: the body is the part not meant to run, and
   // guessing where it ends in favour of charging is the wrong way to be wrong.
   assert.deepEqual(price(bash("cat > x <<'EOF'\nrm -rf /\n")), []);
