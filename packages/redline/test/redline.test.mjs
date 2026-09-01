@@ -162,6 +162,36 @@ test('the config is found from wherever the work is, not only from the top of it
   assert.deepEqual(price(write('/var/www/site/index.html'), deep).map((c) => c.kind), ['production']);
 });
 
+test('the tree the file lives in is asked too, not only the one the session started in', (t) => {
+  const root = fresh(t);
+  const share = join(root, 'share');
+  const deep = join(share, 'clients', 'acme', '01_web');
+  mkdirSync(deep, { recursive: true });
+  writeFileSync(join(share, '.redline.json'), JSON.stringify({ production: ['/share/clients/'] }), 'utf8');
+  const started = join(root, 'home');
+  mkdirSync(started, { recursive: true });
+
+  // The shape a work machine actually has: the session is started in a home directory and never
+  // leaves it, and every write of the day lands on a network share. Nothing at or above the
+  // session's directory says a word about production; the share knows perfectly well.
+  assert.deepEqual(price(write(join(deep, 'index.html')), started).map((c) => c.kind), ['production']);
+});
+
+test('two configs are added together, never ranked', (t) => {
+  const root = fresh(t);
+  const share = join(root, 'share', 'clients');
+  mkdirSync(share, { recursive: true });
+  const started = join(root, 'home');
+  mkdirSync(started, { recursive: true });
+  writeFileSync(join(root, 'share', '.redline.json'), JSON.stringify({ production: ['/share/clients/'] }), 'utf8');
+  writeFileSync(join(started, '.redline.json'), JSON.stringify({ production: ['/var/www/'] }), 'utf8');
+
+  // Ranking would let the directory being written to shorten the list the session started with,
+  // which is a quieter limiter chosen by the thing it is meant to be watching.
+  assert.deepEqual(price(write(join(share, 'x.html')), started).map((c) => c.kind), ['production']);
+  assert.deepEqual(price(write('/var/www/x.html'), started).map((c) => c.kind), ['production']);
+});
+
 test('the files a human named are pulled out of their own words', () => {
   assert.deepEqual(namedInPrompt('fix the bug in src/app.mjs and update README.md').sort(), ['app.mjs', 'readme.md']);
   assert.deepEqual(namedInPrompt('make it faster'), []);

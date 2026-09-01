@@ -138,18 +138,49 @@ const lookIn = (cwd) => {
   return dirs;
 };
 
-/** Production paths are per-repository and nobody else's business, so they come from config. */
-export function config(cwd = process.cwd()) {
-  for (const dir of lookIn(cwd)) {
+/** The nearest readable config at or above one directory, or null if there is none. */
+function nearest(start) {
+  for (const dir of lookIn(start)) {
     for (const name of ['.redline.json', 'redline.json']) {
       const p = join(dir, name);
       if (existsSync(p)) {
-        // A file that will not parse is not a reason to stop looking. The nearest readable one
-        // wins, and if none of them is readable the environment still gets its say.
+        // A file that will not parse is not a reason to stop looking.
         try { return { production: [], ...JSON.parse(readFileSync(p, 'utf8')) }; } catch { /* keep looking */ }
       }
     }
   }
+  return null;
+}
+
+/**
+ * Production paths are per-repository and nobody else's business, so they come from config.
+ *
+ * Looked up from more than one place, because a hook's working directory is not where the work
+ * is. It is the directory the *session* was started in, and an agent started in a home
+ * directory writes to a client tree on a network share all day without ever changing it.
+ * Following 0.3.0 to the letter, a config sitting at the top of that share is never reached,
+ * and the machine ends up keeping two copies of the same file — one where the writing happens
+ * and one where the session happens — which then have to be kept in step by hand.
+ *
+ * So the file being written gets a look-up of its own. Which paths are production is a property
+ * of the tree the file lives in, the way .gitignore and .editorconfig are, and that tree is the
+ * one that knows.
+ *
+ * The results are unioned rather than ranked. Ranking would let a config anywhere in the write
+ * path shorten the list the session was started with — a quieter limiter, chosen by the
+ * directory being written to. A union can only ever make more things count as production, which
+ * is the direction a limiter is allowed to be wrong in.
+ */
+export function config(cwd = process.cwd(), alsoFrom = []) {
+  const production = [];
+  let found = false;
+  for (const start of [cwd, ...alsoFrom].filter(Boolean)) {
+    const cfg = nearest(start);
+    if (!cfg) continue;
+    found = true;
+    for (const p of cfg.production || []) if (!production.includes(p)) production.push(p);
+  }
+  if (found) return { production };
   const env = process.env.REDLINE_PRODUCTION;
   return { production: env ? env.split(';').filter(Boolean) : [] };
 }
@@ -278,11 +309,15 @@ function scope(cwd) {
  * Charges are not exclusive: a `git push --force` to a production checkout is irreversible and
  * outward at once, and pricing it as one of those would be the cheaper reading of the two.
  */
-export function price(payload, cwd = process.cwd(), cfg = config(cwd)) {
+export function price(payload, cwd = process.cwd(), cfg = null) {
   const tool = payload.tool_name || payload.toolName || '';
   const input = payload.tool_input || payload.toolInput || {};
   const command = String(input.command || '');
   const path = input.file_path || input.path || input.notebook_path || '';
+  // The file being written is asked where its own tree keeps the rules, alongside the session's
+  // directory. A shell command is not: its paths would have to be guessed out of a string, and
+  // guessing wrong here means reading a file off whatever the guess pointed at.
+  const conf = cfg || config(cwd, path ? [dirname(resolve(String(path)))] : []);
   // What the command does, rather than what it says. A charge names the part that earned it, so
   // the pilot is told which half of a compound command was the expensive one.
   const doing = acts(command);
@@ -298,7 +333,7 @@ export function price(payload, cwd = process.cwd(), cfg = config(cwd)) {
       charges.push({ kind: rule.kind, points: rule.points, why: rule.why, on: path });
       continue;
     }
-    if (rule.path && isProduction(tool, path, doing, cfg)) {
+    if (rule.path && isProduction(tool, path, doing, conf)) {
       charges.push({ kind: rule.kind, points: rule.points, why: rule.why, on: path || doing.join(' ').slice(0, 120) });
       continue;
     }

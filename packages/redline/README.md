@@ -77,11 +77,24 @@ Yours to say, in `.redline.json`:
 { "production": ["X:/01-client/", "/var/www/"] }
 ```
 
-Looked for in the working directory, then in every directory above it, then in your home
-directory. An agent works wherever the work is — a client folder deep inside a network share, a
-package inside a monorepo — which is nowhere near where anybody would think to write this down,
-and a config that is not found fails silently: the most exposed write of the day gets charged as
-an ordinary one.
+Looked for in two places at once: from the directory the session was started in, and from the
+directory of the file being written — each walking upwards, then falling back to your home
+directory.
+
+Both, because a hook's working directory is not where the work is. It is where the *session*
+started, and an agent started in a home directory writes to a client tree on a network share all
+day without ever changing it. A config at the top of that share would never be reached, and a
+config that is not found fails silently: the most exposed write of the day gets charged as an
+ordinary one. Which paths are production is a property of the tree the file lives in, the way
+`.gitignore` is, and that tree is the one that knows.
+
+What they say is **added together, never ranked**. Ranking would let a config anywhere in the
+write path shorten the list the session started with — a quieter limiter, chosen by the directory
+being written to. A union can only make more things count as production, which is the direction a
+limiter is allowed to be wrong in.
+
+A shell command is not given a look-up of its own: its paths would have to be guessed out of a
+string, and guessing wrong means reading a file off wherever the guess pointed.
 
 Or `REDLINE_PRODUCTION`, semicolon-separated. A substring match, on the path for a write tool and on
 the command line for a shell call — so `cp build/index.html /var/www/site/` is charged too.
