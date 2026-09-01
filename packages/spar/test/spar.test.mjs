@@ -69,6 +69,22 @@ test('the pilot transforms; nothing infers it', (t) => {
   assert.throws(() => transform('waverider'), /unknown mode/);
 });
 
+/**
+ * Which sortie `spar melee` closes on is decided by the working directory and nothing else, and
+ * closing is what makes the limiter stop talking. A directory with nothing launched in it used
+ * to answer with a blank sortie, and the blank was committable — so typing this in the wrong
+ * folder wrote a phantom swing next to a session that was still being watched, and said nothing
+ * that would tell the two apart.
+ */
+test('melee refuses a sortie that was never launched', (t) => {
+  fresh(t);
+  const r = enterMelee({ action: 'deploy', exit: 'backup at 09:00', state: '42 rows' });
+  assert.equal(r.entered, false);
+  assert.match(r.refusal, /no sortie here/);
+  launch({ mode: 'strike' });
+  assert.equal(enterMelee({ action: 'deploy', exit: 'backup at 09:00', state: '42 rows' }).entered, true);
+});
+
 test('melee refuses to close without an exit route', (t) => {
   fresh(t);
   launch({ mode: 'strike' });

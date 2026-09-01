@@ -256,6 +256,13 @@ export function report(f, cwd = process.cwd()) {
  */
 export function enterMelee({ action, exit, state, readAt = Date.now() }, cwd = process.cwd()) {
   const s = sortie(cwd);
+  // Which sortie this closes on is decided by the working directory, and closing to melee is the
+  // one operation that makes the limiter stop talking. Entering the wrong sortie and failing to
+  // enter the intended one are both bad, and without this the second one is silent: a directory
+  // with no sortie in it answers with a blank, and the blank is committable. What gets written
+  // then is a phantom swing beside a session that is still being watched, and the operator has
+  // no way to tell that from the swing they meant to start.
+  if (!s.id) return { entered: false, refusal: `no sortie here to commit — ${home(cwd)} has none launched` };
   if (s.mode !== 'strike') return { entered: false, refusal: 'melee belongs to strike mode' };
   if (s.melee) return { entered: false, refusal: 'already committed' };
   if (!action) return { entered: false, refusal: 'nothing named to close on' };
@@ -437,11 +444,15 @@ export function main(argv) {
       const r = leaveMelee();
       if (!r.left) { console.error(`spar: ${r.refusal}`); return 1; }
       console.log(`spar: disengaged from "${r.action}" — ${r.findings.length} finding(s), worst ${r.severity}, verdict ${r.verdict}`);
+      console.log(`      sortie: ${home()}`);
       return r.verdict === 'halt' || r.verdict === 'refuse-shot' ? 1 : 0;
     }
     const r = enterMelee({ action: val('action'), exit: val('exit'), state: val('state') });
     if (!r.entered) { console.error(`spar: will not close — ${r.refusal}`); return 1; }
     console.log(`spar: committed. exit route: ${r.exit}`);
+    // Said out loud because it is chosen by the working directory and nothing else. Typing this
+    // in the wrong folder silences a limiter that is watching something else entirely.
+    console.log(`      sortie: ${home()}`);
     return 0;
   }
 

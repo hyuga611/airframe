@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.2.1
+
+### `spar melee` が「どのソーティに入ったか」を言うようになった
+
+melee は**リミッターを黙らせる操作**で、どのソーティに入るかは cwd だけで決まる
+（`SPAR_HOME`、無ければ隣の `.spar`）。実測で、`dev/airframe` に cwd が残ったまま打った melee が、
+稼働中セッションの `C:\Users\atlan\.spar` ではなく `dev\airframe\.spar` に入っていた。
+
+このとき何も表示されないので、**意図したソーティに入れていないことに気づけない**。
+enter と leave の両方で、操作した `.spar` のパスを1行出すようにした。
+
+### 出撃していないソーティには入れない
+
+さらに悪い形がその下にあった。`sortie()` は sortie.json が無いと**空の値**（`id: null`）を返し、
+それが**そのまま commit できていた**。つまり何も起動していないディレクトリで melee を打つと、
+まだ見張られている本物のセッションの隣に**幽霊の swing** が書かれる。しかも両者を区別する
+手掛かりは何も出ない。
+
+`id` が無いソーティは `no sortie here to commit — <path> has none launched` で断るようにした。
+
+### README に「`spar` は airframe を link しても通らない」と書いた
+
+`@hyuga/airframe` をグローバルに link しても `spar` はパスに乗らない（別パッケージ・別 bin）。
+README が `spar melee …` を「打てる」前提で書いていたのに、そこが書いていなかった。
+
 ## 0.2.0
 
 ### `@hyuga/spar/cli` — 部品の CLI の縁を、1箇所にまとめた

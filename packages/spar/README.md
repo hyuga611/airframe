@@ -85,6 +85,12 @@ swing. Past the propellant's bingo point, closing is refused outright — a swin
 that cannot be broken off halfway, so starting one you cannot finish and land is the worst
 available move.
 
+From a terminal it is `spar melee --action "..." --exit "..." --state "..."`, and
+`spar melee leave` on the way out. **Which sortie that closes on is decided by the working
+directory** — `SPAR_HOME`, or `.spar` beside you — so both commands print the one they used.
+A directory with nothing launched in it is refused rather than committed: typing this in the
+wrong folder used to write a phantom swing next to a session that was still being watched.
+
 ## Propellant
 
 ```js
@@ -118,6 +124,16 @@ that silently never reaches the gate.
 ```bash
 npm i @hyuga/spar
 ```
+
+That gives you `spar` inside the project. To type it anywhere — which is what closing to melee
+during a run actually needs — install it globally, or link it if you are running from a checkout:
+
+```bash
+npm i -g @hyuga/spar          # or, from a clone: npm link -w packages/spar
+```
+
+Mounting the whole machine with `@hyuga/airframe` does **not** put `spar` on your path: they are
+separate packages with separate binaries, and linking one links one.
 
 Node 18+. Zero dependencies, no daemon, no network, no LLM.
 
