@@ -229,6 +229,33 @@ test('a committed-looking call is told where melee is', (t) => {
   assert.match(out.message, /exit route/);
 });
 
+/**
+ * The measured shape: writing the page is two, uploading it is two more. A run that does the
+ * whole job crosses the line on its last step every time, and that step is precisely where the
+ * way out of it used to stop being mentioned.
+ */
+test('past the edge it is still told where melee is — that is where it matters', (t) => {
+  fresh(t, { production: ['/var/www/'] });
+  launch({ mode: 'strike' });
+  assert.match(check(write('/var/www/report.html')).message, /Halfway/, 'writing the page: 2');
+  const out = check(bash('scp /var/www/report.html host:/srv/'));
+  assert.match(out.message, /spent 4/, 'and uploading it: 4');
+  assert.match(out.message, /close to melee first/);
+});
+
+test('stopped with nobody in the seat, it says how a batch was supposed to be declared', (t) => {
+  fresh(t, { production: ['/var/www/'] });
+  launch({ mode: 'strike', autonomy: true, reason: 'the monthly run' });
+  const out = check(write('/var/www/a.html'));
+  assert.equal(out.verdict, 'advise', 'two points is not past the edge yet');
+  const stopped = check(write('/var/www/b.html'));
+  assert.equal(stopped.verdict, 'halt');
+  // Ten clients is twenty points, and from the second one on every publish is refused. Saying
+  // nothing while denying the call leaves whoever wired the run with a deadlock and no sentence.
+  assert.match(stopped.message, /declared before it starts/);
+  assert.match(stopped.message, /spar melee/);
+});
+
 test('a harmless call is not', (t) => {
   fresh(t);
   launch({ mode: 'strike' });

@@ -69,6 +69,32 @@ against a limit of 3, and a number that is mostly noise gets read as noise.
 The numbers are meant to be argued with — spend a week disagreeing with them and change them. The
 structure is what is being claimed, not the weights.
 
+## A run that was always going to cost this much
+
+Writing a page into a production tree is two points. Uploading it is two more. So a run that does
+the whole job crosses the limit on its last step — **every time** — and a batch is that shape
+multiplied: ten clients is twenty points, and from the second one onwards every publish is past
+the edge.
+
+Raising the limit for long sorties would not fix this; it would just mean the limit grows with
+whatever the agent happens to be doing, which is not a limit. Charging a repeated destination
+only once would not fix it either — there is no such thing as half a publish, and the tenth
+client's page is not free because the first one's was charged.
+
+What is actually wrong there is the question. "Is this call past the edge" is the wrong thing to
+ask, per call, about a sequence whose cost was known before it started. Ask it once, in front:
+
+```bash
+spar melee --action "monthly karte for all clients" \
+           --exit   "yesterday's backup at X:/backup/20260901" \
+           --state  "$(curl -sI https://example.com/report/ | head -1)"
+```
+
+A swing needs an exit route and a reading taken at contact, and it refuses to close without
+either. Inside one, findings accumulate instead of interrupting, and the gate is pulled **once**,
+on `spar melee leave`. For an unattended run that is the operator's line to write in the runner,
+before the loop — not something the agent argues its way through call by call.
+
 ## Which paths are production
 
 Yours to say, in `.redline.json`:

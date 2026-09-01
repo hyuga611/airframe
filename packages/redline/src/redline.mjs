@@ -447,17 +447,33 @@ export function check(payload, cwd = process.cwd()) {
   if (!r.show) return null;
 
   const head = `redline: ${total} — ${charges.map((c) => `${c.kind} +${c.points}`).join(', ')}`;
+  // The suggestion belongs at every tier, and used to be made at only the quietest one.
+  //
+  // Publishing one page is two points; publishing it and then uploading it is four. So a run
+  // that does the whole job crosses the line on its last step, every time, and the tier where
+  // the way out of that was named was the one tier it had already left. Past the edge the
+  // message said "say out loud that you are past it", which is advice for a slip, not for a
+  // sequence that was always going to cost this much — and unattended it said nothing at all,
+  // to nobody, while denying the call.
+  //
+  // A batch is the same shape multiplied: ten clients is twenty points, and from the second one
+  // onwards every publish is refused. That is not a limit doing its job; it is a limit being
+  // asked the wrong question. The right one is asked before the run starts, by whoever wired it
+  // up, and melee is where it is asked.
   const closeIn = melee(charges, cwd);
   if (r.verdict === 'halt') {
     return {
       verdict: 'halt',
-      message: `${head}\nPast ${THRESHOLDS.stop} with nobody in the seat. Stopping here: hand back to a human.`,
+      message: `${head}\nPast ${THRESHOLDS.stop} with nobody in the seat. Stopping here: hand back to a human.`
+        + '\nIf this run was always going to cost this much — a batch, a publish of many things —'
+        + ' that is a swing, and it has to be declared before it starts, not argued with per call:'
+        + ' spar melee --action "..." --exit "..." --state "..."',
     };
   }
   if (severity === 'stop') {
     return {
       verdict: 'advise',
-      message: `${head}\nThis sortie has spent ${total} against a limit of ${THRESHOLDS.stop}. You are flying it, so it is your call — but say out loud that you are past the edge before going on.`,
+      message: `${head}\nThis sortie has spent ${total} against a limit of ${THRESHOLDS.stop}. You are flying it, so it is your call — but say out loud that you are past the edge before going on.${closeIn}`,
     };
   }
   return { verdict: 'advise', message: `${head}\nHalfway to the limit (${THRESHOLDS.stop}).${closeIn}` };
