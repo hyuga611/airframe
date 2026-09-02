@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 ### 既定の cwd が spar の `root()`（`CLAUDE_PROJECT_DIR`、無ければ cwd）になった
 

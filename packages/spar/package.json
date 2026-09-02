@@ -1,6 +1,6 @@
 {
   "name": "@hyuga/spar",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "The frame agent tools bolt onto: one mode (converge or diverge), one phase set, one finding shape, one ledger per repo, and one rule for who may stop what. Zero dependencies, no daemon, no LLM.",
   "type": "module",
   "main": "src/spar.mjs",

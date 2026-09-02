@@ -1,6 +1,6 @@
 {
   "name": "@hyuga/carbon",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Keeps the draft your agent is about to write over. Only while you are diverging, only for files git does not already have, never for anything that looks like a credential — and it never says a word, because interrupting a draft is the failure it exists to prevent.",
   "type": "module",
   "main": "src/carbon.mjs",
@@ -26,7 +26,7 @@
     "developer-tools"
   ],
   "dependencies": {
-    "@hyuga/spar": "^0.2.0"
+    "@hyuga/spar": "^0.3.0"
   },
   "publishConfig": {
     "access": "public"

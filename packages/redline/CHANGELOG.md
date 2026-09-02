@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
 
 ### `REDLINE_PRODUCTION` が設定ファイルと合算されるようになった
 
