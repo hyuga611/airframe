@@ -1,6 +1,24 @@
 # airframe
 
-**One machine, made of parts** — a frame, whatever is bolted to it, and a person flying it.
+**Start with [llm-safe-sql](packages/llm-safe-sql).** Let a language model propose an `UPDATE` or
+`DELETE`, run it for real inside a transaction, measure the actual before/after values, and always
+roll back — so a human approves a measured fact, not the model's claim. MySQL and PostgreSQL, an MCP
+server, no runtime dependencies. It is the one part of this repository people install, and it needs
+none of the others.
+
+```bash
+npm install @hyuga/llm-safe-sql
+```
+
+Its [README](packages/llm-safe-sql) ships a seeded sample database, so you can watch a confirmation
+card get measured before you point it at anything real.
+
+## The rest of the machine
+
+**One machine, made of parts** — a frame, whatever is bolted to it, and a person flying it. The
+remaining parts are for people who run a coding agent under Claude Code and want what happens
+*around* the work — what gets recorded, what gets refused, what reaches them and when — to be one
+thing rather than five.
 
 ```bash
 npx @hyuga/airframe install
