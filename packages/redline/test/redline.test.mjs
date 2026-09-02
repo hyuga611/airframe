@@ -11,11 +11,17 @@ function fresh(t, { production = [] } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'redline-'));
   const prevHome = process.env.SPAR_HOME;
   const prevProd = process.env.REDLINE_PRODUCTION;
+  // homedir() is one of the places config() looks, so a real ~/.redline.json would shadow
+  // REDLINE_PRODUCTION (it did on 2026-09-02). Point home at the temp dir for the test's life.
+  const prevUser = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
   process.env.SPAR_HOME = dir;
+  process.env.HOME = dir;
+  process.env.USERPROFILE = dir;
   process.env.REDLINE_PRODUCTION = production.join(';');
   t.after(() => {
     if (prevHome === undefined) delete process.env.SPAR_HOME; else process.env.SPAR_HOME = prevHome;
     if (prevProd === undefined) delete process.env.REDLINE_PRODUCTION; else process.env.REDLINE_PRODUCTION = prevProd;
+    for (const k of ['HOME', 'USERPROFILE']) { if (prevUser[k] === undefined) delete process.env[k]; else process.env[k] = prevUser[k]; }
     rmSync(dir, { recursive: true, force: true });
   });
   return dir;

@@ -2,12 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import {
   finding, report, verdict, launch, transform, sortie, saveSortie,
   enterMelee, leaveMelee, ledger, discard, brief, burn, fuel, CONTACT_STALE_MS,
-  quote, MAX_QUOTED,
+  quote, MAX_QUOTED, root, home,
 } from '../src/spar.mjs';
 
 /** Every test gets its own frame. SPAR_HOME wins over cwd, so nothing leaks between them. */
@@ -232,4 +232,21 @@ test('the frame marks its own directory as not the repository', (t) => {
   writeFileSync(join(dir, '.gitignore'), 'ledger.jsonl\n');
   report(finding({ phase: 'post', source: 'x', subject: 'y', observed: 1 }));
   assert.equal(readFileSync(join(dir, '.gitignore'), 'utf8'), 'ledger.jsonl\n');
+});
+
+test("root: CLAUDE_PROJECT_DIR is the sortie home under hooks; SPAR_HOME still wins over both", (t) => {
+  const prevP = process.env.CLAUDE_PROJECT_DIR, prevS = process.env.SPAR_HOME;
+  t.after(() => {
+    if (prevP === undefined) delete process.env.CLAUDE_PROJECT_DIR; else process.env.CLAUDE_PROJECT_DIR = prevP;
+    if (prevS === undefined) delete process.env.SPAR_HOME; else process.env.SPAR_HOME = prevS;
+  });
+  delete process.env.SPAR_HOME;
+  delete process.env.CLAUDE_PROJECT_DIR;
+  assert.equal(root(), process.cwd());
+  const proj = join(tmpdir(), "spar-proj");
+  process.env.CLAUDE_PROJECT_DIR = proj;
+  assert.equal(root(), proj);
+  assert.equal(home(), join(resolve(proj), ".spar"));
+  process.env.SPAR_HOME = join(tmpdir(), "spar-elsewhere");
+  assert.equal(home(), process.env.SPAR_HOME);
 });

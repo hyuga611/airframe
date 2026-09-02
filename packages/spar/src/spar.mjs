@@ -41,7 +41,22 @@ export const CONTACT_STALE_MS = 60_000;
 /** Fraction of the propellant that may be spent before the machine must be able to turn back. */
 export const BINGO = 0.7;
 
-export const home = (cwd = process.cwd()) => process.env.SPAR_HOME || join(resolve(cwd), '.spar');
+/**
+ * Where this sortie lives.
+ *
+ * Every part resolves `.spar/` from a cwd, and the default cwd used to be the process own.
+ * Under Claude Code that is the shell cwd, and the shell cwd drifts: one `cd` inside a Bash
+ * call and every hook after it runs somewhere else. Measured on 2026-09-02: a session started
+ * in the home directory scored 21 in `reflint-vscode/.spar`, 3 in `orogami/.spar` and 8 in
+ * `~/.spar` — the same flight, split three ways, and nine repositories grew a `.spar/` nobody
+ * asked for.
+ *
+ * Claude Code hands hooks the directory it was started in as `CLAUDE_PROJECT_DIR`. That is the
+ * sortie home, whatever the shell is doing. `SPAR_HOME` still wins over both, so tests and
+ * anyone who wants a frame elsewhere are unaffected.
+ */
+export const root = () => process.env.CLAUDE_PROJECT_DIR || process.cwd();
+export const home = (cwd = root()) => process.env.SPAR_HOME || join(resolve(cwd), '.spar');
 const ledgerPath = (cwd) => join(home(cwd), 'ledger.jsonl');
 const sortiePath = (cwd) => join(home(cwd), 'sortie.json');
 const nowIso = () => new Date().toISOString();
@@ -100,7 +115,7 @@ function blank() {
  * Deliberately small and deliberately on disk: every part runs as its own short-lived hook
  * process, so there is nowhere else for them to agree about what mode the machine is in.
  */
-export function sortie(cwd = process.cwd()) {
+export function sortie(cwd = root()) {
   try {
     return { ...blank(), ...JSON.parse(readFileSync(sortiePath(cwd), 'utf8')) };
   } catch {
@@ -108,7 +123,7 @@ export function sortie(cwd = process.cwd()) {
   }
 }
 
-export function saveSortie(s, cwd = process.cwd()) {
+export function saveSortie(s, cwd = root()) {
   ensure(home(cwd));
   writeFileSync(sortiePath(cwd), JSON.stringify(s, null, 2));
   return s;
@@ -122,7 +137,7 @@ export function saveSortie(s, cwd = process.cwd()) {
  * FRAME.ja.md. "It had been running for a while" is not one of them, which is why the reason
  * is recorded beside the flag rather than the flag alone.
  */
-export function launch({ mode = 'strike', autonomy = false, reason = null, budget = 0 } = {}, cwd = process.cwd()) {
+export function launch({ mode = 'strike', autonomy = false, reason = null, budget = 0 } = {}, cwd = root()) {
   if (!MODES.includes(mode)) throw new TypeError(`spar: unknown mode ${mode}`);
   if (autonomy && mode !== 'strike') throw new TypeError('spar: cruise does not fly autonomously');
   if (autonomy && !reason) throw new TypeError('spar: autonomy needs a declared reason');
@@ -138,7 +153,7 @@ export function launch({ mode = 'strike', autonomy = false, reason = null, budge
 }
 
 /** Transformation is the pilot's, always. Nothing here inspects the work to guess a mode. */
-export function transform(mode, cwd = process.cwd()) {
+export function transform(mode, cwd = root()) {
   if (!MODES.includes(mode)) throw new TypeError(`spar: unknown mode ${mode}`);
   const s = sortie(cwd);
   if (s.melee) throw new Error('spar: cannot transform while committed to melee');
@@ -165,7 +180,7 @@ export function fuel(s = sortie()) {
  * The return leg costs more than the outbound one, so `bingo` is not "nearly empty". It is
  * "still able to get home and land".
  */
-export function burn(n, cwd = process.cwd()) {
+export function burn(n, cwd = root()) {
   const s = sortie(cwd);
   s.propellant.spent += n;
   saveSortie(s, cwd);
@@ -230,7 +245,7 @@ export function verdict(f, s = sortie()) {
  *            the gate is pulled once, on disengaging.
  *   fire   — interrupt on warn and stop. The rest goes to the ledger.
  */
-export function report(f, cwd = process.cwd()) {
+export function report(f, cwd = root()) {
   const s = sortie(cwd);
   const rec = { ...f, mode: f.mode || s.mode, sortie: s.id };
   ensure(home(cwd));
@@ -254,7 +269,7 @@ export function report(f, cwd = process.cwd()) {
  *           that has since moved, and moving while you are committed to the swing is the entire
  *           difference between melee and fire.
  */
-export function enterMelee({ action, exit, state, readAt = Date.now() }, cwd = process.cwd()) {
+export function enterMelee({ action, exit, state, readAt = Date.now() }, cwd = root()) {
   const s = sortie(cwd);
   // Which sortie this closes on is decided by the working directory, and closing to melee is the
   // one operation that makes the limiter stop talking. Entering the wrong sortie and failing to
@@ -293,7 +308,7 @@ export function enterMelee({ action, exit, state, readAt = Date.now() }, cwd = p
 }
 
 /** Disengage, and pull the gate once. Everything the swing accumulated is judged here. */
-export function leaveMelee(cwd = process.cwd()) {
+export function leaveMelee(cwd = root()) {
   const s = sortie(cwd);
   if (!s.melee) return { left: false, refusal: 'not in melee' };
   const held = ledger(cwd).slice(s.melee.since);
@@ -322,7 +337,7 @@ export function leaveMelee(cwd = process.cwd()) {
  */
 export const MAX_LEDGER_READ = 2 * 1024 * 1024;
 
-export function ledger(cwd = process.cwd()) {
+export function ledger(cwd = root()) {
   let text;
   try {
     const file = ledgerPath(cwd);
@@ -359,7 +374,7 @@ export function ledger(cwd = process.cwd()) {
  * and why, because that is the material the next sortie gets built from. An idea abandoned with
  * its reason intact gets reused. One abandoned silently is lost twice.
  */
-export function discard(subject, reason, cwd = process.cwd()) {
+export function discard(subject, reason, cwd = root()) {
   return report(finding({
     phase: 'post', source: 'pilot', subject, observed: 'discarded',
     note: reason, mode: 'cruise', actor: 'human',
@@ -392,7 +407,7 @@ export function quote(v) {
   return JSON.stringify(flat.length > MAX_QUOTED ? `${flat.slice(0, MAX_QUOTED)}…` : flat);
 }
 
-export function brief(cwd = process.cwd()) {
+export function brief(cwd = root()) {
   const all = ledger(cwd);
   const unfinished = all.filter((f) => f.phase === 'claim' && f.severity === 'stop');
   const dropped = all.filter((f) => f.mode === 'cruise' && f.observed === 'discarded');

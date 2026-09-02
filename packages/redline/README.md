@@ -129,7 +129,7 @@ union: anything found this way can only *add* to what counts as production. A gu
 nowhere costs a few `existsSync` calls and changes no number. Read-only segments are dropped
 first, so `grep /var/www -r` is not asked about the tree it is reading.
 
-Or `REDLINE_PRODUCTION`, semicolon-separated. A substring match, on the path for a write tool and on
+Or, as well, `REDLINE_PRODUCTION`, semicolon-separated — it is unioned with whatever the files say, never ignored because a file exists. A substring match, on the path for a write tool and on
 the command line for a shell call — so `cp build/index.html /var/www/site/` is charged too.
 
 ## "Unnamed" needs to know what you asked for

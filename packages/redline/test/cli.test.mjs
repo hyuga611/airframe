@@ -37,7 +37,7 @@ function run(home, args, { stdin = '', cwd = home, env = {} } = {}) {
     input: stdin,
     cwd,
     encoding: 'utf8',
-    env: { ...process.env, SPAR_HOME: home, ...env },
+    env: { ...process.env, SPAR_HOME: home, HOME: home, USERPROFILE: home, ...env },
   });
   return { code: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
 }
@@ -45,7 +45,7 @@ function run(home, args, { stdin = '', cwd = home, env = {} } = {}) {
 function launch(home, extra = []) {
   const r = spawnSync(process.execPath, [SPAR, 'launch', 'strike', ...extra], {
     encoding: 'utf8',
-    env: { ...process.env, SPAR_HOME: home },
+    env: { ...process.env, SPAR_HOME: home, HOME: home, USERPROFILE: home },
   });
   // Checked, because a launch that did not happen leaves every sortie id null — and findings
   // filed under a null id all match each other, so the per-sortie tests below would pass while

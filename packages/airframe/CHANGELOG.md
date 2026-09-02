@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### 既定の cwd が spar の `root()`（`CLAUDE_PROJECT_DIR`、無ければ cwd）になった
+
+出撃・status・discard がシェルの現在地ではなく起動したディレクトリの `.spar` を見る。経緯は spar の CHANGELOG。
+
 ## 0.2.3
 
 ### `@hyuga/redline@^0.5.0` を要求するようになった

@@ -21,7 +21,7 @@ import { join, basename, extname, resolve, relative, isAbsolute } from 'node:pat
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
-import { home, sortie, finding, report } from '@hyuga/spar';
+import { home, sortie, finding, report, root } from '@hyuga/spar';
 import { runDirectly, readStdin } from '@hyuga/spar/cli';
 
 /** Above this, keep the fact and not the body. A draft is prose; something huge is not. */
@@ -51,7 +51,7 @@ export const NEVER = [
   /(^|[\\/])(service[_-]?account|serviceaccount)[^\\/]*\.json$/i,
 ];
 
-export const store = (cwd = process.cwd()) => join(home(cwd), 'carbon');
+export const store = (cwd = root()) => join(home(cwd), 'carbon');
 
 const stamp = () => new Date().toISOString().replace(/[:.]/g, '-');
 
@@ -68,7 +68,7 @@ export function isSensitive(path) {
  * job is to not keep what it must not keep. Resolution goes through realpath first, so a link
  * that merely sits inside cannot point out.
  */
-export function within(path, cwd = process.cwd()) {
+export function within(path, cwd = root()) {
   try {
     const root = realpathSync(resolve(cwd));
     const rel = relative(root, realpathSync(path));
@@ -85,7 +85,7 @@ export function within(path, cwd = process.cwd()) {
  * show` away, so copying it would be noise — and the files that actually get lost are the
  * untracked drafts sitting next to the tracked work.
  */
-export function tracked(path, cwd = process.cwd()) {
+export function tracked(path, cwd = root()) {
   try {
     const r = spawnSync('git', ['ls-files', '--error-unmatch', '--', path], {
       cwd, stdio: 'ignore', windowsHide: true,
@@ -109,7 +109,7 @@ export function target(payload) {
  * strike has git and review behind it, a file that does not exist yet is not being overwritten,
  * a tracked file is already kept, and a secret must never be kept at all.
  */
-export function keep(payload, cwd = process.cwd()) {
+export function keep(payload, cwd = root()) {
   const s = sortie(cwd);
   if (s.mode !== 'cruise') return null;
 
@@ -154,7 +154,7 @@ export function keep(payload, cwd = process.cwd()) {
   return kept;
 }
 
-export function list(cwd = process.cwd()) {
+export function list(cwd = root()) {
   const dir = store(cwd);
   if (!existsSync(dir)) return [];
   return readdirSync(dir).sort().map((f) => ({ id: f, path: join(dir, f), size: statSync(join(dir, f)).size }));

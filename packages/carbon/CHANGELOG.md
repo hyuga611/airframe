@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### 既定の cwd が spar の `root()`（`CLAUDE_PROJECT_DIR`、無ければ cwd）になった
+
+控えの置き場がシェルの現在地に引きずられなくなった。経緯は spar の CHANGELOG。
+
 ## 0.2.0
 
 ### `@hyuga/spar@^0.2.0` を要求するようになった

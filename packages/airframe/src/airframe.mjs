@@ -26,7 +26,7 @@ import { homedir } from 'node:os';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { launch, sortie, fuel, brief, ledger, discard, transform, burn, finding, report } from '@hyuga/spar';
+import { launch, sortie, fuel, brief, ledger, discard, transform, burn, finding, report, root } from '@hyuga/spar';
 import { runDirectly, emit } from '@hyuga/spar/cli';
 
 const require_ = createRequire(import.meta.url);
@@ -103,7 +103,7 @@ export function mounted() {
   });
 }
 
-export const settingsPath = (scope = 'project', cwd = process.cwd()) => (scope === 'user'
+export const settingsPath = (scope = 'project', cwd = root()) => (scope === 'user'
   ? join(homedir(), '.claude', 'settings.json')
   : join(resolve(cwd), '.claude', 'settings.json'));
 
@@ -185,7 +185,7 @@ export function wire(settings, parts = mounted(), { how = 'npx' } = {}) {
   return { settings: out, added };
 }
 
-export function install({ scope = 'project', cwd = process.cwd(), how = 'npx' } = {}) {
+export function install({ scope = 'project', cwd = root(), how = 'npx' } = {}) {
   const file = settingsPath(scope, cwd);
   const before = readSettings(file);
   const { settings, added } = wire(before, mounted(), { how });
@@ -216,7 +216,7 @@ export function install({ scope = 'project', cwd = process.cwd(), how = 'npx' } 
  * AIRFRAME_AUTONOMY carries a reason — which is exactly the second of the frame's two conditions:
  * somebody deliberately wired this into a loop or a timer, and wrote down why.
  */
-export function session(cwd = process.cwd()) {
+export function session(cwd = root()) {
   const reason = process.env.AIRFRAME_AUTONOMY;
   const budget = Number(process.env.AIRFRAME_BUDGET || 0);
   launch({
@@ -240,7 +240,7 @@ export function session(cwd = process.cwd()) {
  * connected to it, which meant the one guard that depends on it (not closing to melee with too
  * little left to finish and land) never fired once.
  */
-export function spend(cwd = process.cwd()) {
+export function spend(cwd = root()) {
   const f = burn(1, cwd);
   if (!f.pastBingo) return null;
   return `airframe: ${f.spent}/${f.budget} spent — past bingo.
@@ -255,7 +255,7 @@ Start nothing new. Finish what is open, write it down, and land.`;
  * exactly like one. Counting them is the whole part — how many were sent is a number a pilot
  * should be able to see afterwards, and cannot otherwise.
  */
-export function wingman(cwd = process.cwd()) {
+export function wingman(cwd = root()) {
   const s = sortie(cwd);
   const sent = ledger(cwd).filter((f) => f.actor === 'wingman' && f.sortie === s.id).length + 1;
   report(finding({
@@ -275,7 +275,7 @@ export function wingman(cwd = process.cwd()) {
  * sense of what the whole thing was. This writes the one line that closes it, and it is also
  * what makes the next brief worth reading.
  */
-export function land(cwd = process.cwd()) {
+export function land(cwd = root()) {
   const s = sortie(cwd);
   if (!s.id) return null;
   const mine = ledger(cwd).filter((f) => f.sortie === s.id);
@@ -303,7 +303,7 @@ export function land(cwd = process.cwd()) {
  * Phase is `brief` because this is ground inspection — it happens around the sortie, not inside
  * one. A non-zero exit is a `warn`, not a `stop`: a linter has no business halting a machine.
  */
-export function mount(command, args, { as, cwd = process.cwd() } = {}) {
+export function mount(command, args, { as, cwd = root() } = {}) {
   const r = spawnSync(command, args, { cwd, encoding: 'utf8', shell: false, windowsHide: true });
   const out = `${r.stdout || ''}${r.stderr || ''}`.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const code = r.status === null ? -1 : r.status;
@@ -318,7 +318,7 @@ export function mount(command, args, { as, cwd = process.cwd() } = {}) {
   return { code, out };
 }
 
-export function status(cwd = process.cwd()) {
+export function status(cwd = root()) {
   const s = sortie(cwd);
   const f = fuel(s);
   const parts = mounted();

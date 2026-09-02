@@ -19,7 +19,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { finding, report, ledger, sortie } from '@hyuga/spar';
+import { finding, report, ledger, sortie, root } from '@hyuga/spar';
 import { runDirectly, readStdin } from '@hyuga/spar/cli';
 
 export const THRESHOLDS = { record: 1, advise: 2, stop: 3 };
@@ -156,18 +156,17 @@ function nearest(start) {
  * directory being written to. A union can only ever make more things count as production, which
  * is the direction a limiter is allowed to be wrong in.
  */
-export function config(cwd = process.cwd(), alsoFrom = []) {
+export function config(cwd = root(), alsoFrom = []) {
   const production = [];
-  let found = false;
+  const add = (p) => { if (p && !production.includes(p)) production.push(p); };
   for (const start of [cwd, ...alsoFrom].filter(Boolean)) {
-    const cfg = nearest(start);
-    if (!cfg) continue;
-    found = true;
-    for (const p of cfg.production || []) if (!production.includes(p)) production.push(p);
+    for (const p of nearest(start)?.production || []) add(p);
   }
-  if (found) return { production };
-  const env = process.env.REDLINE_PRODUCTION;
-  return { production: env ? env.split(';').filter(Boolean) : [] };
+  // The environment is unioned in for the same reason the files are: it can only add. Until
+  // 0.3.x it was consulted only when no file was found, so a ~/.redline.json silently switched
+  // off whatever REDLINE_PRODUCTION said — including in this package's own tests.
+  for (const p of (process.env.REDLINE_PRODUCTION || '').split(';')) add(p);
+  return { production };
 }
 
 const norm = (p) => String(p || '').replace(/\\/g, '/').toLowerCase();
@@ -331,7 +330,7 @@ export function absolutePathsIn(doing, max = 4) {
   return out;
 }
 
-export function price(payload, cwd = process.cwd(), cfg = null) {
+export function price(payload, cwd = root(), cfg = null) {
   const tool = payload.tool_name || payload.toolName || '';
   const input = payload.tool_input || payload.toolInput || {};
   const command = String(input.command || '');
@@ -379,7 +378,7 @@ export function price(payload, cwd = process.cwd(), cfg = null) {
   return charges;
 }
 
-export function score(cwd = process.cwd()) {
+export function score(cwd = root()) {
   const s = sortie(cwd);
   return ledger(cwd)
     .filter((f) => f.source === 'redline' && f.phase === 'pre' && f.sortie === s.id)
@@ -415,7 +414,7 @@ function melee(charges, cwd) {
     + ' and a reading taken now: spar melee --action "..." --exit "..." --state "..."';
 }
 
-export function check(payload, cwd = process.cwd()) {
+export function check(payload, cwd = root()) {
   const charges = price(payload, cwd);
   if (!charges.length) return null;
   const points = charges.reduce((n, c) => n + c.points, 0);

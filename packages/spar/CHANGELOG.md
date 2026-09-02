@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### `.spar` の場所を「シェルの現在地」ではなく「セッションの起点」から決めるようになった
+
+全部品は cwd から `.spar/` を引くが、既定の cwd がプロセス自身のものだった。Claude Code の hook では
+それはシェルの現在地で、Bash の中で一度 `cd` すると以後の hook は全部そこで動く。
+2026-09-02 の実測で、ホームで始めた 1 セッションの redline が `reflint-vscode/.spar` で 21、
+`orogami/.spar` で 3、`~/.spar` で 8 と、同じ飛行が 3 つの台帳に割れていた（9 リポに頼んでいない
+`.spar/` が生えた）。
+
+Claude Code が hook に渡す `CLAUDE_PROJECT_DIR`（起動したディレクトリ）を既定にした（`root()`）。
+`SPAR_HOME` は引き続きどちらより優先。0.2.1 の melee の件も同じ根で、これで塞がる。
+
 ## 0.2.1
 
 ### `spar melee` が「どのソーティに入ったか」を言うようになった
