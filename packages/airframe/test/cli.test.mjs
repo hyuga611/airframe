@@ -32,7 +32,10 @@ function run(w, args, { stdin = '', env = {} } = {}) {
     input: stdin,
     cwd: w.dir,
     encoding: 'utf8',
-    env: { ...process.env, SPAR_HOME: w.home, ...env },
+    // CLAUDE_PROJECT_DIR is pinned to the temp dir. Under a Claude Code hook it names the real
+    // project — and when that project is the home directory, its .claude/settings.json is the
+    // user's own. Left inherited, `install` in these tests would target that file.
+    env: { ...process.env, SPAR_HOME: w.home, CLAUDE_PROJECT_DIR: w.dir, ...env },
   });
   return { code: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
 }
@@ -145,11 +148,14 @@ test('install keeps the previous settings, under a name the next install cannot 
   writeFileSync(w.settings, JSON.stringify({ model: 'claude-opus-5' }));
   const r = run(w, ['install']);
   assert.match(r.out, /previous settings kept at/);
-  const backups = readdirSync(dirname(w.settings)).filter((f) => f.includes('airframe-backup'));
+  // In backups/ beside settings.json (~/.claude/backups/ for --user), not as a sibling of it.
+  const dir = join(dirname(w.settings), 'backups');
+  const backups = readdirSync(dir).filter((f) => f.endsWith('-airframe-install'));
   assert.equal(backups.length, 1);
-  assert.match(readFileSync(join(dirname(w.settings), backups[0]), 'utf8'), /claude-opus-5/);
-  assert.equal(readdirSync(dirname(w.settings)).filter((f) => f.endsWith('.tmp')).length, 0,
-    'the temporary file it renames from is not left behind');
+  assert.match(backups[0], /^settings\.json\.\d{4}-\d{2}-\d{2}-\d{6}-airframe-install$/);
+  assert.match(readFileSync(join(dir, backups[0]), 'utf8'), /claude-opus-5/);
+  assert.deepEqual(readdirSync(dirname(w.settings)).sort(), ['backups', 'settings.json'],
+    'nothing beside settings.json: no backup, no temporary file it renames from');
 });
 
 /**

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 
 import { sortie, discard, ledger, finding, report } from '@hyuga/spar';
 import { wire, install, session, status, mounted, settingsPath, spend, land, mount, wingman } from '../src/airframe.mjs';
@@ -11,11 +11,16 @@ function fresh(t) {
   const dir = mkdtempSync(join(tmpdir(), 'airframe-'));
   const prev = process.env.SPAR_HOME;
   const prevAuto = process.env.AIRFRAME_AUTONOMY;
+  const prevProj = process.env.CLAUDE_PROJECT_DIR;
   process.env.SPAR_HOME = join(dir, '.spar');
+  // Under a Claude Code hook CLAUDE_PROJECT_DIR names the real project; root() would follow it
+  // out of the temp dir and install() would target the real settings.json.
+  process.env.CLAUDE_PROJECT_DIR = dir;
   delete process.env.AIRFRAME_AUTONOMY;
   t.after(() => {
     if (prev === undefined) delete process.env.SPAR_HOME; else process.env.SPAR_HOME = prev;
     if (prevAuto === undefined) delete process.env.AIRFRAME_AUTONOMY; else process.env.AIRFRAME_AUTONOMY = prevAuto;
+    if (prevProj === undefined) delete process.env.CLAUDE_PROJECT_DIR; else process.env.CLAUDE_PROJECT_DIR = prevProj;
     rmSync(dir, { recursive: true, force: true });
   });
   return dir;
@@ -63,6 +68,8 @@ test('install writes the file, keeps a backup, and is idempotent', (t) => {
   const first = install({ cwd: dir });
   assert.ok(first.added > 0);
   assert.ok(existsSync(first.backup), 'the previous settings are kept');
+  assert.equal(dirname(first.backup), join(dir, '.claude', 'backups'), 'in backups/, not beside the file');
+  assert.match(basename(first.backup), /^settings\.json\.\d{4}-\d{2}-\d{2}-\d{6}-airframe-install$/);
   const written = JSON.parse(readFileSync(first.file, 'utf8'));
   assert.equal(written.model, 'opus', 'settings that were not ours are untouched');
 
@@ -126,13 +133,25 @@ test('--bin wires the installed binaries, for machines with no registry to npx f
   assert.ok(!all.some((c) => c.startsWith('npx ')), 'no npx anywhere');
 });
 
-test('the two runners are not confused for one another', () => {
+test('the same hook under another runner is recognised, not wired a second time', () => {
   const npx = commands(wire({}).settings);
   const bin = commands(wire({}, mounted(), { how: 'bin' }).settings);
-  assert.notDeepEqual(npx, bin);
-  // wiring one after the other must not leave both spellings behind
-  const mixed = wire(wire({}).settings, mounted(), { how: 'bin' });
-  assert.ok(mixed.added > 0, 'a different spelling is a different hook, and is added');
+  assert.notDeepEqual(npx, bin, 'the spellings really differ');
+  // Found against a real settings.json: wired by path, then `install` with the default runner
+  // put the npx spelling beside it, and the limiter counted every call twice.
+  const local = wire({}, mounted(), { how: 'local' }).settings;
+  const again = wire(local, mounted(), { how: 'npx' });
+  assert.equal(again.added, 0, 'the runner is spelling; the part and its sub-command are the hook');
+  assert.deepEqual(commands(again.settings), commands(local));
+  assert.equal(wire(wire({}).settings, mounted(), { how: 'bin' }).added, 0, 'npx then --bin, likewise');
+  assert.equal(wire(local, mounted(), { how: 'bin' }).added, 0, 'local then --bin, likewise');
+});
+
+test('two parts checked out side by side are told apart by the file that runs, not the path', () => {
+  // dev/airframe/packages/habit/src/habit.mjs has "airframe" in its path. It is habit's hook.
+  const theirs = { hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'node "C:/dev/airframe/packages/habit/src/habit.mjs" hook session' }] }] } };
+  const parts = [{ name: '@hyuga/airframe', hooks: { SessionStart: ['hook session'] }, present: true }];
+  assert.equal(wire(theirs, parts, { how: 'local' }).added, 1, "habit's hook is not airframe's");
 });
 
 test('--local wires absolute paths, so nothing has to be installed at all', () => {

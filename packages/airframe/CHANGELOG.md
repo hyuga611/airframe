@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.3.1
+
+### `install` が、別の走らせ方で既に居るフックを二重登録しなくなった
+
+実機の settings.json で起きた。`node ".../redline.mjs" hook pre` と手で配線してあるところへ
+`airframe install` を既定（npx）で走らせると、`npx @hyuga/redline hook pre` が横に足された。
+走らせ方は違うが動くコードは同じで、redline が毎回2回刻んでいた。
+
+重複判定を「コマンド文字列が同じか」から「同じ部品の同じサブコマンドを走らせているか」に変えた。
+`npx @hyuga/redline`・`redline`・`node <どこか>/redline.mjs` は全部同じフック。部品の同定は
+走るファイル名（`redline.mjs`）で行い、パスの途中は見ない。`dev/airframe/packages/habit/src/habit.mjs`
+は habit のフックであって airframe のフックではない。
+
+### `install` の退避先が `backups/` になった
+
+`settings.json.airframe-backup-<ISO時刻>` を settings.json の横に置いていたのをやめ、
+同じディレクトリの `backups/settings.json.<YYYY-MM-DD-HHMMSS>-airframe-install` に置く。
+`--user` なら `~/.claude/backups/`。エディタが読むディレクトリに install のたびに1つずつ
+ファイルが増えていくのを止めるため。
+
+### テストが `CLAUDE_PROJECT_DIR` を一時ディレクトリに固定するようになった
+
+Claude Code のフックから `node --test` を走らせると、`CLAUDE_PROJECT_DIR` が実プロジェクトを
+指したまま継承され、`install` のテストが実際の settings.json（ホームで起動していれば
+`~/.claude/settings.json`）を狙っていた。上の重複判定のおかげで書き込みには至らなかったが、
+6本が落ちて発覚した。テスト側で `CLAUDE_PROJECT_DIR` を temp に固定した。
+
 ## 0.3.0
 
 ### 既定の cwd が spar の `root()`（`CLAUDE_PROJECT_DIR`、無ければ cwd）になった

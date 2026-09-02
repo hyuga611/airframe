@@ -21,7 +21,7 @@
 import {
   readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, renameSync,
 } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname, basename, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
@@ -141,26 +141,44 @@ function runner(name, sub, how) {
 }
 
 /**
- * Is this hook already here, written slightly differently?
+ * Does this command already run the part's sub-command — under any runner?
  *
- * Found against a real settings.json: a part had been wired by hand as
- * `node C:/x/habit.mjs hook pre`, and the line generated here quotes the path so a directory
- * with a space in it still works. Compared literally those are two different strings, so the
- * part would have been added a second time and every write recorded twice. Quoting, slashes and
- * runs of whitespace are spelling; the command is the same command.
+ * Found against a real settings.json, twice. First a part wired by hand as
+ * `node C:/x/habit.mjs hook pre`, where the line generated here quotes the path so a directory
+ * with a space in it still works: compared literally those are two strings, so the part was
+ * added a second time. Then the same hook present once as `node ".../redline.mjs" hook pre`
+ * and once as `npx @hyuga/redline hook pre`: the runner differed, the code that ran did not,
+ * and the limiter counted every call twice. Quoting, slashes, whitespace and the runner are
+ * all spelling. The part and its sub-command are the hook.
  */
-const same = (a, b) => {
-  const norm = (c) => String(c).replace(/["']/g, '').split('\\').join('/').replace(/\s+/g, ' ').trim();
-  return norm(a) === norm(b);
-};
+const norm = (c) => String(c).replace(/["']/g, '').split('\\').join('/').replace(/\s+/g, ' ').trim();
+
+function runs(command, name, sub) {
+  const c = norm(command);
+  const tail = ` ${norm(sub)}`;
+  if (!c.endsWith(tail)) return false;
+  const head = c.slice(0, -tail.length).trim();
+  const short = name.split('/').pop();
+  if (head === short) return true; // bin:   redline hook pre
+  const words = head.split(' ');
+  if (words[0] === 'npx') { // npx:   npx [-y] @hyuga/redline[@0.6.0] hook pre
+    const pkg = words[words.length - 1].replace(/(.)@[^@/]*$/, '$1');
+    return pkg === name || pkg === short;
+  }
+  if (words[0] === 'node') { // local: node ".../redline/src/redline.mjs" hook pre
+    const base = words.slice(1).join(' ').split('/').pop();
+    return base.replace(/\.[cm]?js$/, '') === short;
+  }
+  return false;
+}
 
 /**
  * Add our hooks to whatever is already in settings.json.
  *
  * Two things this must never do: drop a hook somebody else put there, and add a second copy of
  * one of ours. Both are silent — the first loses a tool that was working, the second charges
- * every call twice — so entries are matched on the exact command string and appended only when
- * that string is absent.
+ * every call twice — so an entry is appended only when nothing already runs that part's
+ * sub-command, however it is spelled.
  */
 export function wire(settings, parts = mounted(), { how = 'npx' } = {}) {
   const out = { ...settings, hooks: { ...(settings.hooks || {}) } };
@@ -172,7 +190,7 @@ export function wire(settings, parts = mounted(), { how = 'npx' } = {}) {
       for (const entry of subs) {
         const { sub, matcher } = typeof entry === 'string' ? { sub: entry } : entry;
         const command = runner(part.name, sub, how);
-        const already = existing.some((g) => (g.hooks || []).some((h) => same(h.command, command)));
+        const already = existing.some((g) => (g.hooks || []).some((h) => runs(h.command, part.name, sub)));
         if (already) continue;
         const group = { hooks: [{ type: 'command', command, timeout: 10 }] };
         if (matcher) group.matcher = matcher;
@@ -185,6 +203,11 @@ export function wire(settings, parts = mounted(), { how = 'npx' } = {}) {
   return { settings: out, added };
 }
 
+const stamp = (d = new Date()) => {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+};
+
 export function install({ scope = 'project', cwd = root(), how = 'npx' } = {}) {
   const file = settingsPath(scope, cwd);
   const before = readSettings(file);
@@ -193,10 +216,14 @@ export function install({ scope = 'project', cwd = root(), how = 'npx' } = {}) {
   mkdirSync(dirname(file), { recursive: true });
   let backup = null;
   if (existsSync(file)) {
-    // Stamped, not fixed. A single `settings.json.airframe-backup` is overwritten by the next
-    // install, so the copy kept is the one made just after the previous install rather than the
-    // last known-good file — the two are the same only if nothing was edited in between.
-    backup = `${file}.airframe-backup-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    // Kept in `backups/` beside the file — ~/.claude/backups/ for --user — not as a sibling of
+    // settings.json, where every install leaves one more file in the directory the editor
+    // reads. Stamped, not fixed: a single fixed name is overwritten by the next install, so the
+    // copy kept is the one made just after the previous install rather than the last
+    // known-good file — the two are the same only if nothing was edited in between.
+    const dir = join(dirname(file), 'backups');
+    mkdirSync(dir, { recursive: true });
+    backup = join(dir, `${basename(file)}.${stamp()}-airframe-install`);
     copyFileSync(file, backup);
   }
   // Written beside the target and renamed over it. settings.json is the file the whole editor
