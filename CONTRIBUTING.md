@@ -4,7 +4,7 @@
 
 ```bash
 npm ci          # one command: npm workspaces links every part to every other
-npm test        # all seven, 547 tests
+npm test        # all eight, 599 tests
 ```
 
 Node 18+ for everything except `llm-safe-sql`, which needs Node 20+. There is no
@@ -35,6 +35,7 @@ npm run db:down --workspace=packages/llm-safe-sql
 | [`carbon`](packages/carbon) | keeps the draft about to be written over, in cruise | `NEVER` is where a path that must not be copied goes |
 | [`airframe`](packages/airframe) | the assembled machine: install, session, status | `PARTS` is where a new part's hooks go |
 | [`groundtruth`](packages/groundtruth) | the completion gate — re-fetches real state | `src/index.mjs`, called from your code rather than a hook |
+| [`yubisashi`](packages/yubisashi) | points at the target before a write — runs the completion contract's probe once | `POINTED_AT` is which of redline's charges have to be pointed at first |
 | [`habit`](packages/habit) | learns the corrections you make by hand | the largest part, and the one with the most surface |
 | [`llm-safe-sql`](packages/llm-safe-sql) | runs the write, measures it, rolls back | has its own [CONTRIBUTING.md](packages/llm-safe-sql/CONTRIBUTING.md) — read that one |
 

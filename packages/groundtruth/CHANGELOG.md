@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.3
+
+### `@hyuga/groundtruth/contract` を公開した
+
+契約行の読み方（`expectFromSpec` / `checkContract` / `shellProbe`）を、package の
+`./contract` として外から import できるようにした。yubisashi が書き込みの前に同じ行を
+指差すために使う。読み手が 2 つあると 0.4.1 のときのように片方だけ直るので、契約の
+読み方は 1 か所のままにしてそれを共有する。中身は変えていない。
+
 ## 0.5.2
 
 ### Claude Code アダプタの README に、配線の事故2つを書いた

@@ -45,6 +45,7 @@ each other.
 | [**redline**](packages/redline) | the mark on the gauge | counts the session, not the call — and tells you, rather than stopping you |
 | [**carbon**](packages/carbon) | the copy taken as it is written over | the draft nothing else is keeping, kept only while you diverge |
 | [**groundtruth**](packages/groundtruth) | the completion gate | re-fetches real state at the moment "done" is claimed |
+| [**yubisashi**](packages/yubisashi) | the finger on the signal before the write | runs the completion contract's probe once, before the call that changes the world |
 | [**habit**](packages/habit) | what you keep fixing by hand | learns the corrections and hands them back next session |
 | [**llm-safe-sql**](packages/llm-safe-sql) | runs the write, measures it, rolls back | so a human approves a measured fact, not a claim |
 | [**airframe**](packages/airframe) | the assembled machine | one install, one status screen, one sortie |
@@ -88,7 +89,7 @@ the third paragraph is copied like any other draft.
 
 ```bash
 npm install     # one command: npm workspaces links every part to every other
-npm test        # all seven, 547 tests
+npm test        # all eight, 599 tests
 ```
 
 Node 18+. No daemon, no network, no LLM, and no dependency outside this repository.

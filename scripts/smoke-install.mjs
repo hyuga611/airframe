@@ -33,7 +33,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Dependency order. A part cannot be checked before what it imports is on the registry. */
-const ORDER = ['spar', 'redline', 'carbon', 'airframe', 'groundtruth', 'habit', 'llm-safe-sql'];
+const ORDER = ['spar', 'redline', 'carbon', 'airframe', 'groundtruth', 'yubisashi', 'habit', 'llm-safe-sql'];
 
 const run = (cmd, args, opts = {}) => spawnSync(cmd, args, {
   encoding: 'utf8', shell: false, windowsHide: true, ...opts,

@@ -1,6 +1,6 @@
 name: ci
 
-# One repository, seven packages, one place GitHub actually looks.
+# One repository, eight packages, one place GitHub actually looks.
 #
 # Until this file existed the workflows lived under packages/*/.github/, which is
 # where they sat when each part was its own repository. GitHub only reads
@@ -20,7 +20,7 @@ jobs:
       fail-fast: false
       matrix:
         node: ['18.x', '20.x', '22.x', '24.x']
-        package: [spar, redline, carbon, airframe, groundtruth, habit]
+        package: [spar, redline, carbon, airframe, groundtruth, habit, yubisashi]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -115,7 +115,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [spar, redline, carbon, airframe, groundtruth, habit]
+        package: [spar, redline, carbon, airframe, groundtruth, habit, yubisashi]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7

@@ -9,7 +9,8 @@
     "packages/airframe",
     "packages/groundtruth",
     "packages/habit",
-    "packages/llm-safe-sql"
+    "packages/llm-safe-sql",
+    "packages/yubisashi"
   ],
   "scripts": {
     "test": "npm test --workspaces --if-present"

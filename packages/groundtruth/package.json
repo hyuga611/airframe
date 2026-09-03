@@ -1,6 +1,6 @@
 {
   "name": "@hyuga/groundtruth",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Completion verification gate for AI agents & automation: before anything reports \"done\", re-fetch the real world state with a probe and block the completion claim on empty/mismatch/error. Framework-agnostic, zero-dependency, no LLM.",
   "type": "module",
   "main": "src/index.mjs",
@@ -9,6 +9,10 @@
     ".": {
       "types": "./src/index.d.ts",
       "default": "./src/index.mjs"
+    },
+    "./contract": {
+      "types": "./src/contract.d.ts",
+      "default": "./src/contract.mjs"
     }
   },
   "bin": {

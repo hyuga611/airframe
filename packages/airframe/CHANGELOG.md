@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.2
+
+### yubisashi（指差）を機体に載せた
+
+groundtruth は完了と言う前に probe で実状態を取り直す門。新しい部品 `@hyuga/yubisashi` は
+同じ契約を書き込みの**前**に一度指差す。redline が irreversible / outward / production と
+課金する呼び出しの直前に、まだ指差していない契約の probe を走らせ、書き込み前の読みを台帳に残す。
+走らない probe・既に真の期待・契約の不在は、書き込んだ後ではなくその場で分かる。
+
+`airframe install` が `PreToolUse` に `yubisashi hook pre` を配線する。`airframe status` の
+mounted 一覧にも並ぶ。動機と振る舞いは `packages/yubisashi/CHANGELOG.md`。
+
 ## 0.3.1
 
 ### `install` が、別の走らせ方で既に居るフックを二重登録しなくなった

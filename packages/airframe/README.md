@@ -109,6 +109,7 @@ mounted
   + redline          limiter — counts the sortie, not the call
   + habit         learns from the corrections you make by hand
   + carbon         keeps the draft about to be written over — cruise only
+  + yubisashi      points at the target before a write — the same contract groundtruth checks after
   + groundtruth        completion gate — called from your code, not from a hook
   - llm-safe-sql  runs the write, measures it, rolls back — from your code
 ```

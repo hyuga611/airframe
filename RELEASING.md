@@ -1,6 +1,6 @@
 # Releasing
 
-Seven packages, one repository, one workflow. A release is a tag; everything else
+Eight packages, one repository, one workflow. A release is a tag; everything else
 is done by [`.github/workflows/release.yml`](.github/workflows/release.yml), which
 runs that package's tests, refuses to continue if the version numbers disagree,
 publishes with provenance and creates the GitHub release.
@@ -37,12 +37,13 @@ After that, configure the trusted publisher and never publish by hand again.
 
 ## Order
 
-`airframe` depends on `spar` and `redline`, so those two go first. The rest are
+`airframe` depends on `spar` and `redline`, so those two go first; `yubisashi` reads
+contracts through `groundtruth`, so it goes after that one too. The rest are
 independent of each other; `groundtruth` and `llm-safe-sql` take `spar` as an
 *optional* peer, which means they install and behave exactly as before without it.
 
 ```
-spar → redline → carbon, habit, groundtruth → airframe → llm-safe-sql
+spar → redline → carbon, habit, groundtruth → airframe, yubisashi → llm-safe-sql
 ```
 
 **Wait for each arrow, do not just push the tags in that order.** Tags pushed back to back run

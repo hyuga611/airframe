@@ -75,6 +75,11 @@ export const PARTS = [
     hooks: { PreToolUse: ['hook pre'] },
   },
   {
+    name: '@hyuga/yubisashi',
+    is: 'points at the target before a write — the same contract groundtruth checks after',
+    hooks: { PreToolUse: ['hook pre'] },
+  },
+  {
     name: '@hyuga/groundtruth',
     is: 'completion gate — called from your code, not from a hook',
     hooks: {},
