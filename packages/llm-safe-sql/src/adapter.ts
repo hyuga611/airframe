@@ -183,7 +183,13 @@ export interface Adapter {
    * COMMITTED does not, so a concurrent commit can land between them and be
    * displayed as an effect of the statement being planned.
    */
-  begin(isolation?: 'default' | 'repeatable-read'): Promise<void>;
+  /**
+   * `read-only` opens a transaction the engine will only ever roll back, and
+   * asks the server to refuse writes inside it where it can (`BEGIN READ ONLY`,
+   * `START TRANSACTION READ ONLY`). An engine without the word opens a plain
+   * transaction: the rollback is what matters, the flag is the server's help.
+   */
+  begin(isolation?: 'default' | 'repeatable-read' | 'read-only'): Promise<void>;
   commit(): Promise<void>;
   rollback(): Promise<void>;
   inTransaction(): boolean;

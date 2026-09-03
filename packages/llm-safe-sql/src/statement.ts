@@ -15,7 +15,10 @@ const CLAUSE_END = new Set([
 const WHERE_END = new Set(['returning', 'order', 'limit', 'offset', 'fetch', 'for']);
 
 /** Keywords after which the next qualified name is a table. */
-const TABLE_LEAD = new Set(['from', 'join', 'update']);
+// `TABLE t` is Postgres and MySQL 8 for `SELECT * FROM t`, and it is legal as a
+// subquery: `WHERE id IN (TABLE secrets)` read every row of a table this walk
+// never reported, so the allowlist never saw it.
+const TABLE_LEAD = new Set(['from', 'join', 'update', 'table']);
 
 /** Significant tokens only — whitespace and comments carry no meaning here. */
 function significant(tokens: readonly Token[]): Token[] {
@@ -145,6 +148,129 @@ export function hasProjectionStar(tokens: readonly Token[]): boolean {
     if (prev === undefined) continue;
     if (prev.kind === 'punct' && (prev.value === ',' || prev.value === '.')) return true;
     if (prev.kind === 'ident' && STAR_LEAD.has(lower(prev.value))) return true;
+  }
+  return false;
+}
+
+/**
+ * Functions that take a whole row and hand back every column of it under one name.
+ * `to_jsonb(users)` returns the hash as surely as `SELECT *` does, and the column
+ * that comes back is called `to_jsonb`, so the check on the result cannot see it.
+ */
+const ROW_FUNCS = new Set(['to_json', 'to_jsonb', 'row_to_json', 'json_agg', 'jsonb_agg', 'array_agg', 'hstore', 'row']);
+
+/** Words that follow a table reference without being its alias. */
+const NOT_AN_ALIAS = new Set([
+  ...CLAUSE_END, 'as', 'join', 'left', 'right', 'inner', 'outer', 'cross', 'natural', 'full',
+  'lateral', 'tablesample', 'select', 'from', 'update', 'table', 'where',
+]);
+
+/**
+ * Every name a select list can use to mean "the whole row": each table referenced,
+ * its unqualified name, and the alias it was given.
+ */
+function rowNames(toks: readonly Token[]): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    if (t?.kind !== 'ident' || !TABLE_LEAD.has(lower(t.value))) continue;
+    let j = i + 1;
+    const n = toks[j];
+    if (n === undefined || (n.kind !== 'ident' && n.kind !== 'quotedIdent')) continue;
+    const parts = [n.value];
+    while (
+      toks[j + 1]?.kind === 'punct' &&
+      toks[j + 1]?.value === '.' &&
+      (toks[j + 2]?.kind === 'ident' || toks[j + 2]?.kind === 'quotedIdent')
+    ) {
+      parts.push(toks[j + 2]?.value ?? '');
+      j += 2;
+    }
+    names.add(lower(parts.join('.')));
+    names.add(lower(parts[parts.length - 1] ?? ''));
+    let a = toks[j + 1];
+    if (a?.kind === 'ident' && lower(a.value) === 'as') a = toks[j + 2];
+    if (a !== undefined && (a.kind === 'quotedIdent' || (a.kind === 'ident' && !NOT_AN_ALIAS.has(lower(a.value))))) {
+      names.add(lower(a.value));
+    }
+  }
+  return names;
+}
+
+function isRowItem(item: readonly Token[], names: ReadonlySet<string>): boolean {
+  const a = item[0];
+  if (a === undefined) return false;
+  const b = item[1];
+  // `SELECT u FROM users u`, `SELECT users FROM users`, with or without an alias after it.
+  if (
+    (a.kind === 'ident' || a.kind === 'quotedIdent') &&
+    names.has(lower(a.value)) &&
+    (b === undefined || b.kind === 'ident' || b.kind === 'quotedIdent')
+  ) {
+    return true;
+  }
+  // `SELECT to_jsonb(u) FROM users u`
+  if (a.kind === 'ident' && ROW_FUNCS.has(lower(a.value)) && b?.kind === 'punct' && b.value === '(') {
+    const c = item[2];
+    const d = item[3];
+    if (
+      c !== undefined &&
+      (c.kind === 'ident' || c.kind === 'quotedIdent') &&
+      names.has(lower(c.value)) &&
+      d?.kind === 'punct' &&
+      d.value === ')'
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether a select list hands back a whole row under one name — the same hole as
+ * a `*`, spelled without one. `SELECT u FROM users u` and `SELECT to_jsonb(users)
+ * FROM users` both return every column, including a denied one, and the column
+ * that comes back is called `u` or `to_jsonb`, so R2a cannot see it either.
+ *
+ * Judged the way {@link hasProjectionStar} is: on the tokens, per select list,
+ * item by item. A column that happens to share its name with a table it is not
+ * read from is not matched, because the names are taken from this statement's own
+ * FROM clauses. A column named after its own table is refused: Postgres would have
+ * resolved that spelling to the row as well.
+ */
+export function projectsRow(tokens: readonly Token[]): boolean {
+  const toks = significant(tokens);
+  const names = rowNames(toks);
+  if (names.size === 0) return false;
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    if (t?.kind !== 'ident' || lower(t.value) !== 'select') continue;
+    let j = i + 1;
+    const q = toks[j];
+    if (q?.kind === 'ident' && (lower(q.value) === 'distinct' || lower(q.value) === 'distinctrow' || lower(q.value) === 'all')) j++;
+    let depth = 0;
+    let item: Token[] = [];
+    const items: Token[][] = [];
+    for (; j < toks.length; j++) {
+      const u = toks[j];
+      if (u === undefined) continue;
+      if (u.kind === 'punct') {
+        if (u.value === '(') depth++;
+        else if (u.value === ')') {
+          if (depth === 0) break;
+          depth--;
+        } else if (u.value === ',' && depth === 0) {
+          items.push(item);
+          item = [];
+          continue;
+        }
+      } else if (depth === 0 && u.kind === 'ident' && lower(u.value) === 'from') {
+        break;
+      }
+      item.push(u);
+    }
+    items.push(item);
+    if (items.some((it) => isRowItem(it, names))) return true;
   }
   return false;
 }

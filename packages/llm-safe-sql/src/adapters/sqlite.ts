@@ -406,8 +406,10 @@ export class SqliteAdapter implements Adapter {
    * It also makes the isolation argument moot: a write transaction sees a stable
    * snapshot for its whole life, which is what `repeatable-read` asks for.
    */
-  async begin(_isolation: 'default' | 'repeatable-read' = 'default'): Promise<void> {
-    this.db.exec('BEGIN IMMEDIATE');
+  async begin(isolation: 'default' | 'repeatable-read' | 'read-only' = 'default'): Promise<void> {
+    // SQLite has no READ ONLY transaction; a deferred BEGIN takes no write lock,
+    // which is the nearest thing, and the engine rolls it back regardless.
+    this.db.exec(isolation === 'read-only' ? 'BEGIN' : 'BEGIN IMMEDIATE');
     this.open = true;
   }
 

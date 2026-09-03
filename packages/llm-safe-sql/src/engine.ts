@@ -1,5 +1,5 @@
 import { normalize, Rejected } from './normalize.js';
-import { tableRefs, setColumns, setColumnsAreCertain, whereClause, hasProjectionStar, lower } from './statement.js';
+import { tableRefs, setColumns, setColumnsAreCertain, whereClause, hasProjectionStar, projectsRow, lower } from './statement.js';
 import { PolicyViolation, type Policy } from './policy.js';
 import type { Adapter, Row, TableShape } from './adapter.js';
 // Every comparison in this file is between two values read the same way, through
@@ -45,7 +45,8 @@ export type RefusalCode =
   | 'CASCADES_UNKNOWN'
   | 'TRIGGER_SIDE_EFFECT'
   | 'UNREADABLE_COLUMN'
-  | 'ADAPTER_UNUSABLE';
+  | 'ADAPTER_UNUSABLE'
+  | 'BAD_LIMIT';
 
 /** A plan we will not produce. Producing none is always safe; producing a wrong one is not. */
 export class PlanRefused extends Refusal {
@@ -660,29 +661,58 @@ export class Engine {
     // printed the hash, which is the wrong way round: the guard held against the
     // deliberate spelling and gave way to the obvious one. Asking the table what
     // columns it has is the only way to know what a `*` is about to hand over.
-    if (this.policy.hasDeniedIdentifiers && hasProjectionStar(stmt.tokens)) {
+    //
+    // A whole-row reference is the same hole without the star: `SELECT u FROM
+    // users u` and `SELECT to_jsonb(users) FROM users` return every column under
+    // one name, and that name is not the column's, so the check on the result
+    // is blind to it too. It is judged here, where the table can still be asked.
+    if (this.policy.hasDeniedIdentifiers && (hasProjectionStar(stmt.tokens) || projectsRow(stmt.tokens))) {
       for (const table of tableRefs(stmt.tokens)) {
         const shape = await this.readAdapter.introspect(table);
         const hit = this.policy.deniedAmong(shape.columns.map((c) => c.name));
         if (hit === undefined) continue;
         throw new PlanRefused(
           'DENIED_IDENTIFIER',
-          `\`${table}\` has a column \`${hit.name}\`, and it is ${hit.why} A \`*\` would return it without ` +
-            'ever naming it. Name the columns you want instead.',
+          `\`${table}\` has a column \`${hit.name}\`, and it is ${hit.why} A \`*\` or a whole-row reference would ` +
+            'return it without ever naming it. Name the columns you want instead.',
         );
       }
     }
 
-    const limit = Math.max(1, Math.floor(opts.limit ?? this.limits.maxReadRows));
+    // R4a — `maxReadRows` is the ceiling, not the default. It was only the
+    // default: a caller's own `limit` went in unclamped, so the MCP tool could
+    // ask for a hundred million rows and get them, and a limit that was not a
+    // number became `LIMIT NaN` and a driver error.
+    if (opts.limit !== undefined && !(Number.isFinite(opts.limit) && opts.limit >= 1)) {
+      throw new PlanRefused('BAD_LIMIT', `limit must be a positive number; got ${String(opts.limit)}.`);
+    }
+    const limit = Math.min(this.limits.maxReadRows, Math.max(1, Math.floor(opts.limit ?? this.limits.maxReadRows)));
     await this.readAdapter.applyLimits({ statementMs: this.limits.statementMs, lockMs: this.limits.lockMs });
 
     // R4 — ask for one more row than we will show. Fetching exactly the limit
     // makes "was there more?" unanswerable, and the caller is then told it saw
     // everything. Wrapping rather than appending keeps a LIMIT the statement
     // already had, instead of producing two of them.
-    const rows = await this.readAdapter.query<Row>(
-      `SELECT * FROM (${stmt.sql}) AS llm_safe_sql_read LIMIT ${limit + 1}`,
-    );
+    // R7 — a read runs inside a transaction that is always rolled back, opened
+    // READ ONLY where the engine has the word. Reads ran in autocommit, on what is
+    // by default the same connection that commits: a function with a side effect
+    // in a SELECT — a user-defined one that writes, `set_config` moving
+    // `search_path` for every later statement — was committed as a read. The
+    // forbidden list catches the spellings it knows; the transaction catches the
+    // rest, and puts session settings back whether or not the list knew them.
+    await this.readAdapter.begin('read-only');
+    let rows: Row[];
+    try {
+      rows = await this.readAdapter.query<Row>(
+        `SELECT * FROM (${stmt.sql}) AS llm_safe_sql_read LIMIT ${limit + 1}`,
+      );
+    } finally {
+      try {
+        await this.readAdapter.rollback();
+      } catch (e) {
+        this.poisoned = `the transaction around a read could not be rolled back (${e instanceof Error ? e.message : String(e)})`;
+      }
+    }
     const truncated = rows.length > limit;
     const shown = truncated ? rows.slice(0, limit) : rows;
     const columns = Object.keys(shown[0] ?? {});

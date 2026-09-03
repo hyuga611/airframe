@@ -278,15 +278,25 @@ export class PostgresAdapter implements Adapter {
     };
   }
 
-  async begin(isolation: 'default' | 'repeatable-read' = 'default'): Promise<void> {
+  async begin(isolation: 'default' | 'repeatable-read' | 'read-only' = 'default'): Promise<void> {
     // Postgres defaults to READ COMMITTED, under which the count and the snapshot
     // are two different views of the database: a concurrent commit between them
     // shows up in the diff as an effect of the statement being planned. The dry
     // run therefore asks for REPEATABLE READ explicitly.
     await this.client.query(
-      isolation === 'repeatable-read' ? 'BEGIN ISOLATION LEVEL REPEATABLE READ' : 'BEGIN',
+      isolation === 'repeatable-read'
+        ? 'BEGIN ISOLATION LEVEL REPEATABLE READ'
+        : isolation === 'read-only'
+          ? 'BEGIN READ ONLY'
+          : 'BEGIN',
     );
     this.open = true;
+    // The search path was pinned once, at connect. A read that moved it would be
+    // rolled back with the rest, but a session that had it moved by other means
+    // still gets the pinned one for this read: LOCAL, so it ends with the transaction.
+    if (isolation === 'read-only') {
+      await this.client.query(`SET LOCAL search_path TO ${this.quoteIdent(this.schema)}`);
+    }
   }
 
   async commit(): Promise<void> {

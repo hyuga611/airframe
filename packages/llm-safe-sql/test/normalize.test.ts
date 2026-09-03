@@ -153,3 +153,50 @@ test('N5: INSERT is rejected with the reason, not silently classified', () => {
 test('N5: a write hidden inside a read is rejected', () => {
   assert.equal(reject('SELECT * FROM t WHERE id IN (DELETE FROM u RETURNING id)').code, 'MIXED');
 });
+
+// ---------------------------------------------------------------------
+//  N-FORBIDDEN — functions that run a string as SQL, and prefix families
+// ---------------------------------------------------------------------
+test('FORBIDDEN: a function that runs its string argument as SQL is refused', () => {
+  for (const sql of [
+    "SELECT query_to_xml('SELECT * FROM secrets', true, false, '') FROM orders LIMIT 1",
+    "SELECT ts_stat('SELECT v FROM secrets') FROM orders",
+    "SELECT cursor_to_xml('c', 10, true, false, '') FROM orders",
+  ]) {
+    const r = reject(sql, pg);
+    assert.equal(r.code, 'FORBIDDEN', sql);
+    assert.match(r.message, /statement given as a string/, sql);
+  }
+});
+
+test('FORBIDDEN: the dblink and advisory-lock families are refused by prefix', () => {
+  assert.equal(reject("SELECT dblink_connect('c', 'dbname=x') FROM orders", pg).code, 'FORBIDDEN');
+  assert.equal(reject("SELECT * FROM dblink_fetch('c', 10) AS t(a int)", pg).code, 'FORBIDDEN');
+  assert.equal(reject('SELECT pg_advisory_lock(1) FROM orders LIMIT 1', pg).code, 'FORBIDDEN');
+  assert.equal(reject('SELECT pg_try_advisory_xact_lock(1) FROM orders', pg).code, 'FORBIDDEN');
+  assert.equal(reject("SELECT set_config('search_path', 'evil', false) FROM orders LIMIT 1", pg).code, 'FORBIDDEN');
+});
+
+test('FORBIDDEN: a column that merely starts like dblink is still a column', () => {
+  // The prefix families are chosen so that no ordinary column name falls under them.
+  const r = normalize('SELECT dbl, advisory, pg_a FROM orders', pg);
+  assert.equal(r.kind, 'read');
+});
+
+// ---------------------------------------------------------------------
+//  P1 — the multi-table spellings without the word JOIN
+// ---------------------------------------------------------------------
+test('P1: DELETE ... USING joins a second table in and is refused', () => {
+  const r = reject('DELETE FROM orders USING secrets WHERE orders.id = secrets.order_id', pg);
+  assert.equal(r.code, 'MULTI_TABLE');
+});
+
+test('P1: UPDATE ... FROM joins a second table in and is refused', () => {
+  const r = reject('UPDATE orders SET status = s.status FROM secrets s WHERE orders.id = s.order_id', pg);
+  assert.equal(r.code, 'MULTI_TABLE');
+});
+
+test('P1: a FROM inside a subquery of SET or WHERE is not a second target', () => {
+  const r = normalize('UPDATE orders SET total = (SELECT sum(x) FROM lines WHERE lines.o = 1) WHERE id = 1', pg);
+  assert.equal(r.kind, 'write');
+});

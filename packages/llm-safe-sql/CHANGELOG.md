@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.11.0
+
+### 読み取りが素通りしていた 5 つの穴を塞いだ
+
+コードを読む監査で見つかったもの。いずれも「文をトークンで判定する」設計の外側にあった。
+テストを先に書いて再現させてから直している。
+
+**文字列を SQL として実行する関数**（R2 の外側）。`query_to_xml('SELECT * FROM secrets', …)` は
+文字列リテラルの中に表名があるので識別子走査に掛からず、allowlist に一度も照合されなかった。
+`query_to_xml` / `query_to_xml_and_xmlschema` / `cursor_to_xml` / `cursor_to_xmlschema` / `ts_stat` /
+`xpath_table` を FORBIDDEN に足した。`dblink_*` と `pg_advisory_*` / `pg_try_advisory_*` は前方一致で
+拒否する（`dblink` だけ載っていて `dblink_connect` が通っていた）。`set_config` / `pg_terminate_backend` /
+`pg_cancel_backend` も同じ扱い。
+
+**`TABLE name` 構文**。`WHERE id IN (TABLE secrets)` は表参照として記録されず、allowlist を素通りした。
+`table` を表名の先導語に加えた。
+
+**行全体の参照**（R6a）。`SELECT u FROM users u` や `SELECT to_jsonb(users) FROM users` は
+全列を 1 つの名前で返す。返る列名は `u` / `to_jsonb` なので、結果側の照合（R2a）にも掛からなかった。
+`*` と同じ扱いにし、denyIdentifiers を持つ表なら実行前に拒否する。
+
+**読み取りの autocommit**（R7）。読み取りは既定で書き込みと同じ接続を使い、トランザクション無しで
+走っていた。SELECT の中の副作用（書き込むユーザー定義関数、`search_path` を動かす `set_config`）が
+そのまま確定していた。読み取りは常にロールバックするトランザクションの中で走らせ、
+Postgres / MySQL では READ ONLY を付ける。Postgres は読み取りごとに `SET LOCAL search_path` で
+固定し直す。SQLite は deferred の `BEGIN`。
+
+**`limit` の上限**（R4a）。`maxReadRows` は既定値でしかなく、呼び出し側の `limit` はそのまま通っていた。
+MCP ツールは model の指定をそのまま渡すので、1 億行を頼めば 1 億行返した。`"abc"` は `LIMIT NaN` で
+DB エラー。`maxReadRows` で頭を押さえ、正の数でなければ `BAD_LIMIT` で拒否する。
+
+**`DELETE … USING` / `UPDATE … FROM`**（P1）。JOIN の語が無い 2 表書き込みで、単表として計画され、
+カードに 2 つ目の表が出なかった。`MULTI_TABLE` で拒否する。
+
+### 互換性
+
+`Adapter.begin()` が `'read-only'` を受け取るようになった。自作 adapter があれば型を広げること。
+拒否コード `BAD_LIMIT` が増えた。
+
+### 直していないもの
+
+- Postgres で allowlist を小文字化して照合するため、`orders` を許可すると `"Orders"` も通る
+- `sql_schema` が dry run 中に engine のラッチを通らない
+- ドライバのエラー文をそのまま model へ返す
+
 ## 0.10.1
 
 ### 日本語の README を `README.ja.md` に分けた

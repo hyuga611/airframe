@@ -477,14 +477,14 @@ export class MysqlAdapter implements Adapter {
     };
   }
 
-  async begin(isolation: 'default' | 'repeatable-read' = 'default'): Promise<void> {
+  async begin(isolation: 'default' | 'repeatable-read' | 'read-only' = 'default'): Promise<void> {
     // MySQL's default already is REPEATABLE READ, so the request is a no-op here;
     // it is set explicitly anyway so a server configured otherwise still gives the
     // dry run one consistent view.
     if (isolation === 'repeatable-read') {
       await this.conn.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
     }
-    await this.conn.query('START TRANSACTION');
+    await this.conn.query(isolation === 'read-only' ? 'START TRANSACTION READ ONLY' : 'START TRANSACTION');
     this.open = true;
   }
 

@@ -108,6 +108,23 @@ const FORBIDDEN: ReadonlyMap<string, string> = new Map([
   ['lo_export', 'writing to a server file'],
   ['dblink', 'opening a connection to another server'],
   ['dblink_exec', 'opening a connection to another server'],
+  // Functions that take a statement as a *string* and run it. The identifier
+  // walk cannot see inside a literal — that is by design, see the note above —
+  // so `query_to_xml('SELECT * FROM secrets', ...)` named no table the
+  // allowlist could refuse, and returned the rows under the function's name.
+  ['query_to_xml', 'running a statement given as a string'],
+  ['query_to_xml_and_xmlschema', 'running a statement given as a string'],
+  ['cursor_to_xml', 'running a statement given as a string'],
+  ['cursor_to_xmlschema', 'running a statement given as a string'],
+  ['ts_stat', 'running a statement given as a string'],
+  ['xpath_table', 'running a statement given as a string'],
+  // Session state a read could carry past its own rollback. A READ ONLY
+  // transaction still lets `set_config` move `search_path`, and a rollback
+  // does put it back — but a lock or a change that lands in the gap between two
+  // reads is not something a rollback explains, so neither is accepted.
+  ['set_config', 'changing a session setting, such as search_path'],
+  ['pg_terminate_backend', 'ending another session'],
+  ['pg_cancel_backend', 'cancelling another session'],
   // Catalogs: credentials and other tenants live here.
   ['information_schema', 'system catalog'],
   ['performance_schema', 'system catalog'],
@@ -116,6 +133,17 @@ const FORBIDDEN: ReadonlyMap<string, string> = new Map([
   ['pg_shadow', 'system catalog'],
   ['pg_user', 'system catalog'],
 ]);
+
+/**
+ * Families judged by prefix. `dblink` alone was listed while `dblink_connect`,
+ * `dblink_open` and `dblink_fetch` reach the same other server; an advisory
+ * lock has a dozen spellings and every one of them outlives the read that took it.
+ */
+const FORBIDDEN_PREFIXES: readonly { prefix: string; why: string }[] = [
+  { prefix: 'dblink', why: 'opening a connection to another server' },
+  { prefix: 'pg_advisory', why: 'holding a session lock past the read' },
+  { prefix: 'pg_try_advisory', why: 'holding a session lock past the read' },
+];
 
 const READ_LEAD = new Set(['select', 'with', 'show', 'explain', 'describe', 'desc', 'table', 'values']);
 const WRITE_LEAD = new Set(['update', 'delete']);
@@ -186,6 +214,12 @@ export function normalize(input: string, opts: NormalizeOptions): NormalizeResul
     // clear message, not a silent bypass.
     if (all.has(word)) {
       throw new Rejected('FORBIDDEN', `\`${word.toUpperCase()}\` is not accepted here (${why}).`);
+    }
+  }
+  for (const id of all) {
+    const hit = FORBIDDEN_PREFIXES.find((p) => id.startsWith(p.prefix));
+    if (hit !== undefined) {
+      throw new Rejected('FORBIDDEN', `\`${id.toUpperCase()}\` is not accepted here (${hit.why}).`);
     }
   }
 

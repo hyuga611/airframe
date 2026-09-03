@@ -111,6 +111,9 @@ measurement won and the test records what was observed, on which version.
 | R4 | Request `limit + 1` rows so truncation is detectable, by **wrapping** the statement rather than appending to it | Fetching exactly the limit makes "was there more?" unanswerable, and the caller is told it saw everything. Appending would also collide with a `LIMIT` the statement already had |
 | R5 | Accept `SELECT` and `WITH` only | `SHOW TABLES` and its relatives name no table, so the allowlist has nothing to bite on and they would report the shape of the whole schema from a tool whose premise is default-deny |
 | R6 | A `SELECT *` over a table holding a denied column is refused, **before** it runs where the wildcard can be seen in the statement and **after** it runs from the column names that came back | Until 0.7.0 this was the hole R2 left. `SELECT password_hash FROM users` was refused; `SELECT * FROM users` returned the hash. The guard held against the deliberate spelling and gave way to the one an assistant writes first, which is the wrong way round. The check on the result set is the load-bearing one — it cannot be out-spelled — and the check on the statement is what stops the value ever leaving the database |
+| R7 | A read runs inside a transaction that is always rolled back, opened `READ ONLY` where the engine has the word | Reads ran in autocommit on, by default, the connection that commits. A function with a side effect inside a SELECT — one that writes, or `set_config` moving `search_path` for every later statement — was committed as a read. The forbidden list refuses the spellings it knows (`nextval`, `set_config`, `query_to_xml`, the `dblink_*` and `pg_advisory_*` families); the transaction refuses the rest |
+| R6a | A whole-row reference — `SELECT u FROM users u`, `SELECT to_jsonb(users) FROM users` — is judged as a `*` is | Every column comes back under one name, and that name is not the denied column's, so neither half of R6 could see it |
+| R4a | `maxReadRows` is a ceiling on a caller's own `limit`, not only the default in its absence | The MCP tool passed the model's `limit` straight through, so it could ask for every row; a limit that was not a number became `LIMIT NaN` |
 
 > **Threat model.** The caller is a language model, and language models read
 > untrusted content — customer records, inbound email, scraped pages. Assume
@@ -197,6 +200,7 @@ of guaranteeing they catch two.
 | `MULTIPLE_STATEMENTS` | More than one statement after comments were removed |
 | `FORBIDDEN` | An identifier from the forbidden list: transaction control, `GRANT`, file access, `SLEEP`, a system catalog |
 | `FORBIDDEN_DIALECT` | Allowed elsewhere but not on this engine — DDL on MySQL, which commits implicitly |
+| `BAD_LIMIT` | A read's `limit` was not a positive number |
 | `UNSUPPORTED_INSERT` | `INSERT`/`REPLACE`/`MERGE`: there is no before-image to show |
 | `UNSUPPORTED_STATEMENT`, `MIXED` | Not a read or a write we handle, or a read that also writes (`WITH … AS (DELETE … RETURNING)`) |
 | `MULTI_TABLE` | `UPDATE a, b SET …` or `DELETE a FROM a JOIN b` |

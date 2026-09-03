@@ -48,17 +48,23 @@ export function isMultiTableWrite(tokens: readonly Token[]): boolean {
 
   if (lead === 'update') {
     // Anything before SET is the table list. A comma there means several tables.
+    // After SET, a top-level FROM is Postgres's `UPDATE a SET ... FROM b`: the
+    // rows changed depend on a table the plan never showed.
     let depth = 0;
+    let afterSet = false;
     for (let i = 1; i < toks.length; i++) {
       const t = toks[i];
       if (t === undefined) continue;
       if (t.kind === 'punct') {
         if (t.value === '(') depth++;
         else if (t.value === ')') depth--;
-        else if (t.value === ',' && depth === 0) return true;
+        else if (t.value === ',' && depth === 0 && !afterSet) return true;
         continue;
       }
-      if (depth === 0 && t.kind === 'ident' && lower(t.value) === 'set') return false;
+      if (depth !== 0 || t.kind !== 'ident') continue;
+      const w = lower(t.value);
+      if (!afterSet && w === 'set') afterSet = true;
+      else if (afterSet && w === 'from') return true;
     }
     return false;
   }
@@ -80,6 +86,9 @@ export function isMultiTableWrite(tokens: readonly Token[]): boolean {
         continue;
       }
       if (depth === 0 && t.kind === 'ident' && lower(t.value) === 'where') return false;
+      // `DELETE FROM a USING b` joins b in without the word JOIN. It was walked
+      // past as a single-table delete, and b never met the allowlist.
+      if (depth === 0 && t.kind === 'ident' && lower(t.value) === 'using') return true;
     }
   }
 
