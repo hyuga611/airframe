@@ -1,6 +1,6 @@
 {
   "name": "@hyuga/airframe",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "The machine: a frame plus whichever agent-watching parts are installed, wired into Claude Code with one command. A sortie converges or diverges on the pilot's call, one ledger records both, and a limiter stops the machine only when nobody is in the seat.",
   "type": "module",
   "main": "src/airframe.mjs",

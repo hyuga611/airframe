@@ -13,8 +13,15 @@ export interface ContractSpec {
   expect?: { type: 'nonempty' } | { type: 'count' | 'at-least' | 'contains' | 'equals' | 'matches'; value: unknown };
 }
 
-/** A probe that runs `cmd` in a shell and resolves to its trimmed stdout. Rejects on a non-zero exit. */
-export function shellProbe(cmd: string): () => Promise<string>;
+/** Default per-probe limit, in ms. GROUNDTRUTH_PROBE_TIMEOUT_MS overrides it. */
+export const PROBE_TIMEOUT_MS: number;
+export function probeTimeout(): number;
+
+/**
+ * A probe that runs `cmd` in a shell and resolves to its trimmed stdout. Rejects on a non-zero
+ * exit, and on running past `timeout` ms — a probe that hangs is a failure, not a pass.
+ */
+export function shellProbe(cmd: string, options?: { timeout?: number }): () => Promise<string>;
 
 /** The expectation function a spec names. Throws on an unknown `expect.type`. */
 export function expectFromSpec(spec: ContractSpec['expect'] | null | undefined): (state: unknown) => ExpectResult;

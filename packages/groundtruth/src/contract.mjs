@@ -8,12 +8,27 @@
 import { spawnSync } from 'node:child_process';
 import { expect as X } from './index.mjs';
 
+// How long one probe may run. A probe that never returns is not "still checking": under a Stop
+// hook it is the whole gate hanging until Claude Code kills it, and a killed gate blocks nothing
+// — so the hang was read as a pass, and the contract file stayed to hang the next turn too.
+// yubisashi already ran the same probe with a limit; this one had none.
+export const PROBE_TIMEOUT_MS = 20_000;
+export function probeTimeout() {
+  const n = Number(process.env.GROUNDTRUTH_PROBE_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? n : PROBE_TIMEOUT_MS;
+}
+
 // A probe that runs a shell command and returns its stdout. A non-zero exit throws, which is
-// how it is reported as a probe failure rather than as an answer.
-export function shellProbe(cmd) {
+// how it is reported as a probe failure rather than as an answer. So does running out of time.
+export function shellProbe(cmd, { timeout = probeTimeout() } = {}) {
   return () => {
-    const r = spawnSync(cmd, { shell: true, encoding: 'utf8' });
-    if (r.error) throw r.error;
+    const r = spawnSync(cmd, { shell: true, encoding: 'utf8', timeout, windowsHide: true });
+    if (r.error) {
+      if (r.error.code === 'ETIMEDOUT') {
+        throw new Error(`took longer than ${timeout}ms and was killed — real state was never read`);
+      }
+      throw r.error;
+    }
     if (typeof r.status === 'number' && r.status !== 0) {
       throw new Error(`exit ${r.status}${r.stderr ? `: ${r.stderr.trim()}` : ''}`);
     }

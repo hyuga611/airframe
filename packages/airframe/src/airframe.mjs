@@ -27,7 +27,7 @@ import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { launch, sortie, fuel, brief, ledger, discard, transform, burn, finding, report, root } from '@hyuga/spar';
-import { runDirectly, emit } from '@hyuga/spar/cli';
+import { runDirectly, emit, readStdin } from '@hyuga/spar/cli';
 
 const require_ = createRequire(import.meta.url);
 
@@ -248,15 +248,23 @@ export function install({ scope = 'project', cwd = root(), how = 'npx' } = {}) {
  * AIRFRAME_AUTONOMY carries a reason — which is exactly the second of the frame's two conditions:
  * somebody deliberately wired this into a loop or a timer, and wrote down why.
  */
-export function session(cwd = root()) {
-  const reason = process.env.AIRFRAME_AUTONOMY;
-  const budget = Number(process.env.AIRFRAME_BUDGET || 0);
-  launch({
-    mode: 'strike',
-    autonomy: !!reason,
-    reason: reason || null,
-    budget,
-  }, cwd);
+export function session(cwd = root(), { source = 'startup' } = {}) {
+  // SessionStart also fires on compact and on resume, and neither is a new flight: the pilot is
+  // still in the seat, in the form they chose. Launching again there put cruise back to strike
+  // without anyone touching it, dropped a melee's exit route, and zeroed the limiter — every
+  // compaction. Only a startup or a /clear starts a sortie; the rest keep the one being flown.
+  const s = sortie(cwd);
+  const flying = s.id && (source === 'compact' || source === 'resume');
+  if (!flying) {
+    const reason = process.env.AIRFRAME_AUTONOMY;
+    const budget = Number(process.env.AIRFRAME_BUDGET || 0);
+    launch({
+      mode: 'strike',
+      autonomy: !!reason,
+      reason: reason || null,
+      budget,
+    }, cwd);
+  }
   return brief(cwd);
 }
 
@@ -378,7 +386,11 @@ export function main(argv) {
 
   if (cmd === 'hook') {
     try {
-      if (rest[0] === 'session') emit('SessionStart', session());
+      if (rest[0] === 'session') {
+        let source;
+        try { source = JSON.parse(readStdin() || '{}').source; } catch { /* no payload: a startup */ }
+        emit('SessionStart', session(root(), { source: source || 'startup' }));
+      }
       else if (rest[0] === 'burn') emit('PostToolUse', spend());
       else if (rest[0] === 'wingman') wingman();
       else if (rest[0] === 'land') land();

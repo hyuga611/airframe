@@ -145,6 +145,24 @@ test('unfinished claims are handed back too', (t) => {
   assert.match(brief(), /insert 45 rows/);
 });
 
+test('unfinished means the last sortie that claimed, minus what was settled since', (t) => {
+  fresh(t);
+  const claim = (severity, subject) => report(finding({ phase: 'claim', source: 'groundtruth', severity, subject, observed: severity === 'stop' ? 0 : 1 }));
+  launch({ mode: 'strike' });
+  claim('stop', 'old one');
+  launch({ mode: 'strike' });
+  claim('stop', 'settled');
+  claim('note', 'settled');
+  claim('stop', 'still open');
+  claim('stop', 'still open');
+  launch({ mode: 'strike' }); // the session that reads the brief has claimed nothing yet
+  const text = brief();
+  assert.match(text, /still open/);
+  assert.equal(text.split('still open').length, 2, 'said once, not once per refusal');
+  assert.doesNotMatch(text, /old one/, 'a sortie ago is not last sortie');
+  assert.doesNotMatch(text, /settled/, 'a later pass closes it');
+});
+
 test('bingo is about getting home, not about being nearly empty', (t) => {
   fresh(t);
   launch({ mode: 'strike', budget: 100 });

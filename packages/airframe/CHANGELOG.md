@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.3
+
+### compact / resume で sortie を作り直さなくなった
+
+`airframe hook session` は SessionStart の payload を読まず、毎回 `launch()` していた。
+SessionStart は startup と /clear だけでなく **compact と resume でも** 発火するので、
+文脈が圧縮されるたびに cruise が黙って strike へ戻り、melee の脱出経路が消え、
+redline のカウンタが 0 から数え直しになっていた。形態はパイロットの操作のはずが、機械が勝手に戻していた。
+
+payload の `source` を読み、`compact` / `resume` で既に sortie が飛んでいれば **そのまま**にする。
+新しい sortie を切るのは startup と clear だけ。`session(cwd, { source })` で API からも同じ。
+
+groundtruth 0.5.4（probe の制限時間）と spar 0.3.1（brief の「未完」の範囲）を取り込む。
+
 ## 0.3.2
 
 ### yubisashi（指差）を機体に載せた

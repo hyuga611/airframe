@@ -409,7 +409,20 @@ export function quote(v) {
 
 export function brief(cwd = root()) {
   const all = ledger(cwd);
-  const unfinished = all.filter((f) => f.phase === 'claim' && f.severity === 'stop');
+  // "Last sortie" is the last one that claimed anything, and "unfinished" is what it claimed
+  // and could not show — unless a later claim on the same subject went through. Read off the
+  // whole ledger instead, this list was every refusal ever filed, five at a time, forever:
+  // a contract fixed the next morning was still "left unfinished" a week on.
+  const claims = all.filter((f) => f.phase === 'claim');
+  const last = claims.length ? claims[claims.length - 1].sortie : undefined;
+  const finalBySubject = new Map();
+  for (const f of claims) finalBySubject.set(f.subject, f.severity);
+  const seen = new Set();
+  const unfinished = claims
+    .filter((f) => f.sortie === last && f.severity === 'stop' && finalBySubject.get(f.subject) === 'stop')
+    .reverse()
+    .filter((f) => !seen.has(f.subject) && (seen.add(f.subject), true))
+    .reverse();
   const dropped = all.filter((f) => f.mode === 'cruise' && f.observed === 'discarded');
   const lines = [];
   if (unfinished.length) {

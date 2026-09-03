@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.4
+
+### 返ってこない probe を「通った」と読まなくなった
+
+`shellProbe` に制限時間が無かった。probe が固まると `guard` ごと固まり、Stop フックとしては
+Claude Code の timeout（既定 60 秒）で殺される。殺されたフックは何も止めないので、固まった probe は
+**合格と同じ**に見えていた。しかも契約ファイルはその場に残るので、次のターンも同じ場所で固まる。
+yubisashi は同じ probe を制限付きで走らせていたのに、こちらだけ無制限だった。
+
+probe は 1 本 20 秒（`GROUNDTRUTH_PROBE_TIMEOUT_MS` で変更可）で打ち切り、
+「took longer than 20000ms and was killed — real state was never read」として **失敗** に数える。
+`shellProbe(cmd, { timeout })` で個別にも指定できる。
+
+既知の残り：Windows では殺されるのはシェルで、その下の本体（例：固まった node）は生き残ることがある。
+門は閉まるが、後始末は人がする。
+
 ## 0.5.3
 
 ### `@hyuga/groundtruth/contract` を公開した

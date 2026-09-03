@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync
 import { tmpdir } from 'node:os';
 import { join, dirname, basename } from 'node:path';
 
-import { sortie, discard, ledger, finding, report } from '@hyuga/spar';
+import { sortie, discard, ledger, finding, report, transform } from '@hyuga/spar';
 import { wire, install, session, status, mounted, settingsPath, spend, land, mount, wingman } from '../src/airframe.mjs';
 
 function fresh(t) {
@@ -103,6 +103,21 @@ test('autonomy comes from a declared reason, not from nobody typing', (t) => {
   const s = sortie();
   assert.equal(s.autonomy, true);
   assert.equal(s.autonomyReason, 'nightly deploy loop, wired on purpose');
+});
+
+test('compact and resume keep the sortie the pilot was flying; startup does not', (t) => {
+  fresh(t);
+  session();
+  const id = sortie().id;
+  transform('cruise');
+  session(undefined, { source: 'compact' });
+  assert.equal(sortie().id, id, 'a compaction is not a new flight');
+  assert.equal(sortie().mode, 'cruise', 'the form the pilot chose survives it');
+  session(undefined, { source: 'resume' });
+  assert.equal(sortie().id, id);
+  session(undefined, { source: 'startup' });
+  assert.notEqual(sortie().id, id);
+  assert.equal(sortie().mode, 'strike');
 });
 
 test('the brief from the last sortie reaches the next one', (t) => {

@@ -26,8 +26,8 @@ const CLI = resolve(HERE, '..', 'src', 'cli.mjs');
 // Wrapped in single quotes: cmd.exe cannot handle nested double quotes.
 const emit = (s) => `node -e "process.stdout.write('${s}')"`;
 
-function run(args, cwd) {
-  const r = spawnSync(process.execPath, [CLI, ...args], { cwd, encoding: 'utf8' });
+function run(args, cwd, env = {}) {
+  const r = spawnSync(process.execPath, [CLI, ...args], { cwd, encoding: 'utf8', env: { ...process.env, ...env } });
   return { code: r.status, out: (r.stdout ?? '') + (r.stderr ?? '') };
 }
 
@@ -78,6 +78,16 @@ function withContracts(body, fn) {
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+test('a probe that hangs is refused, not waited for and not passed', () => {
+  // the hung probe steps out of the temp dir first: killing the shell leaves its child alive on Windows
+  const body = JSON.stringify({ action: 'hang', probe: `node -e "process.chdir(require('os').tmpdir());setTimeout(()=>{},10000)"`, expect: { type: 'nonempty' } }) + '\n';
+  const t = Date.now();
+  const r = withContracts(body, (d) => run(['guard', 'contracts.jsonl'], d, { GROUNDTRUTH_PROBE_TIMEOUT_MS: '500' }));
+  assert.equal(r.code, 2, r.out);
+  assert.match(r.out, /took longer than 500ms/);
+  assert.ok(Date.now() - t < 5000, 'the guard came back well before the probe would have');
+});
 
 test('a file holding no contracts is not reported as "all confirmed"', () => {
   for (const body of ['', '   \n\n\t']) {
