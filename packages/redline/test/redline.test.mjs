@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { launch, enterMelee, finding, report, ledger } from '@hyuga/spar';
-import { price, score, check, namedInPrompt, THRESHOLDS } from '../src/redline.mjs';
+import { price, score, check, namedInPrompt, segments, THRESHOLDS } from '../src/redline.mjs';
 
 function fresh(t, { production = [] } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'redline-'));
@@ -52,6 +52,10 @@ test('reading production is not writing to it', (t) => {
   assert.deepEqual(price(write('/var/www/site/index.html')).map((c) => c.kind), ['production']);
   assert.deepEqual(price(bash('cp local.html /var/www/site/index.html')).map((c) => c.kind), ['production'],
     'the shell reaches production too');
+  // Nor is reading the manifest adding a dependency.
+  assert.deepEqual(price({ tool_name: 'Read', tool_input: { file_path: 'packages/x/package.json' } }), []);
+  assert.deepEqual(price({ tool_name: 'Grep', tool_input: { pattern: 'version', path: 'package.json' } }), []);
+  assert.deepEqual(price(write('packages/x/package.json')).map((c) => c.kind), ['dependency']);
 });
 
 test('the score only goes up, and it is the sortie that is counted', (t) => {
@@ -330,6 +334,8 @@ test('a command is cut into the things it actually runs', (t) => {
   // The charge names the part that earned it, not the whole line.
   const [charge] = price(bash('cat notes.md | head -20 ; rm -rf build'));
   assert.equal(charge.on, 'rm -rf build');
+  // The & of a redirect is not a separator.
+  assert.deepEqual(segments('make 2>&1 | tail -5; make &>/dev/null'), ['make 2>&1', 'tail -5', 'make &>/dev/null']);
 });
 
 test('a command that takes another command is not treated as reading', (t) => {
@@ -339,6 +345,100 @@ test('a command that takes another command is not treated as reading', (t) => {
   assert.deepEqual(price(bash('find . -name "*.tmp" -exec rm -rf {} +')).map((c) => c.kind),
     ['irreversible']);
   assert.deepEqual(price(bash('git ls-files | xargs rm -rf')).map((c) => c.kind), ['irreversible']);
+});
+
+test('clearing out a temp directory is not what irreversible is for', (t) => {
+  const dir = fresh(t);
+  const prevTemp = process.env.TEMP;
+  process.env.TEMP = tmpdir();
+  t.after(() => { if (prevTemp === undefined) delete process.env.TEMP; else process.env.TEMP = prevTemp; });
+  const tmp = tmpdir().replace(/\\/g, '/');
+  const S = `${tmp}/claude/session/scratchpad`;
+
+  // Every one of these was charged 3 on a real machine, and each removed the agent's own scratch.
+  const free = [
+    `rm -rf "${S}/asar"`,
+    `S="${S}"; rm -rf "$S/asar"`,
+    'S="$TEMP/claude/session/scratchpad"; T="$S/probe-settings.json"; rm -f "$T"',
+    'S="$TEMP/claude/session"; rm -rf "$S/tamper" "$S/tx" "$S"/ran-*.txt',
+    `cd "${dir}" && rm -f gate.txt`,
+  ];
+  if (/^[A-Za-z]:/.test(tmp)) free.push(`rm -rf /${tmp[0].toLowerCase()}${tmp.slice(2)}/rindo-appdata-*`);
+  for (const command of free) assert.deepEqual(price(bash(command)), [], command);
+  assert.deepEqual(price({ tool_name: 'PowerShell', tool_input: {
+    command: '$f = Join-Path $env:TEMP "roundtrip.txt"\nRemove-Item -LiteralPath $f -Force',
+  } }), []);
+
+  const charged = [
+    'rm -rf "$TEMP"', // the directory itself
+    'rm -rf "$TEMP"/*', // everything in it at once
+    'rm -rf "$TEMP/../Roaming/app"',
+    `rm -rf "${S}/x" build`, // one target outside is enough
+    'rm -rf C:/ "$TEMP/x"',
+    'rm -rf "$S/asar"', // nobody set S
+    'S=$(pwd); rm -rf "$S/asar"',
+    'TEMP=$(pwd); rm -rf "$TEMP/src"', // an assignment the limiter cannot read hides the real TEMP
+    'for S in a b; do rm -rf "$S/x"; done',
+    `S="${S}"; rm -rf "$S/$d"`, // $d could be ..
+    `cd "${dir}/not-there"; rm -rf build`, // a cd that fails leaves the rm where it was
+    `(echo; cd "${dir}" && make); rm -rf build`, // a subshell's cd does not outlive it
+    'Get-ChildItem -Force D:\\ | Remove-Item -Recurse -Force',
+  ];
+  for (const command of charged) {
+    assert.deepEqual(price(bash(command)).map((c) => c.kind), ['irreversible'], command);
+  }
+});
+
+test('production is charged for writing to it, not for looking at it', (t) => {
+  fresh(t, { production: ['C:/Users/me/.claude/settings', '/srv/client/'] });
+  const S = 'C:/Users/me/.claude/settings.json';
+
+  for (const command of [
+    `node -e "const s=JSON.parse(require('fs').readFileSync('${S}','utf8'));console.log(Object.keys(s))"`,
+    `node -p "JSON.stringify(require('${S}').enabledPlugins)"`,
+    `python -c "import io,json\nj=json.load(io.open('${S}',encoding='utf-8'))\nprint(j)"`,
+    `S='${S}'`,
+    'cd /srv/client/acme && ls',
+    `sed -n 47,58p ${S}`, // a line range printed is a read
+    `sed -n '1,$p' ${S}`,
+    `node --check ${S}`, // parsed, not run
+  ]) assert.deepEqual(price(bash(command)), [], command);
+
+  for (const command of [
+    `node -e "require('fs').writeFileSync('${S}','{}')"`,
+    `python -c "open('${S}','w').write('{}')"`,
+    `node -e "require('./deploy.js').run('${S}')"`, // what the module does is not on the line
+    `S='${S}'; cp new.json "$S"`, // the assignment is carried to where it is used
+    'cd /srv/client/acme && node build.mjs', // the cd is free, what runs there is not
+    `echo '{}' > ${S}`, // a verb that only prints still writes through a redirect
+    `node -p "1" > ${S}`,
+    `sed -i 's/a/b/' ${S}`,
+    `sed -n 1,5p -i ${S}`,
+    `sed -n '1,5w out.txt' ${S}`, // sed has its own write command
+    `sed -n 1,5p ${S} > ${S}`,
+    `node -r ./hook.js --check ${S}`, // a preload runs before anything is checked
+  ]) assert.deepEqual(price(bash(command)).map((c) => c.kind), ['production'], command);
+  // Only the plain print form is a read: sed can run what its script says.
+  assert.deepEqual(price(bash(`sed -n '1e rm -rf build' ${S}`)).map((c) => c.kind), ['irreversible', 'production']);
+});
+
+test('what an interpreter is handed as a string is data, unless it can start a process', (t) => {
+  fresh(t);
+  for (const command of [
+    `node -e 'const fs=require("fs");fs.appendFileSync("c.jsonl",JSON.stringify({probe:"npm publish --dry-run"}))'`,
+    `node -e 'console.log(/git push/.test(process.argv[1]))' "git push origin main"`,
+    `python -c "print('rm -rf build')"`,
+  ]) assert.deepEqual(price(bash(command)), [], command);
+
+  assert.deepEqual(price(bash(`node -e 'require("child_process").execSync("git push")'`)).map((c) => c.kind),
+    ['outward']);
+  assert.deepEqual(
+    price(bash(`python -c "import subprocess; subprocess.run('rm -rf build', shell=True)"`)).map((c) => c.kind),
+    ['irreversible'],
+  );
+  assert.deepEqual(price(bash(`node -e 'require("./tools").run("git push")'`)).map((c) => c.kind), ['outward'],
+    'a module the limiter cannot read could run it');
+  assert.deepEqual(price(bash(`node -e 'console.log(1)' && git push`)).map((c) => c.kind), ['outward']);
 });
 
 test('what a heredoc writes is a file, not a command', (t) => {

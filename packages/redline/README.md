@@ -66,6 +66,13 @@ publish` costs 3, and what a heredoc writes into a file is not read as commands 
 limiter learned that on itself — a session that only ever *searched* for the words reached 20
 against a limit of 3, and a number that is mostly noise gets read as noise.
 
+The same goes for what a command means once its variables are read. `S="$TEMP/x"; rm -rf "$S/out"`
+is tidying a scratch directory and costs nothing; `rm -rf "$TEMP"`, `rm -rf "$S"` with `S` never
+set, and a relative `rm` with no `cd` in front of it still cost 3, because the limiter cannot tell
+where they land. Code handed to `node -e` or `python -c` is data when it can be read — standard
+file and path modules, no child process, no eval — so a script that reads `settings.json` is not a
+write to production and a string containing `npm publish` is not a publish.
+
 The numbers are meant to be argued with — spend a week disagreeing with them and change them. The
 structure is what is being claimed, not the weights.
 
@@ -130,7 +137,9 @@ nowhere costs a few `existsSync` calls and changes no number. Read-only segments
 first, so `grep /var/www -r` is not asked about the tree it is reading.
 
 Or, as well, `REDLINE_PRODUCTION`, semicolon-separated — it is unioned with whatever the files say, never ignored because a file exists. A substring match, on the path for a write tool and on
-the command line for a shell call — so `cp build/index.html /var/www/site/` is charged too.
+the command line for a shell call — so `cp build/index.html /var/www/site/` is charged too, and so
+is anything run after `cd /var/www/site`. An assignment or a `cd` on its own is not a write, and a
+command that only prints is charged for what it redirects there.
 
 ## "Unnamed" needs to know what you asked for
 

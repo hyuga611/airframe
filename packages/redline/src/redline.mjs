@@ -17,8 +17,8 @@
  * frame's ledger. That is the whole reason the frame exists.
  */
 import { readFileSync, existsSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, join, posix, resolve } from 'node:path';
 import { finding, report, ledger, sortie, root } from '@hyuga/spar';
 import { runDirectly, readStdin } from '@hyuga/spar/cli';
 
@@ -222,7 +222,8 @@ export function segments(command) {
       continue;
     }
     if (c === '"' || c === "'") { quote = c; cur += c; continue; }
-    if (c === ';' || c === '\n' || c === '&' || c === '|') {
+    const redirect = c === '&' && (s[i - 1] === '>' || s[i + 1] === '>'); // 2>&1, &>/dev/null
+    if (c === ';' || c === '\n' || (c === '&' && !redirect) || c === '|') {
       out.push(cur);
       cur = '';
       if ((c === '&' || c === '|') && s[i + 1] === c) i += 1; // && and || are one separator
@@ -243,11 +244,13 @@ export function segments(command) {
  * quotation. A number that is mostly noise gets read as noise, and then the one call that
  * should have stopped somebody reads like the twenty that should not have.
  *
- * These are matched on the verb only, and only ones that print. `find`, `sed`, `awk` and
- * `xargs` are absent on purpose: each of them takes an argument that is itself a command, so
- * their arguments are not merely text.
+ * These are matched on the verb only, and only ones that print. `find`, `awk` and `xargs` are
+ * absent on purpose: each of them takes an argument that is itself a command, so their
+ * arguments are not merely text. So does `sed`, except in the one form whose script cannot be
+ * anything but a print — a line range, `sed -n 47,58p`, with no `-i`. `node --check` parses a
+ * file without running it, as long as nothing is preloaded in front of the check.
  */
-const READS = /^(grep|egrep|fgrep|rg|ag|ack|cat|head|tail|less|more|echo|printf|ls|dir|wc|Select-String|Get-Content|Get-ChildItem|Write-Host|Write-Output)\b/i;
+const READS = /^(?:(?:grep|egrep|fgrep|rg|ag|ack|cat|head|tail|less|more|echo|printf|ls|dir|wc|Select-String|Get-Content|Get-ChildItem|Write-Host|Write-Output)\b|sed\s+-n\s+(["']?)(?:\d+|\$)(?:,(?:\d+|\$))?p\1(?=\s|$)(?!.*\s(?:-[a-z]*i|--in-place)\b)|node(?:\.exe)?\s+(?:--check|-c)\s+[^-\s])/i;
 
 /** What this command actually does, with the parts that only read something dropped. */
 export function acts(command) {
@@ -257,16 +260,233 @@ export function acts(command) {
 const inProduction = (text, cfg) => !!text && cfg.production.some((pat) => norm(text).includes(norm(pat)));
 
 /**
+ * A command read in order, the way the shell will run it.
+ *
+ * Two weeks of one machine's history, replayed through 0.6.0, came to 89 charged calls, and more
+ * than half of the points were not what the tariff says it prices. `S="$TEMP/.../scratchpad";
+ * rm -rf "$S/asar"` was irreversible because the limiter never learned where `$S` pointed.
+ * `node -e "...readFileSync('~/.claude/settings.json')..."` was a write to production because
+ * the path was in the line. A `node -e` that wrote a contract containing the words `npm publish`
+ * was a publish. A limit of 3 that is crossed by cleaning up scratch files gets read as noise,
+ * and then the push that should stop somebody reads like the cleanup.
+ *
+ * So each segment is read with what the segments before it said: variables assigned earlier in
+ * the same command are filled in, and so is the environment (the Bash tool starts every call in
+ * a fresh shell, so a variable that matters was set on the same line). A variable the limiter
+ * cannot read — `S=$(pwd)`, a `for` loop, anything in PowerShell that is not a string — stays
+ * as typed, and a path with a `$` still in it is not anywhere in particular. That is the
+ * direction this is allowed to be wrong in.
+ *
+ * `cd` is followed too, but only as far as the directory is known. The shell a call runs in
+ * keeps the directory the last call left it in, which the hook is not told, so a relative path
+ * with no `cd` before it is nowhere in particular.
+ */
+function walk(command, shell) {
+  const vars = new Map(); // name → value, or null for a variable set to something unreadable
+  let cwd = null;
+  return segments(command).map((seg) => {
+    const text = expand(seg, vars, shell);
+    const step = { seg, text, cwd, kind: 'run' };
+    const bash = shell === 'bash' && BASH_ASSIGN.exec(seg);
+    const ps = shell === 'powershell' && PS_ASSIGN.exec(seg);
+    const loop = shell === 'bash' && /^(?:for|read(?:\s+-\w+)*)\s+([A-Za-z_]\w*)/.exec(seg);
+    const cd = CD.exec(text);
+    if (bash) {
+      const [, name, value] = bash;
+      const readable = value !== undefined && !/[`]|\$\(/.test(value);
+      vars.set(name, readable ? unquote(expand(value, vars, shell)) : null);
+      if (readable) step.kind = 'assign';
+    } else if (ps) {
+      const [, env, name, value] = ps;
+      const joined = /^Join-Path\s+(?:-Path\s+)?(\S+)\s+(?:-ChildPath\s+)?(\S+)$/i.exec(value);
+      const known = /^(?:"[^"`]*"|'[^']*')$/.test(value) ? unquote(expand(value, vars, shell))
+        : joined ? `${unquote(expand(joined[1], vars, shell))}/${unquote(expand(joined[2], vars, shell))}`
+        : null;
+      vars.set(`${env ? 'env:' : ''}${name.toLowerCase()}`, known);
+      if (known !== null) step.kind = 'assign';
+    } else if (loop) {
+      vars.set(loop[1], null);
+    } else if (cd && !/[`]|\$\(/.test(text)) {
+      const to = cd[1] === undefined ? homedir() : unquote(cd[1]);
+      cwd = to === '-' ? null : isAbsolute(to) ? slashed(to) : cwd && slashed(`${cwd}/${to}`);
+      step.kind = 'cd';
+    } else if (READS.test(seg)) {
+      step.kind = 'read';
+    } else if (INLINE_JS.test(seg)) {
+      Object.assign(step, { kind: 'inline', opaque: jsOpaque(seg), writes: JS_WRITES.test(seg) });
+    } else if (INLINE_PY.test(seg)) {
+      Object.assign(step, { kind: 'inline', opaque: pyOpaque(seg), writes: pyWrites(seg) });
+    }
+    // `(cd x && make); rm -rf build` removes build from where the shell was, not from x.
+    if (/\)/.test(seg.replace(/"[^"]*"|'[^']*'/g, ''))) cwd = null;
+    return step;
+  });
+}
+
+const BASH_ASSIGN = /^(?:export\s+|local\s+|declare\s+(?:-\w+\s+)*)?([A-Za-z_]\w*)=(?:((?:"[^"]*"|'[^']*'|[^\s"'])*)$)?/;
+const PS_ASSIGN = /^\$(env:)?([A-Za-z_]\w*)\s*=\s*(.+)$/i;
+const CD = /^(?:cd|pushd|Set-Location)(?:\s+-(?:Literal)?Path)?(?:\s+(.*?))?(?:\s+\d?>\S*)*$/i;
+
+/** Variables filled in. Single quotes are literal in both shells, so what is inside them is left alone. */
+function expand(text, vars, shell) {
+  const fill = (part) => part
+    .replace(/\$env:([A-Za-z_]\w*)/gi, (m, name) => {
+      const key = `env:${name.toLowerCase()}`;
+      return shell !== 'powershell' ? m : vars.has(key) ? (vars.get(key) ?? m) : (process.env[name] ?? m);
+    })
+    .replace(/\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)(?!:)/g, (m, braced, bare) => {
+      const name = braced || bare;
+      if (shell === 'powershell') return vars.get(name.toLowerCase()) ?? m;
+      if (vars.has(name)) return vars.get(name) ?? m;
+      // The hook's own working directory is not the shell's.
+      return /^(?:PWD|OLDPWD)$/.test(name) ? m : (process.env[name] ?? m);
+    })
+    .replace(/(^|[\s=])~(?=[\\/\s]|$)/g, (_m, before) => before + homedir());
+  return String(text).split(/('[^']*')/).map((part, i) => (i % 2 ? part : fill(part))).join('');
+}
+
+const unquote = (word) => String(word).replace(/["']/g, '');
+const isAbsolute = (p) => /^(?:[A-Za-z]:|[\\/])/.test(p);
+
+/** Forward slashes, `..` folded, and Git Bash's `/c/Users` read as the `C:/Users` it is. */
+function slashed(p) {
+  let s = String(p).replace(/\\/g, '/');
+  if (process.platform === 'win32') s = s.replace(/^\/([A-Za-z])(?=\/|$)/, '$1:');
+  s = posix.normalize(s);
+  return s.length > 1 ? s.replace(/\/+$/, '') : s;
+}
+
+const fold = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
+
+/**
+ * Strictly inside a temp directory. The directory itself is not, and neither is everything in it
+ * at once — `rm -rf "$TEMP"/*` takes every other program's scratch along with this one's.
+ */
+function inTemp(p) {
+  const s = fold(slashed(p));
+  const roots = [tmpdir(), process.env.TEMP, process.env.TMP, process.env.TMPDIR, '/tmp']
+    .filter(Boolean).map((r) => fold(slashed(r)));
+  return roots.some((root) => root !== '/' && s.startsWith(`${root}/`) && !/^[*?]*(\/|$)/.test(s.slice(root.length + 1)));
+}
+
+/** The words of one segment, quotes taken off. A limiter is not a shell; backslashes stay. */
+const words = (text) => (String(text).match(/(?:"[^"]*"|'[^']*'|[^\s"']+)+/g) || []).map(unquote);
+
+const DELETES = /^(rm|Remove-Item|ri|rmdir|rd|del|erase)\s/i;
+const TAKES_VALUE = /^-(?:ErrorAction|EA|WarningAction|WA|InformationAction|IA|Filter|Include|Exclude|Stream|Credential)$/i;
+
+/**
+ * A deletion whose every target is inside a temp directory.
+ *
+ * Deleting what the agent put in its own scratchpad is how a careful session tidies up, and at
+ * +3 it cost the same as `git reset --hard`. It is still recorded as a call; it is not charged.
+ * One target outside temp, one target the limiter cannot place, or no target at all (the other
+ * end of a pipe) and the whole deletion is priced as before.
+ */
+function removesOnlyTemp(step) {
+  const verb = DELETES.exec(step.text);
+  if (!verb) return false;
+  const cmdStyle = /^(?:rmdir|rd|del|erase)$/i.test(verb[1]); // there, /s and /q are switches
+  const targets = [];
+  const list = words(step.text).slice(1);
+  for (let i = 0; i < list.length; i++) {
+    const w = list[i];
+    if (TAKES_VALUE.test(w) || /^\d*>>?$/.test(w)) { i += 1; continue; }
+    if (w.startsWith('-') || /^\d*>/.test(w) || (cmdStyle && /^\/[a-z]$/i.test(w))) continue;
+    targets.push(w);
+  }
+  return targets.length > 0 && targets.every((w) => {
+    if (/[$`]/.test(w)) return false;
+    if (isAbsolute(w)) return inTemp(w);
+    return !!step.cwd && existsSync(step.cwd) && inTemp(`${step.cwd}/${w}`);
+  });
+}
+
+/** Where `>` and `>>` send output, outside quotes. `2>&1` sends it nowhere new. */
+function redirects(step) {
+  const out = [];
+  const s = step.text;
+  let quote = null;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (quote) { if (c === quote) quote = null; continue; }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c !== '>') continue;
+    let j = i + 1;
+    if (s[j] === '>') j += 1;
+    if (s[j] === '&') { i = j; continue; }
+    while (s[j] === ' ' || s[j] === '\t') j += 1;
+    const m = /^(?:"[^"]*"|'[^']*'|[^\s"'<>;&|]+)+/.exec(s.slice(j));
+    if (!m) continue;
+    const to = unquote(m[0]);
+    out.push(isAbsolute(to) || !step.cwd ? to : `${step.cwd}/${to}`);
+    i = j + m[0].length - 1;
+  }
+  return out;
+}
+
+/**
+ * Code handed to an interpreter on the command line.
+ *
+ * Its string literals are data. A contract that says `probe: "npm publish --dry-run"` is not a
+ * publish, and a script that reads settings.json is not a write to it. Both claims hold only as
+ * far as the code can be read, so the reading is narrow: nothing but the standard library's
+ * file, path and text modules (and JSON files), no way to start a process, no eval. Anything
+ * else — a relative `require`, `child_process`, `subprocess`, a module name the limiter does not
+ * know — and the segment is priced by its words, as every other segment is.
+ */
+const INLINE_JS = /^node(?:\.exe)?(?:\s+--[\w-]+(?:=\S+)?)*\s+(?:-e|-p|--eval|--print)(?=[\s"'])/i;
+const INLINE_PY = /^(?:python[\d.]*|py)(?:\.exe)?(?:\s+-[\dA-Za-z])*?\s+-c(?=[\s"'])/i;
+
+const JS_SAFE = /^(?:node:)?(?:fs|fs\/promises|path|os|util|url|crypto|assert|buffer|events|readline|stream|string_decoder|zlib|querystring)$/;
+const JS_WRITES = /\b(?:writeFile|appendFile|copyFile|cp|rename|unlink|rm|rmdir|mkdir|mkdtemp|truncate|symlink|link|chmod|chown|utimes|open|createWriteStream)(?:Sync)?\s*\(/;
+
+function jsOpaque(body) {
+  if (/\bprocess\s*\.\s*(?:binding|_linkedBinding|dlopen)\b|\beval\s*\(|\bFunction\s*\(|\bWorker\b/.test(body)) return true;
+  for (const m of body.matchAll(/\b(?:require|import)\s*\(\s*([^)]*?)\s*\)|\bfrom\s*(["'])([^"']*)\2|\bimport\s*(["'])([^"']*)\4/g)) {
+    const spec = m[1] !== undefined ? /^\\?(["'`])(.*?)\\?\1$/.exec(m[1])?.[2] : (m[3] ?? m[5]);
+    if (spec === undefined || !(JS_SAFE.test(spec) || /\.json$/i.test(spec))) return true;
+  }
+  return false;
+}
+
+const PY_SAFE = /^(?:io|json|os|os\.path|sys|re|pathlib|glob|fnmatch|collections|itertools|functools|datetime|time|math|hashlib|base64|csv|textwrap|pprint|unicodedata|string|struct|typing|difflib|statistics|codecs)$/;
+
+function pyOpaque(body) {
+  if (/\bos\s*\.\s*(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*|fork)\b|__import__|\bimportlib\b|\b(?:exec|eval|compile)\s*\(/.test(body)) return true;
+  for (const m of body.matchAll(/\bfrom\s+([\w.]+)\s+import\b|\bimport\s+([\w.]+(?:\s+as\s+\w+)?(?:\s*,\s*[\w.]+(?:\s+as\s+\w+)?)*)/g)) {
+    const mods = m[1] ? [m[1]] : m[2].split(',').map((x) => x.trim().split(/\s+/)[0]);
+    if (mods.some((x) => !PY_SAFE.test(x))) return true;
+  }
+  return false;
+}
+
+function pyWrites(body) {
+  if (/\.(?:write_text|write_bytes|unlink|touch|mkdir|rmdir|rename|symlink_to|hardlink_to|chmod)\s*\(|\bos\s*\.\s*(?:remove|unlink|rename|replace|makedirs|mkdir|rmdir|removedirs|chmod|truncate|symlink|link|utime)\b/.test(body)) return true;
+  // open() reads unless it is told otherwise, and a mode the limiter cannot read counts as otherwise.
+  return [...body.matchAll(/\bopen\s*\(([^)]*)\)/g)].some((m) => m[1].split(',').slice(1).map((x) => x.trim())
+    .some((x) => !/^(?:(?:encoding|errors|newline|buffering|closefd)\s*=|(?:mode\s*=\s*)?(["'])[rbt]*\1$)/.test(x)));
+}
+
+/**
  * Only a write counts.
  *
  * Reading production is how you find out what is there, and charging for it would make the
  * careful thing cost the same as the dangerous one — which teaches skipping the read.
+ *
+ * An assignment is not a write; the path it holds is charged where it is used. A `cd` is not a
+ * write; what runs after it in a production directory is. A command that only prints is charged
+ * for what it redirects there, and so is interpreter code that can be read and writes nothing.
  */
-function isProduction(tool, path, doing, cfg) {
-  if (WRITES.test(tool)) return inProduction(path, cfg);
-  // `doing` is already the command minus its read-only parts, so `grep X:/site/ -r` names a
-  // production path without touching one and is not charged for it.
-  return doing.some((seg) => inProduction(seg, cfg));
+function isProduction(tool, path, steps, cfg) {
+  if (WRITES.test(tool)) return inProduction(path, cfg) ? { seg: path } : null;
+  return steps.find((s) => {
+    if (s.kind === 'assign' || s.kind === 'cd') return false;
+    if (s.kind === 'read' || (s.kind === 'inline' && !s.opaque && !s.writes)) {
+      return redirects(s).some((to) => inProduction(to, cfg));
+    }
+    return inProduction(s.text, cfg) || inProduction(s.cwd, cfg);
+  });
 }
 
 /** The files the human named in their own words. Everything else is the agent's own idea. */
@@ -337,27 +557,34 @@ export function price(payload, cwd = root(), cfg = null) {
   const path = input.file_path || input.path || input.notebook_path || '';
   // What the command does, rather than what it says. A charge names the part that earned it, so
   // the pilot is told which half of a compound command was the expensive one.
-  const doing = acts(command);
+  const steps = walk(command, /^PowerShell$/i.test(tool) ? 'powershell' : 'bash');
   // Every tree this call touches is asked where the rules are kept, alongside the session's own
   // directory.
   const conf = cfg || config(cwd, [
     ...(path ? [dirname(resolve(String(path)))] : []),
-    ...absolutePathsIn(doing),
+    ...absolutePathsIn([
+      ...steps.filter((s) => s.kind !== 'read').map((s) => s.text),
+      ...steps.filter((s) => s.kind === 'read').flatMap(redirects),
+    ]),
   ]);
   const charges = [];
 
   for (const rule of TARIFF) {
-    const hit = rule.bash && doing.find((seg) => rule.bash.some((re) => re.test(seg)));
+    const hit = rule.bash && steps.find((s) => s.kind !== 'read'
+      && !(s.kind === 'inline' && !s.opaque)
+      && !(rule.kind === 'irreversible' && removesOnlyTemp(s))
+      && rule.bash.some((re) => re.test(s.text)));
     if (hit) {
-      charges.push({ kind: rule.kind, points: rule.points, why: rule.why, on: hit.slice(0, 120) });
+      charges.push({ kind: rule.kind, points: rule.points, why: rule.why, on: hit.seg.slice(0, 120) });
       continue;
     }
-    if (rule.file && path && rule.file.some((re) => re.test(path))) {
+    if (rule.file && path && WRITES.test(tool) && rule.file.some((re) => re.test(path))) {
       charges.push({ kind: rule.kind, points: rule.points, why: rule.why, on: path });
       continue;
     }
-    if (rule.path && isProduction(tool, path, doing, conf)) {
-      charges.push({ kind: rule.kind, points: rule.points, why: rule.why, on: path || doing.join(' ').slice(0, 120) });
+    const written = rule.path && isProduction(tool, path, steps, conf);
+    if (written) {
+      charges.push({ kind: rule.kind, points: rule.points, why: rule.why, on: written.seg.slice(0, 120) });
       continue;
     }
     if (rule.scope && path && WRITES.test(tool)) {
