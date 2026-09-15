@@ -1184,3 +1184,50 @@ test('a rule is flattened to one line and cannot become a heading in the briefin
 
   rmSync(join(STORE, 'rules.json'), { force: true });
 });
+
+test('HABIT_HASH_ONLY set after a body was stored: a correction keeps no lines of it', () => {
+  const dir = work();
+  try {
+    const f = join(dir, 'kept-before.md');
+    writeFileSync(f, 'written before the switch\n');
+    hookPost({ ...payload(f), prompt_id: 'P1' });
+    process.env.HABIT_HASH_ONLY = '1';
+    writeFileSync(f, 'HASHONLY-MARKER-POST added by the agent\n');
+    hookPost({ ...payload(f), prompt_id: 'P2' });
+    const leaked = listCorrections().filter((c) => JSON.stringify(c).includes('HASHONLY-MARKER-POST'));
+    assert.equal(leaked.length, 0, 'no line of the file is kept once hash-only is on');
+  } finally {
+    delete process.env.HABIT_HASH_ONLY;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('HABIT_HASH_ONLY set after a body was stored: a hand edit is not filed with its lines either', () => {
+  const dir = work();
+  try {
+    const f = join(dir, 'kept-before-pre.md');
+    writeFileSync(f, 'written before the switch\n');
+    hookPost({ ...payload(f), prompt_id: 'P1' });
+    process.env.HABIT_HASH_ONLY = '1';
+    writeFileSync(f, 'HASHONLY-MARKER-PRE changed by hand\n');
+    assert.ok(hookPre({ ...payload(f), prompt_id: 'P2' }), 'the change is still warned about');
+    const leaked = listCorrections().filter((c) => JSON.stringify(c).includes('HASHONLY-MARKER-PRE'));
+    assert.equal(leaked.length, 0);
+  } finally {
+    delete process.env.HABIT_HASH_ONLY;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('on a case-sensitive platform, paths differing only in case are different files', async () => {
+  const { keyOf } = await import('../src/store.mjs');
+  const real = process.platform;
+  try {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    assert.notEqual(keyOf('/work/A.js'), keyOf('/work/a.js'));
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    assert.equal(keyOf('/work/A.js'), keyOf('/work/a.js'), 'Windows paths are still one file');
+  } finally {
+    Object.defineProperty(process, 'platform', { value: real });
+  }
+});

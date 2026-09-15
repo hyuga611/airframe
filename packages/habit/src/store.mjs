@@ -31,7 +31,10 @@ export const MAX_LINE = 400;         // and how much of each one
 export const EDIT_TOOLS = /^(Write|Edit|MultiEdit|NotebookEdit)$/;
 
 export const sha = (s) => createHash('sha256').update(s).digest('hex');
-export const keyOf = (p) => sha(resolve(p).toLowerCase()).slice(0, 32);
+// Case is folded only where the filesystem folds it. On Linux A.js and a.js are two files, and
+// one key for both overwrote one file's record with the other's.
+const foldsCase = () => process.platform === 'win32' || process.platform === 'darwin';
+export const keyOf = (p) => sha(foldsCase() ? resolve(p).toLowerCase() : resolve(p)).slice(0, 32);
 export const nowIso = () => new Date().toISOString();
 
 /**

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1
+
+### Windows のパスで gcloud の認証情報を控えに取っていた
+
+控えに取らない場所の一覧のうち、`.config/gcloud` だけが `/` 区切りでしか一致しなかった。
+Windows の `C:\Users\<名前>\.config\gcloud\access_tokens.db` は機微と判定されず、
+cruise 中に書き込まれると中身ごと控えに残っていた。`\` 区切りでも一致するようにした。
+
 ## 0.3.0
 
 ### 既定の cwd が spar の `root()`（`CLAUDE_PROJECT_DIR`、無ければ cwd）になった

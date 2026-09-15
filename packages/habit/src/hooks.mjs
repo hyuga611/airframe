@@ -90,8 +90,13 @@ export function hookPost(payload) {
   const cur = readFileSafe(file);
   if (!cur) return null;
 
+  // Policy decides whether contents are kept. Detection works from the hash either way.
+  // Decided before the correction too: a body stored before HABIT_HASH_ONLY was set must not
+  // come back out as the lines of a new correction.
+  const keepBody = !cur.tooBig && mayStoreBody(file);
   const prev = loadRecord(file);
   if (
+    keepBody &&
     prev &&
     prev.text != null &&
     prev.session &&
@@ -99,8 +104,7 @@ export function hookPost(payload) {
     prev.promptId &&
     payload.prompt_id &&
     prev.promptId !== payload.prompt_id &&
-    prev.hash !== cur.hash &&
-    !cur.tooBig
+    prev.hash !== cur.hash
   ) {
     const d = lineDiff(prev.text, cur.text);
     if (d.removed.length || d.added.length) {
@@ -126,8 +130,6 @@ export function hookPost(payload) {
     }
   }
 
-  // Policy decides whether contents are kept. Detection works from the hash either way.
-  const keepBody = !cur.tooBig && mayStoreBody(file);
   saveRecord(file, {
     file: resolve(file),
     hash: cur.hash,
@@ -316,7 +318,9 @@ export function hookPre(payload) {
     // Only material habit can actually attribute becomes material to learn from. A rule is
     // meant to be citable back to corrections the user really made; an entry sourced from a
     // release script would be fabricated evidence wearing the same id.
-    if (sameSession) {
+    // Policy is read now, not when the copy was stored: a body kept before HABIT_HASH_ONLY was
+    // set must not be written out again as the lines of a correction.
+    if (sameSession && mayStoreBody(rec.file)) {
       recordCorrection({
         file: rec.file,
         writtenAt: rec.writtenAt,

@@ -266,3 +266,29 @@ test('a part that scopes a hook keeps its matcher through install', () => {
   assert.equal(scoped.matcher, 'Write|Edit');
   assert.equal('matcher' in unscoped, false); // no matcher means every tool, and it must stay that way
 });
+
+test('a hook wired by hand under a narrower matcher is widened, not skipped and not doubled', () => {
+  const parts = [{ name: '@hyuga/redline', hooks: { PreToolUse: ['hook pre'] }, present: true }];
+  const theirs = { hooks: { PreToolUse: [{ matcher: 'Write', hooks: [
+    { type: 'command', command: 'redline hook pre' },
+    { type: 'command', command: 'their-own-tool check' },
+  ] }] } };
+  const { settings, added } = wire(theirs, parts);
+  assert.equal(added, 1, 'a limiter that only sees Write is not wired');
+  const groups = settings.hooks.PreToolUse;
+  const limiter = groups.filter((g) => g.hooks.some((h) => /redline hook pre/.test(h.command)));
+  assert.equal(limiter.length, 1, 'one copy, so a Write is not counted twice');
+  assert.equal('matcher' in limiter[0], false, 'and it now sees Bash too');
+  assert.equal(limiter[0].hooks[0].command, 'redline hook pre', 'kept as it was spelled');
+  assert.equal(groups.find((g) => g.hooks.some((h) => h.command === 'their-own-tool check')).matcher, 'Write', 'their hook keeps its own scope');
+  assert.equal(theirs.hooks.PreToolUse[0].hooks.length, 2, 'the settings passed in are not changed');
+});
+
+test('a matcher that already covers a scoped part is left alone', () => {
+  const habit = [{ name: '@hyuga/habit', hooks: { PreToolUse: [{ sub: 'hook pre', matcher: 'Write|Edit' }] }, present: true }];
+  for (const matcher of [undefined, '*', '', 'Write|Edit', 'Write|Edit|MultiEdit']) {
+    const group = { hooks: [{ type: 'command', command: 'habit hook pre' }] };
+    if (matcher !== undefined) group.matcher = matcher;
+    assert.equal(wire({ hooks: { PreToolUse: [group] } }, habit, { how: 'bin' }).added, 0, `matcher=${matcher}`);
+  }
+});

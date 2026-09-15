@@ -7,7 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { launch, ledger } from '@hyuga/spar';
-import { check, point, contracts, pendingFiles } from '../src/yubisashi.mjs';
+import { check, point, contracts, pendingFiles, CALL_BUDGET_MS } from '../src/yubisashi.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = resolve(HERE, '..', 'src', 'yubisashi.mjs');
@@ -210,4 +210,35 @@ test('the CLI: hook pre reads stdin and writes the envelope; point runs the prob
   const byHand = spawnSync(process.execPath, [CLI, 'point', file], { encoding: 'utf8', env, cwd: dir });
   assert.equal(byHand.status, 1);
   assert.match(byHand.stdout, /✗ "broken" — probe-error: exit 1/);
+});
+
+test('with nobody in the seat, a denial does not turn into a pass on the retry', (t) => {
+  const { dir, file } = fresh(t);
+  launch({ mode: 'strike', autonomy: true, reason: 'test' }, dir);
+  contract(file, { action: 'runs', probe: printing('0'), expect: { type: 'count', value: 1 } });
+  contract(file, { action: 'broken', probe: failing, expect: { type: 'nonempty' } });
+  assert.equal(check(bash('git push origin main'), dir).verdict, 'halt');
+  const retry = check(bash('git push origin main'), dir);
+  assert.equal(retry && retry.verdict, 'halt', 'the line is still broken, so the call is still denied');
+  assert.match(retry.message, /"broken" — the probe does not run: exit 1/);
+  assert.equal(mine(dir).length, 2, 'the retry is not filed again');
+});
+
+test('a pilot is still told about a broken probe only once', (t) => {
+  const { dir, file } = fresh(t);
+  contract(file, { action: 'runs', probe: printing('0'), expect: { type: 'count', value: 1 } });
+  contract(file, { action: 'broken', probe: failing, expect: { type: 'nonempty' } });
+  assert.equal(check(bash('git push origin main'), dir).verdict, 'advise');
+  assert.equal(check(bash('git push origin main'), dir), null);
+});
+
+test('no probe starts that could run past the call budget', (t) => {
+  const { dir, file } = fresh(t);
+  const slow = `node -e "setTimeout(()=>console.log(1),3000)"`;
+  for (const action of ['a', 'b', 'c']) contract(file, { action, probe: slow, expect: { type: 'count', value: 2 } });
+  const started = Date.now();
+  check(bash('git push origin main'), dir);
+  const took = Date.now() - started;
+  assert.ok(took < CALL_BUDGET_MS, `the hook came back inside its budget (took ${took}ms)`);
+  assert.equal(mine(dir).length, 2, 'the third is left for the next call');
 });

@@ -169,3 +169,9 @@ test('a copy is bytes, so what comes back out is what went in', (t) => {
   assert.ok(kept, 'an untracked file in cruise is kept');
   assert.deepEqual(readFileSync(kept), png, 'byte for byte');
 });
+
+test('a credential directory is refused under Windows separators too', () => {
+  for (const name of ['C:\\Users\\x\\.config\\gcloud\\access_tokens.db', '/home/x/.config/gcloud/access_tokens.db']) {
+    assert.equal(isSensitive(name), true, `${name} should never be kept`);
+  }
+});

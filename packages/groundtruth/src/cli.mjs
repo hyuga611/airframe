@@ -23,7 +23,7 @@
 
 import { readFileSync } from 'node:fs';
 import { verify, expect as X } from './index.mjs';
-import { shellProbe, expectFromSpec } from './contract.mjs';
+import { shellProbe, expectFromSpec, totalTimeout, remainingTimeout, outOfTime } from './contract.mjs';
 
 // Read from package.json. Held as a constant, this CLI once answered with a number one release
 // out of date — the thing reflint 0.10.0's CHANGELOG names. A constant is a place a person has
@@ -153,9 +153,11 @@ async function cmdGuard(p) {
   }
   const failures = [];
   let weakOnly = 0; // how many contracts asked only for non-empty output
+  const deadline = Date.now() + totalTimeout();
   for (const line of lines) {
     let c;
     try { c = JSON.parse(line); } catch { failures.push({ action: line.slice(0, 40), reason: 'bad-json', evidence: line }); continue; }
+    if (!c || typeof c !== 'object') { failures.push({ action: line.slice(0, 40), reason: 'bad-contract', evidence: line }); continue; }
     if (!c.probe) { failures.push({ action: c.action || '(no action)', reason: 'no-probe', evidence: '' }); continue; }
     let expectFn;
     try { expectFn = expectFromSpec(c.expect); } catch (e) {
@@ -163,7 +165,9 @@ async function cmdGuard(p) {
       continue;
     }
     if (expectFn.groundtruthLabel === 'nonEmpty') weakOnly++;
-    const v = await verify({ action: c.action || c.probe, probe: shellProbe(String(c.probe)), expect: expectFn });
+    const timeout = remainingTimeout(deadline);
+    if (timeout <= 0) { failures.push(outOfTime(c)); continue; }
+    const v = await verify({ action: c.action || c.probe, probe: shellProbe(String(c.probe), { timeout }), expect: expectFn });
     if (!v.ok) failures.push(v);
   }
   // Do not flatten what "all confirmed" contains. A nonempty-only contract established that

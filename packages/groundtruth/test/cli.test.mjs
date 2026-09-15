@@ -190,3 +190,52 @@ test('the CLI and the hook read a contract through the same module', async () =>
   assert.throws(() => expectFromSpec({ type: 'nope' }), /unknown expect\.type/);
   assert.throws(() => expectFromSpec(undefined), /confirms nothing/);
 });
+
+test('a contract line that parses to null is refused, not a crash the Stop hook ignores', () => {
+  // exit 70 is a non-blocking hook error in Claude Code, so a crash here let the stop through
+  const body = ['null', JSON.stringify({ action: 'rows', probe: emit('0'), expect: { type: 'count', value: 45 } })].join('\n');
+  const r = withContracts(body, (d) => run(['guard', 'contracts.jsonl'], d));
+  assert.equal(r.code, 2, r.out);
+  assert.match(r.out, /bad-contract/);
+  assert.match(r.out, /2\/2 contracts unmet/, 'the line after it is still checked');
+});
+
+test('Stop hook: a contract line that parses to null does not stop the others being checked', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'groundtruth-hook-'));
+  try {
+    const r = runHook(['null', JSON.stringify({ action: 'rows', probe: 'echo 0', expect: { type: 'count', value: 45 } })].join('\n'), dir);
+    assert.equal(r.status, 2, r.stderr);
+    assert.match(r.stderr, /bad-contract/);
+    assert.match(r.stderr, /\[count\(45\)\]/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Each probe has its own limit, but Claude Code kills the whole hook at 60 seconds, and a killed
+// hook blocks nothing. Four slow probes at 20 seconds each used to add up past that.
+const slow = { action: 'slow', probe: `node -e "process.chdir(require('os').tmpdir());setTimeout(()=>{},5000)"`, expect: { type: 'nonempty' } };
+const budget = { GROUNDTRUTH_PROBE_TIMEOUT_MS: '1000', GROUNDTRUTH_TOTAL_TIMEOUT_MS: '1500' };
+
+test('Stop hook: slow probes cannot add up past the hook deadline — the rest are refused unchecked', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'groundtruth-hook-'));
+  try {
+    const file = join(dir, 'pending.jsonl');
+    writeFileSync(file, Array(4).fill(JSON.stringify(slow)).join('\n'));
+    const t = Date.now();
+    const r = spawnSync(process.execPath, [HOOK], { encoding: 'utf8', env: { ...process.env, ...budget, GROUNDTRUTH_PENDING: file } });
+    assert.equal(r.status, 2, r.stderr);
+    assert.ok(Date.now() - t < 3000, `came back within the total budget (took ${Date.now() - t}ms)`);
+    assert.match(r.stderr, /out-of-time/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('guard: slow probes cannot add up past the hook deadline either', () => {
+  const t = Date.now();
+  const r = withContracts(Array(4).fill(JSON.stringify(slow)).join('\n'), (d) => run(['guard', 'contracts.jsonl'], d, budget));
+  assert.equal(r.code, 2, r.out);
+  assert.ok(Date.now() - t < 3000, `came back within the total budget (took ${Date.now() - t}ms)`);
+  assert.match(r.out, /out-of-time/);
+});

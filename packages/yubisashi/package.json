@@ -1,6 +1,6 @@
 {
   "name": "@hyuga/yubisashi",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Point before you write. Before a call that changes the world, runs the completion contract's probe once — so a probe that cannot run, a target that is not there, or an expectation that is already true is found while the fix is cheap. The same line groundtruth re-checks at the end.",
   "type": "module",
   "main": "src/yubisashi.mjs",

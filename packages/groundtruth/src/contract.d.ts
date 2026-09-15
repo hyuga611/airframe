@@ -17,6 +17,14 @@ export interface ContractSpec {
 export const PROBE_TIMEOUT_MS: number;
 export function probeTimeout(): number;
 
+/** Default limit for all probes of one run together, in ms. GROUNDTRUTH_TOTAL_TIMEOUT_MS overrides it. */
+export const TOTAL_TIMEOUT_MS: number;
+export function totalTimeout(): number;
+/** The next probe's limit: its own, cut down to what is left before `deadline` (epoch ms). */
+export function remainingTimeout(deadline: number): number;
+/** The failure for a contract the run ran out of time to check. */
+export function outOfTime(contract: Partial<ContractSpec>): Verdict;
+
 /**
  * A probe that runs `cmd` in a shell and resolves to its trimmed stdout. Rejects on a non-zero
  * exit, and on running past `timeout` ms — a probe that hangs is a failure, not a pass.
@@ -26,8 +34,12 @@ export function shellProbe(cmd: string, options?: { timeout?: number }): () => P
 /** The expectation function a spec names. Throws on an unknown `expect.type`. */
 export function expectFromSpec(spec: ContractSpec['expect'] | null | undefined): (state: unknown) => ExpectResult;
 
-/** Parse one line and verify it with the given `verify` (groundtruth's own). */
+/**
+ * Parse one line and verify it with the given `verify` (groundtruth's own). `timeout` is the
+ * probe's limit; zero or less refuses the contract as out-of-time without running it.
+ */
 export function checkContract(
   line: string,
   verify: (contract: { action?: string; probe: () => Promise<string>; expect: (s: unknown) => ExpectResult }) => Promise<Verdict>,
+  options?: { timeout?: number },
 ): Promise<Verdict>;

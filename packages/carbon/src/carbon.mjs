@@ -45,7 +45,7 @@ export const NEVER = [
   /\.(pem|key|p12|pfx|jks|keystore|ppk|asc|gpg)$/i,
   /(^|[\\/])(secrets?|credentials?|passwords?)([\\/]|[._-]|$)/i,
   /(^|[\\/])id_(rsa|dsa|ecdsa|ed25519)/i,
-  /(^|[\\/])\.(ssh|aws|gnupg|kube|docker|azure|config\/gcloud)([\\/]|$)/i,
+  /(^|[\\/])\.(ssh|aws|gnupg|kube|docker|azure|config[\\/]gcloud)([\\/]|$)/i,
   /(^|[\\/])(hosts\.yml|auth\.json|wp-config\.php|application_default_credentials\.json)$/i,
   /\.tfstate(\.|$)/i,
   /(^|[\\/])(service[_-]?account|serviceaccount)[^\\/]*\.json$/i,

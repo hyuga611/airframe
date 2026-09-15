@@ -15,7 +15,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { verify } from '../../src/index.mjs';
-import { checkContract } from '../../src/contract.mjs';
+import { checkContract, totalTimeout, remainingTimeout } from '../../src/contract.mjs';
 
 const PENDING = process.env.GROUNDTRUTH_PENDING || '.groundtruth/pending.jsonl';
 
@@ -25,8 +25,9 @@ async function main() {
   if (lines.length === 0) process.exit(0);
 
   const failures = [];
+  const deadline = Date.now() + totalTimeout();
   for (const line of lines) {
-    const f = await checkContract(line, verify);
+    const f = await checkContract(line, verify, { timeout: remainingTimeout(deadline) });
     if (f) failures.push(f);
   }
 

@@ -177,6 +177,10 @@ function runs(command, name, sub) {
   return false;
 }
 
+/** Whether a group's matcher reaches every tool `want` names. No matcher, '' and '*' reach all. */
+const covers = (have, want) =>
+  !have || have === '*' || (!!want && want.split('|').every((m) => have.split('|').includes(m)));
+
 /**
  * Add our hooks to whatever is already in settings.json.
  *
@@ -184,6 +188,11 @@ function runs(command, name, sub) {
  * one of ours. Both are silent — the first loses a tool that was working, the second charges
  * every call twice — so an entry is appended only when nothing already runs that part's
  * sub-command, however it is spelled.
+ *
+ * Running it is not enough when the matcher around it is narrower than the part's. A limiter
+ * wired by hand under `Write` counted no Bash call, and install called that wired. Such a hook
+ * is moved into one group of its own whose matcher reaches both, rather than left short or
+ * given a second copy.
  */
 export function wire(settings, parts = mounted(), { how = 'npx' } = {}) {
   const out = { ...settings, hooks: { ...(settings.hooks || {}) } };
@@ -195,10 +204,16 @@ export function wire(settings, parts = mounted(), { how = 'npx' } = {}) {
       for (const entry of subs) {
         const { sub, matcher } = typeof entry === 'string' ? { sub: entry } : entry;
         const command = runner(part.name, sub, how);
-        const already = existing.some((g) => (g.hooks || []).some((h) => runs(h.command, part.name, sub)));
-        if (already) continue;
-        const group = { hooks: [{ type: 'command', command, timeout: 10 }] };
-        if (matcher) group.matcher = matcher;
+        const ours = (h) => runs(h.command, part.name, sub);
+        const wired = existing.filter((g) => (g.hooks || []).some(ours));
+        if (wired.some((g) => covers(g.matcher, matcher))) continue;
+        const group = { hooks: wired.length ? [wired[0].hooks.find(ours)] : [{ type: 'command', command, timeout: 10 }] };
+        const wider = matcher && [...new Set([...wired.flatMap((g) => g.matcher.split('|')), ...matcher.split('|')])].join('|');
+        if (wider) group.matcher = wider;
+        for (const g of wired) {
+          const rest = g.hooks.filter((h) => !ours(h));
+          existing.splice(existing.indexOf(g), 1, ...(rest.length ? [{ ...g, hooks: rest }] : []));
+        }
         existing.push(group);
         added += 1;
       }

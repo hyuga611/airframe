@@ -32,7 +32,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { finding, report, ledger, sortie, root, quote } from '@hyuga/spar';
+import { finding, report, verdict, ledger, sortie, root, quote } from '@hyuga/spar';
 import { runDirectly, readStdin } from '@hyuga/spar/cli';
 import { price } from '@hyuga/redline';
 import { expectationLabel } from '@hyuga/groundtruth';
@@ -201,13 +201,20 @@ export function check(payload, cwd = root()) {
   for (const c of all) {
     let rec = seen.get(c.key);
     if (!rec) {
-      if (Date.now() - started > CALL_BUDGET_MS) break; // the rest get pointed on the next call
+      // A probe only starts if its whole clock fits: one started near the end ran past the hook's
+      // ten seconds, and a killed hook denies nothing. The rest get pointed on the next call.
+      if (Date.now() - started > CALL_BUDGET_MS - PROBE_TIMEOUT_MS) break;
       const p = point(c);
       const r = file(p, cwd);
       rec = r.record;
       seen.set(c.key, rec);
       if (r.show) lines.push(said(p));
       if (r.verdict === 'halt') halt = true;
+    } else if (BROKEN.includes(rec.observed && rec.observed.reason) && !s.melee && verdict(rec, s).verdict === 'halt') {
+      // Advice is said once. A denial is not: retrying the same call with the same broken line
+      // has to be denied again, or the denial is only a delay.
+      lines.push(said({ action: rec.subject, detail: rec.note }));
+      halt = true;
     }
     if (!BROKEN.includes(rec.observed && rec.observed.reason)) standing += 1;
   }

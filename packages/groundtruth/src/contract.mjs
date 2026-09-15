@@ -18,6 +18,20 @@ export function probeTimeout() {
   return Number.isFinite(n) && n > 0 ? n : PROBE_TIMEOUT_MS;
 }
 
+// How long all the probes of one run may take together. The per-probe limit alone let four slow
+// probes add up past Claude Code's 60-second hook timeout, and a killed hook blocks nothing.
+// Contracts left when this runs out are failures, not skipped.
+export const TOTAL_TIMEOUT_MS = 45_000;
+export function totalTimeout() {
+  const n = Number(process.env.GROUNDTRUTH_TOTAL_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? n : TOTAL_TIMEOUT_MS;
+}
+
+// The limit for the next probe: its own, cut down to what is left of the run.
+export function remainingTimeout(deadline) {
+  return Math.min(probeTimeout(), deadline - Date.now());
+}
+
 // A probe that runs a shell command and returns its stdout. A non-zero exit throws, which is
 // how it is reported as a probe failure rather than as an answer. So does running out of time.
 export function shellProbe(cmd, { timeout = probeTimeout() } = {}) {
@@ -62,13 +76,14 @@ export function expectFromSpec(spec) {
 // Verify one contract, returning the failure when it is unmet and null when it is met.
 // A failure rather than a throw, so that one bad line does not end the run with the remaining
 // contracts never checked.
-export async function checkContract(line, verify) {
+export async function checkContract(line, verify, { timeout = probeTimeout() } = {}) {
   let c;
   try {
     c = JSON.parse(line);
   } catch {
     return { action: line.slice(0, 60), reason: 'bad-json', evidence: line };
   }
+  if (!c || typeof c !== 'object') return { action: line.slice(0, 60), reason: 'bad-contract', evidence: line };
   if (!c.probe) return { action: c.action || '(no action)', reason: 'no-probe', evidence: '' };
   let expectFn;
   try {
@@ -76,6 +91,16 @@ export async function checkContract(line, verify) {
   } catch (e) {
     return { action: c.action || '(no action)', reason: 'bad-expect', detail: e.message, evidence: '' };
   }
-  const v = await verify({ action: c.action || c.probe, probe: shellProbe(String(c.probe)), expect: expectFn });
+  if (timeout <= 0) return outOfTime(c);
+  const v = await verify({ action: c.action || c.probe, probe: shellProbe(String(c.probe), { timeout }), expect: expectFn });
   return v.ok ? null : v;
+}
+
+export function outOfTime(c) {
+  return {
+    action: c.action || c.probe || '(no action)',
+    reason: 'out-of-time',
+    detail: 'the run used up its total time before this probe could start — it was never checked',
+    evidence: '',
+  };
 }
