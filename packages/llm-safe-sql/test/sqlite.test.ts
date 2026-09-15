@@ -576,6 +576,28 @@ describe('sqlite', { skip }, () => {
     }
   });
 
+  test('read: two reads at once on a separate read connection never share its transaction', async () => {
+    const ro = await SqliteAdapter.connect({ file, readOnly: true });
+    const e = new Engine({ adapter: planning, readAdapter: ro, policy });
+    try {
+      await e.read('SELECT id FROM orders WHERE id = 1'); // selfCheck out of the way
+      const both = await Promise.allSettled([
+        e.read('SELECT id, qty FROM orders WHERE id = 1'),
+        e.read('SELECT id, qty FROM orders WHERE id = 2'),
+      ]);
+      const done = both.filter((r) => r.status === 'fulfilled');
+      const refused = both.flatMap((r) => (r.status === 'rejected' ? [r.reason as unknown] : []));
+      assert.equal(done.length, 1, `exactly one runs: ${refused.map(String).join(' | ')}`);
+      assert.equal(refused.length, 1);
+      assert.ok(refused[0] instanceof PlanRefused && refused[0].code === 'BUSY', String(refused[0]));
+      assert.equal(ro.inTransaction(), false, 'nothing is left open');
+      const r = await e.read('SELECT id FROM orders WHERE id = 3');
+      assert.equal(r.rows.length, 1, 'and the next read is not refused');
+    } finally {
+      await ro.close();
+    }
+  });
+
   test('read: with no readAdapter, reads share the connection that can write', async () => {
     const e = new Engine({ adapter: planning, policy });
     assert.equal(e.readIsSeparate, false);

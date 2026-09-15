@@ -170,6 +170,16 @@ export function lex(sql: string, dialect: Dialect): Token[] {
       continue;
     }
 
+    // ---- Postgres U&"..." (an identifier with Unicode escapes) ----
+    // `U&"d\0061ta"` is the column `data`. Kept as written, the escapes were a
+    // spelling of a denied name that no denylist entry matched.
+    if ((c === 'U' || c === 'u') && dialect === 'postgres' && sql.charAt(i + 1) === '&' && sql.charAt(i + 2) === '"') {
+      const start = i;
+      i = scanQuoted(sql, i + 2, '"', false, dialect);
+      push('quotedIdent', start, i, unicodeEscapes(sql.slice(start + 3, i - 1).replace(/""/g, '"'), start));
+      continue;
+    }
+
     // ---- single-quoted string ----
     // Postgres treats backslash literally (standard_conforming_strings=on); MySQL
     // treats it as an escape. Reading this backwards leaks the tail of a literal
@@ -244,7 +254,51 @@ export function lex(sql: string, dialect: Dialect): Token[] {
     i++;
   }
 
+  // `U&"…" UESCAPE '!'` changes the escape character after the name has been read.
+  // Decoding it would mean reading ahead across comments; refusing costs nothing a
+  // real query needs.
+  for (let t = 0; t < tokens.length; t++) {
+    const tok = tokens[t];
+    if (tok?.kind !== 'quotedIdent' || !/^u&/i.test(tok.raw)) continue;
+    const next = tokens.slice(t + 1).find((x) => x.kind !== 'ws' && x.kind !== 'comment');
+    if (next?.kind === 'ident' && next.value.toLowerCase() === 'uescape') {
+      throw new SqlLexError('UESCAPE is not supported; write the identifier with the default \\ escape', next.start);
+    }
+  }
+
   return tokens;
+}
+
+/**
+ * The name a Postgres `U&"…"` identifier spells: `\XXXX` and `\+XXXXXX` are code
+ * points and `\\` is a backslash. An escape that does not decode to a character is
+ * refused rather than kept as written, since kept as written it names nothing the
+ * server would.
+ */
+function unicodeEscapes(body: string, position: number): string {
+  let out = '';
+  for (let i = 0; i < body.length; i++) {
+    const c = body.charAt(i);
+    if (c !== '\\') {
+      out += c;
+      continue;
+    }
+    if (body.charAt(i + 1) === '\\') {
+      out += '\\';
+      i++;
+      continue;
+    }
+    const wide = body.charAt(i + 1) === '+';
+    const len = wide ? 6 : 4;
+    const hex = body.slice(i + (wide ? 2 : 1), i + (wide ? 2 : 1) + len);
+    const cp = /^[0-9A-Fa-f]+$/.test(hex) && hex.length === len ? parseInt(hex, 16) : -1;
+    if (cp <= 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) {
+      throw new SqlLexError('invalid Unicode escape in U&"" identifier', position);
+    }
+    out += String.fromCodePoint(cp);
+    i += (wide ? 1 : 0) + len;
+  }
+  return out;
 }
 
 /**

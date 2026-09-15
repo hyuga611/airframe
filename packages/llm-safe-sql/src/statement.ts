@@ -2,11 +2,18 @@ import type { Token } from './lexer.js';
 
 export const lower = (s: string): string => s.toLowerCase();
 
-/** Keywords that end a FROM/JOIN clause, so an alias or column is not read as a table. */
+/**
+ * Keywords that end a FROM/JOIN clause, so an alias or column is not read as a table.
+ * `ON` and `USING` are not among them: `JOIN b ON a.id = b.id, c` goes on to name
+ * `c`, and treating the join condition as the end of the list hid it.
+ */
 const CLAUSE_END = new Set([
   'where', 'group', 'having', 'order', 'limit', 'offset', 'fetch', 'union', 'except',
-  'intersect', 'on', 'using', 'set', 'returning', 'window', 'for', 'into',
+  'intersect', 'set', 'returning', 'window', 'for', 'into',
 ]);
+
+/** Words that open a query, so a parenthesis they follow holds a query and not a table. */
+const SUBQUERY_LEAD = new Set(['select', 'with', 'values', 'table']);
 
 /**
  * Keywords that end a WHERE clause. `ORDER`/`LIMIT` are refused on a write before
@@ -36,38 +43,76 @@ export function tableRefs(tokens: readonly Token[]): string[] {
   const toks = significant(tokens);
   const out: string[] = [];
   const seen = new Set<string>();
-  let expect = false;
-  let inFrom = false;
-  let depth = 0;
-  let fromDepth = 0;
 
-  // Keep the author's spelling: it is what a human will recognise in an error
-  // message. Comparisons are done case-folded at the call sites.
-  const add = (name: string): void => {
+  // Common table expressions are names this statement defines, not tables it
+  // reads. Reporting them made `WITH x AS (...) SELECT * FROM x` refuse `x` as
+  // not allowlisted — so SPEC's "SELECT and WITH" could not hold for any usable
+  // WITH. A CTE's own body is scanned by the same walk, so
+  // `WITH orders AS (SELECT * FROM secrets) SELECT * FROM orders` still reports
+  // `secrets`.
+  //
+  // A name is dropped only where that CTE is in scope and spelled so that every
+  // dialect resolves it to the CTE. Dropping every reference that shared a CTE's
+  // name let a CTE defined inside a subquery hide the real table of that name
+  // outside it.
+  const scopes = cteScopes(toks);
+  for (const site of refSites(toks).sites) {
+    const one = site.parts.length === 1 ? toks[site.at] : undefined;
+    if (one !== undefined && scopes.some((c) => c.from <= site.at && site.at < c.to && sameCteName(c.name, one))) {
+      continue;
+    }
+    // Keep the author's spelling: it is what a human will recognise in an error
+    // message. Comparisons are done case-folded at the call sites.
+    const name = site.parts.join('.');
     const k = lower(name);
     if (!seen.has(k)) {
       seen.add(k);
       out.push(name);
     }
-  };
+  }
+  return out;
+}
+
+interface RefSite {
+  parts: string[];
+  /** Index in the significant tokens of the first and last token of the name. */
+  at: number;
+  end: number;
+}
+
+/**
+ * Every place a table is named, and the closing parenthesis of every parenthesised
+ * join, whose alias names the joined row.
+ */
+function refSites(toks: readonly Token[]): { sites: RefSite[]; groupEnds: number[] } {
+  const sites: RefSite[] = [];
+  const groupEnds: number[] = [];
+  let expect = false;
+  // One entry per open bracket: whether a comma at that level separates tables,
+  // and whether the bracket is itself a parenthesised table reference.
+  const levels: { inFrom: boolean; group: boolean }[] = [{ inFrom: false, group: false }];
 
   for (let i = 0; i < toks.length; i++) {
     const t = toks[i];
     if (t === undefined) continue;
+    const level = levels[levels.length - 1] ?? { inFrom: false, group: false };
 
     if (t.kind === 'punct') {
-      if (t.value === '(') {
-        depth++;
-        // A parenthesis where a table name was expected is a derived table:
-        // `FROM (SELECT ...) AS x`. Leaving `expect` set meant the next
-        // identifier — the keyword SELECT — was recorded as the table, so every
-        // read with a subquery in its FROM was refused with "Table `SELECT` is
-        // not in the allowlist". The tables inside are still found: this scan
-        // does not stop at the parenthesis, and their own FROM sets `expect`
-        // again.
-        expect = false;
-      } else if (t.value === ')') depth--;
-      else if (t.value === ',' && inFrom && depth === fromDepth) expect = true;
+      if (t.value === '(' || t.value === '[') {
+        // A parenthesis where a table name was expected is either a derived
+        // table, `FROM (SELECT ...) AS x`, or a table reference in parentheses,
+        // `FROM (secrets s) CROSS JOIN ...`. The first once left `expect` set, so
+        // the keyword SELECT was recorded as the table; clearing it for both hid
+        // the table in the second. The tables inside a derived table are still
+        // found: this scan does not stop at the parenthesis.
+        const next = toks[i + 1];
+        const group = expect && t.value === '(' && !(next?.kind === 'ident' && SUBQUERY_LEAD.has(lower(next.value)));
+        levels.push({ inFrom: group, group });
+        if (!group) expect = false;
+      } else if (t.value === ')' || t.value === ']') {
+        if (levels.length > 1) levels.pop();
+        if (level.group) groupEnds.push(i);
+      } else if (t.value === ',' && level.inFrom) expect = true;
       continue;
     }
 
@@ -77,13 +122,12 @@ export function tableRefs(tokens: readonly Token[]): string[] {
     // the target entirely.
     if (!expect && t.kind === 'ident' && TABLE_LEAD.has(lower(t.value))) {
       expect = true;
-      inFrom = true;
-      fromDepth = depth;
+      level.inFrom = true;
       continue;
     }
 
     if (!expect && t.kind === 'ident' && CLAUSE_END.has(lower(t.value))) {
-      inFrom = false;
+      level.inFrom = false;
       continue;
     }
 
@@ -91,6 +135,7 @@ export function tableRefs(tokens: readonly Token[]): string[] {
       // Keep the whole qualified name. Reducing `other.orders` to `orders` lets a
       // statement be measured against one table while it writes to another, and
       // lets it pass an allowlist that never mentioned it.
+      const at = i;
       const parts = [t.value];
       while (
         i + 2 < toks.length &&
@@ -101,20 +146,12 @@ export function tableRefs(tokens: readonly Token[]): string[] {
         parts.push(toks[i + 2]?.value ?? '');
         i += 2;
       }
-      add(parts.join('.'));
+      sites.push({ parts, at, end: i });
       expect = false;
       continue;
     }
   }
-
-  // Common table expressions are names this statement defines, not tables it
-  // reads. Reporting them made `WITH x AS (...) SELECT * FROM x` refuse `x` as
-  // not allowlisted — so SPEC's "SELECT and WITH" could not hold for any usable
-  // WITH. Dropping them is safe because a CTE's own body is scanned by the same
-  // loop, so `WITH orders AS (SELECT * FROM secrets) SELECT * FROM orders` still
-  // reports `secrets`.
-  const defined = cteNames(toks);
-  return out.filter((n) => !defined.has(lower(n)));
+  return { sites, groupEnds };
 }
 
 /** Words after which a `*` is selecting columns rather than multiplying numbers. */
@@ -152,78 +189,96 @@ export function hasProjectionStar(tokens: readonly Token[]): boolean {
   return false;
 }
 
-/**
- * Functions that take a whole row and hand back every column of it under one name.
- * `to_jsonb(users)` returns the hash as surely as `SELECT *` does, and the column
- * that comes back is called `to_jsonb`, so the check on the result cannot see it.
- */
-const ROW_FUNCS = new Set(['to_json', 'to_jsonb', 'row_to_json', 'json_agg', 'jsonb_agg', 'array_agg', 'hstore', 'row']);
-
 /** Words that follow a table reference without being its alias. */
 const NOT_AN_ALIAS = new Set([
-  ...CLAUSE_END, 'as', 'join', 'left', 'right', 'inner', 'outer', 'cross', 'natural', 'full',
+  ...CLAUSE_END, 'on', 'using', 'as', 'join', 'left', 'right', 'inner', 'outer', 'cross', 'natural', 'full',
   'lateral', 'tablesample', 'select', 'from', 'update', 'table', 'where',
 ]);
 
+const isName = (t: Token | undefined): boolean => t?.kind === 'ident' || t?.kind === 'quotedIdent';
+const isPunct = (t: Token | undefined, value: string): boolean => t?.kind === 'punct' && t.value === value;
+
+/** The index of the parenthesis that closes the one at `open`, or the length when none does. */
+function closing(toks: readonly Token[], open: number): number {
+  let d = 0;
+  for (let i = open; i < toks.length; i++) {
+    if (isPunct(toks[i], '(')) d++;
+    else if (isPunct(toks[i], ')') && --d === 0) return i;
+  }
+  return toks.length;
+}
+
 /**
  * Every name a select list can use to mean "the whole row": each table referenced,
- * its unqualified name, and the alias it was given.
+ * its unqualified name, the alias it was given, and the alias of a parenthesised
+ * join. They are found by the same walk as {@link tableRefs}, so a table that walk
+ * reports — after a comma, inside parentheses — is one whose row is looked for.
  */
 function rowNames(toks: readonly Token[]): ReadonlySet<string> {
   const names = new Set<string>();
-  for (let i = 0; i < toks.length; i++) {
-    const t = toks[i];
-    if (t?.kind !== 'ident' || !TABLE_LEAD.has(lower(t.value))) continue;
-    let j = i + 1;
-    const n = toks[j];
-    if (n === undefined || (n.kind !== 'ident' && n.kind !== 'quotedIdent')) continue;
-    const parts = [n.value];
-    while (
-      toks[j + 1]?.kind === 'punct' &&
-      toks[j + 1]?.value === '.' &&
-      (toks[j + 2]?.kind === 'ident' || toks[j + 2]?.kind === 'quotedIdent')
-    ) {
-      parts.push(toks[j + 2]?.value ?? '');
-      j += 2;
-    }
-    names.add(lower(parts.join('.')));
-    names.add(lower(parts[parts.length - 1] ?? ''));
-    let a = toks[j + 1];
-    if (a?.kind === 'ident' && lower(a.value) === 'as') a = toks[j + 2];
+  const alias = (j: number): void => {
+    let a = toks[j];
+    if (a?.kind === 'ident' && lower(a.value) === 'as') a = toks[j + 1];
     if (a !== undefined && (a.kind === 'quotedIdent' || (a.kind === 'ident' && !NOT_AN_ALIAS.has(lower(a.value))))) {
       names.add(lower(a.value));
     }
+  };
+  const { sites, groupEnds } = refSites(toks);
+  for (const site of sites) {
+    names.add(lower(site.parts.join('.')));
+    names.add(lower(site.parts[site.parts.length - 1] ?? ''));
+    alias(site.end + 1);
   }
+  for (const end of groupEnds) alias(end + 1);
   return names;
 }
 
+/**
+ * Whether one select-list item uses a whole row anywhere in it. `SELECT u`,
+ * `to_jsonb(u)`, `(u)`, `u::text` and `format('%s', u)` all hand back every column
+ * of the row under a name of the author's choosing, so an item is judged by the
+ * names it touches rather than by matching the shapes known so far — the shapes
+ * were a list, and a list had room to step around.
+ *
+ * A name is not the row where it cannot be: qualified by something before it, the
+ * name an `AS` gives, a function that happens to share it, or an alias written
+ * without `AS` after a value that could not take an argument.
+ */
 function isRowItem(item: readonly Token[], names: ReadonlySet<string>): boolean {
-  const a = item[0];
-  if (a === undefined) return false;
-  const b = item[1];
-  // `SELECT u FROM users u`, `SELECT users FROM users`, with or without an alias after it.
-  if (
-    (a.kind === 'ident' || a.kind === 'quotedIdent') &&
-    names.has(lower(a.value)) &&
-    (b === undefined || b.kind === 'ident' || b.kind === 'quotedIdent')
-  ) {
+  for (let i = 0; i < item.length; i++) {
+    const t = item[i];
+    if (t === undefined) continue;
+    if (t.kind === 'punct') {
+      // A subquery's select list is judged on its own when its SELECT is reached,
+      // and its FROM names tables without projecting them.
+      const next = item[i + 1];
+      if (t.value === '(' && next?.kind === 'ident' && SUBQUERY_LEAD.has(lower(next.value))) i = closing(item, i);
+      continue;
+    }
+    if (!isName(t)) continue;
+    const at = i;
+    const parts = [t.value];
+    while (isPunct(item[i + 1], '.') && isName(item[i + 2])) {
+      parts.push(item[i + 2]?.value ?? '');
+      i += 2;
+    }
+    if (!names.has(lower(parts.join('.')))) continue;
+    const prev = item[at - 1];
+    if (isPunct(prev, '.')) continue;
+    if (prev?.kind === 'ident' && lower(prev.value) === 'as') continue;
+    if (isPunct(item[i + 1], '(')) continue;
+    if (i === item.length - 1 && parts.length === 1 && endsValue(item, at - 1)) continue;
     return true;
   }
-  // `SELECT to_jsonb(u) FROM users u`
-  if (a.kind === 'ident' && ROW_FUNCS.has(lower(a.value)) && b?.kind === 'punct' && b.value === '(') {
-    const c = item[2];
-    const d = item[3];
-    if (
-      c !== undefined &&
-      (c.kind === 'ident' || c.kind === 'quotedIdent') &&
-      names.has(lower(c.value)) &&
-      d?.kind === 'punct' &&
-      d.value === ')'
-    ) {
-      return true;
-    }
-  }
   return false;
+}
+
+/** Whether the token at `k` can only end a value, so a bare name after it is an alias. */
+function endsValue(item: readonly Token[], k: number): boolean {
+  const t = item[k];
+  if (t === undefined) return false;
+  if (t.kind === 'number' || t.kind === 'string' || t.kind === 'quotedIdent') return true;
+  return t.kind === 'ident' && isPunct(item[k - 1], '.');
 }
 
 /**
@@ -275,35 +330,66 @@ export function projectsRow(tokens: readonly Token[]): boolean {
   return false;
 }
 
-/** Names introduced by `WITH name AS (…)`, including the `, name AS (…)` chain. */
-function cteNames(toks: readonly Token[]): ReadonlySet<string> {
-  const names = new Set<string>();
-  for (let i = 0; i + 2 < toks.length; i++) {
-    const name = toks[i];
-    if (name === undefined) continue;
-    if (name.kind !== 'ident' && name.kind !== 'quotedIdent') continue;
-    let j = i + 1;
-    // `name (col, col) AS (…)` is legal too; skip the column list.
-    if (toks[j]?.kind === 'punct' && toks[j]?.value === '(') {
-      let d = 0;
-      while (j < toks.length) {
-        const x = toks[j];
-        if (x?.kind === 'punct' && x.value === '(') d++;
-        else if (x?.kind === 'punct' && x.value === ')') {
-          d--;
-          if (d === 0) {
-            j++;
-            break;
-          }
-        }
-        j++;
+interface CteScope {
+  name: Token;
+  /** The significant-token range in which a reference to `name` means the CTE. */
+  from: number;
+  to: number;
+}
+
+/**
+ * The names introduced by each `WITH name AS (…), name AS (…)`, and where each one
+ * is visible: from the end of its own body — from the start of it under
+ * `RECURSIVE` — to the end of the query the WITH belongs to. A CTE defined inside a
+ * subquery is not visible outside that subquery, and outside it the same name is
+ * the real table.
+ */
+function cteScopes(toks: readonly Token[]): CteScope[] {
+  const out: CteScope[] = [];
+  for (let w = 0; w < toks.length; w++) {
+    const t = toks[w];
+    if (t?.kind !== 'ident' || lower(t.value) !== 'with') continue;
+    let i = w + 1;
+    const recursive = toks[i]?.kind === 'ident' && lower(toks[i]?.value ?? '') === 'recursive';
+    if (recursive) i++;
+    const defined: { name: Token; open: number; close: number }[] = [];
+    for (;;) {
+      const name = toks[i];
+      if (name === undefined || !isName(name)) break;
+      let j = i + 1;
+      // `name (col, col) AS (…)` is legal too; skip the column list.
+      if (isPunct(toks[j], '(')) j = closing(toks, j) + 1;
+      if (toks[j]?.kind !== 'ident' || lower(toks[j]?.value ?? '') !== 'as' || !isPunct(toks[j + 1], '(')) break;
+      const close = closing(toks, j + 1);
+      defined.push({ name, open: j + 1, close });
+      i = close + 1;
+      if (!isPunct(toks[i], ',')) break;
+      i++;
+    }
+    if (defined.length === 0) continue;
+
+    let to = toks.length;
+    for (let d = 0; i < toks.length; i++) {
+      if (isPunct(toks[i], '(')) d++;
+      else if (isPunct(toks[i], ')') && d-- === 0) {
+        to = i;
+        break;
       }
     }
-    if (toks[j]?.kind !== 'ident' || lower(toks[j]?.value ?? '') !== 'as') continue;
-    if (toks[j + 1]?.kind !== 'punct' || toks[j + 1]?.value !== '(') continue;
-    names.add(lower(name.value));
+    for (const c of defined) out.push({ name: c.name, from: recursive ? c.open : c.close, to });
   }
-  return names;
+  return out;
+}
+
+/**
+ * Whether a reference is certainly to the CTE and not to a table. Postgres folds an
+ * unquoted name to lower case and keeps a quoted one as written; MySQL compares CTE
+ * names as written on a case-sensitive file system. Only a spelling that means the
+ * same name under both is taken as the CTE — anything else is reported as a table,
+ * which at worst refuses a statement that could have run.
+ */
+function sameCteName(cte: Token, ref: Token): boolean {
+  return cte.value === ref.value && (cte.kind === ref.kind || ref.value === lower(ref.value));
 }
 
 /**

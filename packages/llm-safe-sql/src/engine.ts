@@ -8,6 +8,7 @@ import type { Adapter, Row, TableShape } from './adapter.js';
 // `sameValue` — which exists for comparing across a round trip, in `apply` — is
 // deliberately not imported here. See the note on `sameValueAndType`.
 import { sameValueAndType as same } from './compare.js';
+import { withheld } from './show.js';
 import { keyOf, keyPredicate, qname } from './keys.js';
 import { Refusal } from './refusal.js';
 import { file } from './frame.js';
@@ -59,7 +60,10 @@ export class PlanRefused extends Refusal {
 export interface PlanRow {
   /** Primary key values identifying this row. */
   readonly key: Row;
-  /** Columns that really differ, with auto-maintained ones removed. This is what the card shows. */
+  /**
+   * Columns that really differ, with auto-maintained ones removed. This is what the card shows.
+   * For DELETE, every column the policy does not deny.
+   */
   readonly changed: readonly string[];
   /**
    * Every column this statement writes to this row — which is not the same set.
@@ -80,7 +84,10 @@ export interface PlanRow {
    * card claim a change where there is none.
    */
   readonly covered: readonly string[];
-  /** For UPDATE, the covered columns. For DELETE, every column. */
+  /**
+   * For UPDATE, the covered columns. For DELETE, every column — a denied one as
+   * its {@link withheld} digest.
+   */
   readonly before: Row;
   /** For UPDATE, the covered columns. Empty for DELETE. */
   readonly after: Row;
@@ -227,6 +234,8 @@ export class Engine {
    * this runtime has one. See {@link plan}.
    */
   private busy: string | undefined;
+  /** Whether a read owns the separate read connection. The same kind of lock as {@link busy}. */
+  private reading = false;
 
   constructor(opts: EngineOptions) {
     this.adapter = opts.adapter;
@@ -594,7 +603,20 @@ export class Engine {
     // was in flight — the driver serialises statements on one connection, so
     // that read's SELECT lands inside the trial transaction and returns its
     // uncommitted values as fact.
-    if (this.readIsSeparate) return this.readExclusive(rawSql, opts);
+    if (this.readIsSeparate) {
+      // A separate connection is free of dry runs, not of other reads. Two reads
+      // at once both began a transaction on it, and the second one failed inside
+      // the first's.
+      if (this.reading) {
+        throw new PlanRefused('BUSY', 'Another read is running on the read connection. Read again once it has finished.');
+      }
+      this.reading = true;
+      try {
+        return await this.readExclusive(rawSql, opts);
+      } finally {
+        this.reading = false;
+      }
+    }
     if (this.busy !== undefined) {
       throw new PlanRefused(
         'BUSY',
@@ -860,7 +882,17 @@ export class Engine {
         // D11 — every column, including the ones that are null right now. Dropping
         // them from the display also drops them from the pre-apply comparison, and
         // a value written in between would then be deleted unseen.
-        rows.push({ key, changed: Object.keys(b), covered: Object.keys(b), before: { ...b }, after: {} });
+        //
+        // A denied column is still covered, but only its digest is kept: the card
+        // and the stored plan are both read by people the policy exists to keep
+        // the value from.
+        const image: Row = { ...b };
+        const shown: string[] = [];
+        for (const c of Object.keys(b)) {
+          if (this.policy.deniedAmong([c]) === undefined) shown.push(c);
+          else image[c] = withheld(b[c]);
+        }
+        rows.push({ key, changed: shown, covered: Object.keys(b), before: image, after: {} });
         for (const c of Object.keys(b)) touched.add(c);
         rowsWithAnyDiff++;
         continue;

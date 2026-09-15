@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { stripComments, identifiers, splitStatements, lex } from '../src/lexer.js';
+import { stripComments, identifiers, splitStatements, lex, SqlLexError } from '../src/lexer.js';
 
 // =====================================================================
 //  SPEC N2 -- comments are STRIPPED, not rejected.
@@ -149,6 +149,25 @@ test('R2: Postgres does NOT treat backslash as an escape by default', () => {
 test("R2: Postgres E'' string DOES honour backslash escapes", () => {
   const ids = identifiers("SELECT * FROM t WHERE a=E'\\'AdminUser' AND b=1", 'postgres');
   assert.ok(!ids.includes('adminuser'));
+});
+
+test('R2: a Postgres U&"" identifier is matched as the name it spells, not as its escapes', () => {
+  assert.ok(identifiers('SELECT U&"password\\005fhash" AS x FROM users', 'postgres').includes('password_hash'));
+  assert.ok(identifiers('SELECT u&"password\\+00005Fhash" FROM users', 'postgres').includes('password_hash'));
+  assert.ok(identifiers('SELECT U&"a\\\\b""c" FROM t', 'postgres').includes('a\\b"c'));
+  assert.ok(identifiers('SELECT U&"d\\0061ta" FROM t', 'postgres').includes('data'));
+});
+
+test('R2: a U&"" identifier whose escapes cannot be read is refused, not guessed at', () => {
+  for (const sql of [
+    "SELECT U&\"password!005fhash\" UESCAPE '!' FROM users",
+    "SELECT U&\"password!005fhash\" /* c */ uescape '!' FROM users",
+    'SELECT U&"password\\zz5fhash" FROM users',
+    'SELECT U&"password\\005" FROM users',
+    'SELECT U&"password\\+11FFFF" FROM users',
+  ]) {
+    assert.throws(() => lex(sql, 'postgres'), SqlLexError, sql);
+  }
 });
 
 // =====================================================================

@@ -78,6 +78,10 @@ export function planBody(plan: Plan): string {
       const empty = r.changed.length - shown.length;
       for (const c of shown) out.push(`      ${c}: ${showValue(r.before[c])}`);
       if (empty > 0) out.push(`      (${plural(empty, 'other column')}, all empty)`);
+      const hidden = r.covered.filter((c) => !r.changed.includes(c));
+      if (hidden.length > 0) {
+        out.push(`      (${hidden.join(', ')}: withheld by policy, still checked for changes before the delete)`);
+      }
     }
   } else {
     const changing = plan.rows.filter((r) => r.changed.length > 0);

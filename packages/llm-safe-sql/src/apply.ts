@@ -19,7 +19,7 @@ import { normalize } from './normalize.js';
 import type { Policy } from './policy.js';
 import { Refusal } from './refusal.js';
 import { file } from './frame.js';
-import { showValue } from './show.js';
+import { showValue, withheld } from './show.js';
 import { lower, tableRefs, whereClause } from './statement.js';
 import {
   nowIso,
@@ -502,6 +502,7 @@ export class Applier {
         // edit to an unrelated column is not a reason to refuse, and refusing
         // would be a false alarm that teaches people to bypass this. For DELETE
         // `covered` is every column, because the whole row is being destroyed.
+        const hidden = plan.op === 'DELETE' ? pr.covered.filter((c) => !pr.changed.includes(c)) : [];
         for (const c of coveredOf(pr)) {
           // Absence is not a value. `canonical(undefined)` and `canonical(null)`
           // are the same string, so a column missing from this row compared equal
@@ -518,6 +519,15 @@ export class Applier {
               'UNREADABLE_COLUMN',
               `Row ${describeKey(pr.key)} came back without \`${c}\`, which the approved plan covers, so whether ` +
                 'it still holds the value you approved could not be checked. Nothing was applied.',
+            );
+          }
+          if (hidden.includes(c)) {
+            if (withheld(live[c]) === pr.before[c]) continue;
+            throw new ApplyRefused(
+              'ROW_CHANGED',
+              `Row ${describeKey(pr.key)} no longer holds the value you approved: \`${c}\`, which the policy ` +
+                'withholds from display, has changed since the plan was made. ' +
+                'Nothing was applied — make a new plan against the current values.',
             );
           }
           if (!same(live[c], pr.before[c])) {

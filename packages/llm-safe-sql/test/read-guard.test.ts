@@ -48,6 +48,91 @@ describe('a whole row names no column', () => {
     assert.equal(row('SELECT users.id, orders.id FROM users JOIN orders ON true'), false);
     assert.equal(row('SELECT id FROM users WHERE name = u'), false, 'a bare name after FROM is not a select item');
   });
+
+  test('R6a: a whole row wrapped in parentheses, a cast or an operator is still a whole row', () => {
+    assert.equal(row('SELECT (u) AS x FROM users u'), true);
+    assert.equal(row('SELECT u::text FROM users u'), true);
+    assert.equal(row('SELECT (u)::text AS x FROM users u'), true);
+    assert.equal(row("SELECT u || '' AS x FROM users u"), true);
+    assert.equal(row('SELECT CAST(u AS text) FROM users u'), true);
+    assert.equal(row("SELECT id, format('%s', u) FROM users u"), true);
+    assert.equal(row('SELECT public.users FROM public.users'), true);
+    assert.equal(row('SELECT s FROM (users s) CROSS JOIN plain p'), true, 'behind a parenthesised table reference too');
+  });
+
+  test('R6a: a whole row of a comma-joined table or of a join alias is still a whole row', () => {
+    assert.equal(row('SELECT u2 FROM plain p, users u2'), true);
+    assert.equal(row('SELECT u2 FROM (plain p, users u2)'), true);
+    assert.equal(row('SELECT u2 FROM plain p JOIN plain q ON p.id = q.id, users u2'), true);
+    assert.equal(row('SELECT j FROM (users u CROSS JOIN plain p) AS j'), true);
+  });
+
+  test('R6a: an alias, a cast of a column and a correlated subquery are not a row', () => {
+    assert.equal(row('SELECT u.id u FROM users u'), false, 'an alias without AS');
+    assert.equal(row('SELECT 1 u FROM users u'), false);
+    assert.equal(row('SELECT u.id AS u FROM users u'), false);
+    assert.equal(row('SELECT u.id::text FROM users u'), false);
+    assert.equal(row('SELECT CAST(u.id AS text) FROM users u'), false);
+    assert.equal(row('SELECT (SELECT max(o.id) FROM orders o WHERE o.user_id = u.id) AS n FROM users u'), false);
+  });
+});
+
+describe('a parenthesised table reference is still a table', () => {
+  test('the tables inside the parentheses are reported to the allowlist', () => {
+    assert.deepEqual(refs('SELECT a.id FROM (secrets s) CROSS JOIN allowed a'), ['secrets', 'allowed']);
+    assert.deepEqual(refs('SELECT 1 FROM ((secrets))'), ['secrets']);
+    assert.deepEqual(refs('SELECT 1 FROM (allowed a JOIN secrets s ON true)'), ['allowed', 'secrets']);
+    assert.deepEqual(refs('SELECT 1 FROM (allowed a, secrets s)'), ['allowed', 'secrets']);
+  });
+
+  test('a parenthesised subquery, VALUES list or function call is not a table name', () => {
+    assert.deepEqual(refs('SELECT x.id FROM (SELECT id FROM orders) x'), ['orders']);
+    assert.deepEqual(refs('SELECT x.id FROM ((SELECT id FROM orders)) x'), ['orders']);
+    assert.deepEqual(refs('SELECT x.id FROM (WITH w AS (SELECT id FROM orders) SELECT id FROM w) x'), ['orders']);
+    assert.deepEqual(refs('SELECT v.a FROM (VALUES (1), (2)) v (a) CROSS JOIN orders'), ['orders']);
+    assert.deepEqual(refs('SELECT g FROM generate_series(1, 3) g CROSS JOIN orders'), ['generate_series', 'orders']);
+  });
+
+  test('a comma after a join condition still introduces a table', () => {
+    assert.deepEqual(refs('SELECT 1 FROM plain p JOIN users u ON p.id = u.id, secrets s'), ['plain', 'users', 'secrets']);
+    assert.deepEqual(refs('SELECT 1 FROM plain p JOIN users u USING (id), secrets s'), ['plain', 'users', 'secrets']);
+    assert.deepEqual(refs("SELECT 1 FROM a JOIN b ON b.tags && ARRAY['x', 'y'] WHERE true"), ['a', 'b']);
+    assert.deepEqual(refs('SELECT (SELECT 1 FROM a), coalesce(b, c) FROM d'), ['a', 'd']);
+  });
+});
+
+describe('a CTE name hides a table only inside its own scope', () => {
+  test('the same name outside the CTE, or inside its own body, is the real table', () => {
+    assert.deepEqual(
+      refs('WITH a AS (WITH secrets AS (SELECT 1 AS x) SELECT x FROM secrets) SELECT s.x FROM secrets s CROSS JOIN a'),
+      ['secrets'],
+    );
+    assert.deepEqual(
+      refs('SELECT id FROM secrets WHERE id IN (WITH secrets AS (SELECT 1 AS id) SELECT id FROM secrets)'),
+      ['secrets'],
+    );
+    assert.deepEqual(refs('WITH secrets AS (SELECT id FROM secrets) SELECT id FROM secrets'), ['secrets']);
+  });
+
+  test('a name that matches a CTE only with its case ignored, or a WINDOW name, is the real table', () => {
+    // Postgres folds `secrets` to lower case and keeps "SECRETS" as written;
+    // MySQL on a case-sensitive file system compares CTE names as written.
+    assert.deepEqual(refs('WITH "SECRETS" AS (SELECT 1 AS token) SELECT token FROM secrets'), ['secrets']);
+    assert.deepEqual(refs('WITH Secrets AS (SELECT 1 AS token) SELECT token FROM secrets'), ['secrets']);
+    assert.deepEqual(refs('SELECT 1 FROM w WINDOW w AS (ORDER BY 1)'), ['w']);
+  });
+
+  test('the ordinary CTE shapes still resolve to the CTE', () => {
+    assert.deepEqual(refs('WITH x AS (SELECT id FROM orders) SELECT id FROM x'), ['orders']);
+    assert.deepEqual(refs('WITH "x" AS (SELECT id FROM orders) SELECT id FROM x'), ['orders']);
+    assert.deepEqual(refs('WITH x AS (SELECT id FROM orders), y AS (SELECT id FROM x) SELECT id FROM y'), ['orders']);
+    assert.deepEqual(refs('WITH x (id) AS (SELECT id FROM orders) SELECT id FROM x'), ['orders']);
+    assert.deepEqual(
+      refs('WITH RECURSIVE t (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t WHERE n < 3) SELECT n FROM t CROSS JOIN orders'),
+      ['orders'],
+    );
+    assert.deepEqual(refs('SELECT y.id FROM (WITH x AS (SELECT id FROM orders) SELECT id FROM x) y'), ['orders']);
+  });
 });
 
 const SQLITE_AVAILABLE = await import('node:sqlite').then(
@@ -98,6 +183,9 @@ describe('the read path, against a real database', { skip }, () => {
   beforeEach(async () => {
     await db.query('DROP TABLE IF EXISTS users');
     await db.query('DROP TABLE IF EXISTS plain');
+    await db.query('DROP TABLE IF EXISTS secrets');
+    await db.query('CREATE TABLE secrets (id INTEGER PRIMARY KEY, token TEXT NOT NULL)');
+    await db.query("INSERT INTO secrets VALUES (1,'TOKEN-1')");
     await db.query('CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL, password_hash TEXT NOT NULL)');
     await db.query("INSERT INTO users VALUES (1,'a@example.com','HASH-1'),(2,'b@example.com','HASH-2'),(3,'c@example.com','HASH-3')");
     await db.query('CREATE TABLE plain (id INTEGER PRIMARY KEY, email TEXT NOT NULL)');
@@ -124,11 +212,44 @@ describe('the read path, against a real database', { skip }, () => {
     }
   });
 
-  test('R6a: the same spelling over a table with nothing denied is just a read', async () => {
-    // SQLite has no whole-row value, so this is the closest legal spelling; what
-    // matters is that the guard did not fire on a table it has no reason to guard.
-    const r = await engine.read('SELECT p.id FROM plain p');
-    assert.equal(r.rows.length, 2);
+  test('R6a: the same spelling over a table with nothing denied is not refused by the guard', async () => {
+    // SQLite has no whole-row value, so the database itself rejects this spelling.
+    // What matters is that it got that far: the guard did not fire on a table it
+    // has no reason to guard.
+    const sql = 'SELECT p FROM plain p';
+    assert.equal(row(sql), true, 'the premise: this is recognised as a whole-row reference');
+    const e = await engine.read(sql).then(
+      () => undefined,
+      (x: unknown) => x,
+    );
+    assert.ok(!(e instanceof PlanRefused), `refused from the statement: ${String(e)}`);
+    assert.ok(calls.includes('query'), 'the statement was sent to the database');
+  });
+
+  test('R2: a table behind parentheses is checked against the allowlist', async () => {
+    const r = await refusal('SELECT s.token FROM (secrets s) CROSS JOIN plain a');
+    assert.equal(r.code, 'TABLE_NOT_ALLOWED');
+    assert.ok(!calls.includes('query'));
+  });
+
+  test('R2: a CTE defined in a subquery does not hide the table of the same name outside it', async () => {
+    const r = await refusal(
+      'WITH a AS (WITH secrets AS (SELECT 1 AS token) SELECT token FROM secrets) ' +
+        'SELECT s.token FROM secrets s CROSS JOIN plain p CROSS JOIN a',
+    );
+    assert.equal(r.code, 'TABLE_NOT_ALLOWED');
+    assert.ok(!calls.includes('query'));
+  });
+
+  test('R2: a table after a join condition, or named again by a WINDOW, is checked against the allowlist', async () => {
+    for (const sql of [
+      'SELECT s.token FROM plain p JOIN plain q ON p.id = q.id, secrets s',
+      'SELECT s.token FROM plain p JOIN plain q USING (id), secrets s',
+      'SELECT token FROM secrets WINDOW secrets AS (ORDER BY id)',
+    ]) {
+      assert.equal((await refusal(sql)).code, 'TABLE_NOT_ALLOWED', sql);
+    }
+    assert.ok(!calls.includes('query'));
   });
 
   test('R4a: a caller limit above maxReadRows is clamped to it', async () => {

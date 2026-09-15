@@ -19,6 +19,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteAdapter } from '../src/adapters/sqlite.js';
 import { Engine, PlanRefused } from '../src/engine.js';
+import { Applier, ApplyRefused } from '../src/apply.js';
+import { SqlPlanStore } from '../src/store.js';
+import { planCard } from '../src/card.js';
+import { encodePlan } from '../src/serialize.js';
 import { Policy } from '../src/policy.js';
 import { hasProjectionStar } from '../src/statement.js';
 import { lex } from '../src/lexer.js';
@@ -75,16 +79,27 @@ describe('a denied column, against a real database', { skip }, () => {
 
   let dir: string;
   let db: SqliteAdapter;
+  let writing: SqliteAdapter;
+  let bookkeeping: SqliteAdapter;
   let engine: Engine;
+  let applier: Applier;
 
   before(async () => {
     dir = await mkdtemp(join(tmpdir(), 'llm-safe-sql-wildcard-'));
-    db = await SqliteAdapter.connect({ file: join(dir, 'app.db') });
+    const file = join(dir, 'app.db');
+    db = await SqliteAdapter.connect({ file });
+    writing = await SqliteAdapter.connect({ file });
+    bookkeeping = await SqliteAdapter.connect({ file });
+    const store = new SqlPlanStore({ adapter: bookkeeping });
+    await store.migrate();
     engine = new Engine({ adapter: db, policy });
+    applier = new Applier({ adapter: writing, policy, store });
   });
 
   after(async () => {
     await db.close().catch(() => {});
+    await writing.close().catch(() => {});
+    await bookkeeping.close().catch(() => {});
     await rm(dir, { recursive: true, force: true });
   });
 
@@ -173,6 +188,40 @@ describe('a denied column, against a real database', { skip }, () => {
     const r = await engine.read('SELECT * FROM plain');
     assert.equal(r.rows.length, 1);
     assert.equal(r.rows[0]?.['email'], 'a@example.com');
+  });
+
+  /**
+   * A DELETE shows the whole row on its card, because the whole row is what is
+   * destroyed — and that card is the plan tool's output, so it goes to the model.
+   * A denied column is withheld from it, and still checked before the delete.
+   */
+  test('R6: a DELETE card never quotes a denied column, and the apply still checks it', async () => {
+    const plan = await engine.plan('DELETE FROM users WHERE id = 1');
+    const rec = await applier.record(plan, 'assistant');
+    const card = planCard(rec);
+    assert.doesNotMatch(card, /HASH-1/, card);
+    assert.doesNotMatch(encodePlan(plan), /HASH-1/, 'nor does the plan that is stored');
+    assert.match(card, /password_hash/, 'the card says a column was withheld rather than hiding that it exists');
+    assert.match(card, /a@example\.com/, 'the other columns are still shown');
+
+    await db.query("UPDATE users SET password_hash = 'HASH-CHANGED' WHERE id = 1");
+    await applier.approve(rec.id, 'alice');
+    const e = await applier.apply(rec.id, 'alice').then(
+      () => undefined,
+      (x: unknown) => x,
+    );
+    assert.ok(e instanceof ApplyRefused && e.code === 'ROW_CHANGED', String(e));
+    assert.doesNotMatch(e.message, /HASH/, e.message);
+    assert.equal((await db.query('SELECT id FROM users WHERE id = 1')).length, 1, 'nothing was deleted');
+  });
+
+  test('R6: a DELETE over a denied column that nobody touched applies', async () => {
+    const plan = await engine.plan('DELETE FROM users WHERE id = 2');
+    const rec = await applier.record(plan, 'assistant');
+    await applier.approve(rec.id, 'alice');
+    const res = await applier.apply(rec.id, 'alice');
+    assert.equal(res.rowsAffected, 1);
+    assert.equal((await db.query('SELECT id FROM users WHERE id = 2')).length, 0);
   });
 
   test('R6: COUNT(*) and arithmetic over the guarded table still run', async () => {
