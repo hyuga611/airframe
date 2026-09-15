@@ -75,6 +75,29 @@ describe('a whole row names no column', () => {
     assert.equal(row('SELECT CAST(u.id AS text) FROM users u'), false);
     assert.equal(row('SELECT (SELECT max(o.id) FROM orders o WHERE o.user_id = u.id) AS n FROM users u'), false);
   });
+
+  test('R6a: a whole row used outside the select list is still a whole row', () => {
+    // Nothing comes back under the row's name, but which rows come back, and in
+    // what order, is decided by every column of it.
+    assert.equal(row("SELECT id FROM users u WHERE u::text LIKE '%x%'"), true);
+    assert.equal(row("SELECT id FROM users WHERE users::text LIKE '%x%'"), true);
+    assert.equal(row("SELECT p.id FROM plain p JOIN users u ON u::text LIKE '%x%'"), true);
+    assert.equal(row('SELECT id FROM users u ORDER BY u::text'), true);
+    assert.equal(row("SELECT count(id) FROM users u GROUP BY id HAVING max(u::text) > ''"), true);
+    assert.equal(row("SELECT id FROM plain WHERE EXISTS (SELECT 1 FROM users u WHERE u::text LIKE '%x%')"), true);
+    assert.equal(row("UPDATE plain SET email = 'x' WHERE EXISTS (SELECT 1 FROM users u WHERE u::text LIKE '%x%')"), true);
+    assert.equal(row("DELETE FROM users WHERE users::text LIKE '%x%'"), true);
+  });
+
+  test('R6a: tables, aliases, CTE names and qualified columns outside the select list are not a row', () => {
+    assert.equal(row('SELECT id FROM users u WHERE u.id = 1 ORDER BY u.email'), false);
+    assert.equal(row('SELECT u.id FROM users u JOIN plain p ON p.id = u.id WHERE p.email = u.email'), false);
+    assert.equal(row('SELECT u.id FROM users AS u, plain AS p WHERE p.id = u.id'), false);
+    assert.equal(row('WITH t AS (SELECT id FROM users) SELECT id FROM t WHERE id > 0'), false);
+    assert.equal(row('SELECT id FROM users u WHERE u.id IN (SELECT o.user_id FROM orders o)'), false);
+    assert.equal(row("UPDATE users SET email = 'x' WHERE id = 1"), false);
+    assert.equal(row('DELETE FROM users WHERE users.id = 1'), false);
+  });
 });
 
 describe('a parenthesised table reference is still a table', () => {
@@ -210,6 +233,40 @@ describe('the read path, against a real database', { skip }, () => {
       assert.match(r.message, /password_hash/, sql);
       assert.ok(!calls.includes('query'), `${sql} — refused from the statement, nothing was fetched`);
     }
+  });
+
+  test('R6a: a whole row used to filter or order over a table with a denied column is refused before it runs', async () => {
+    // Postgres answers these with rows chosen by the denied value, so the value can
+    // be guessed one question at a time without ever being returned.
+    for (const sql of [
+      "SELECT id FROM users u WHERE u::text LIKE '%HASH-1%'",
+      "SELECT p.id FROM plain p JOIN users u ON u::text LIKE '%HASH-1%'",
+      'SELECT id FROM users u ORDER BY u::text',
+    ]) {
+      const r = await refusal(sql);
+      assert.equal(r.code, 'DENIED_IDENTIFIER', sql);
+      assert.match(r.message, /password_hash/, sql);
+      assert.ok(!calls.includes('query'), `${sql} — refused from the statement, nothing was fetched`);
+    }
+  });
+
+  test('R6a: a write whose condition uses a whole row of a table with a denied column is refused before it runs', async () => {
+    // A dry run answers the same question: a card when the guess is right, NO_ROWS
+    // when it is wrong.
+    for (const sql of [
+      "UPDATE plain SET email = 'x' WHERE id = 1 AND EXISTS (SELECT 1 FROM users u WHERE u::text LIKE '%HASH-1%')",
+      "UPDATE plain SET email = 'x' WHERE id = 1 AND EXISTS (SELECT 1 FROM users u WHERE (u.*)::text LIKE '%HASH-1%')",
+      "DELETE FROM users WHERE users::text LIKE '%HASH-1%'",
+    ]) {
+      const e = await engine.plan(sql).then(
+        () => undefined,
+        (x: unknown) => x,
+      );
+      assert.ok(e instanceof PlanRefused, `expected PlanRefused for ${sql}, got ${String(e)}`);
+      assert.equal(e.code, 'DENIED_IDENTIFIER', sql);
+      assert.match(e.message, /password_hash/, sql);
+    }
+    assert.equal((await db.query("SELECT id FROM plain WHERE email = 'x'")).length, 0);
   });
 
   test('R6a: the same spelling over a table with nothing denied is not refused by the guard', async () => {

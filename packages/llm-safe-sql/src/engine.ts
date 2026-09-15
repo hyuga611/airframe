@@ -328,6 +328,25 @@ export class Engine {
       throw new PlanRefused('NOT_A_WRITE', 'Only UPDATE and DELETE are planned; reads execute directly.');
     }
 
+    // R6 on the write path. A dry run answers the same yes/no a read does — a card
+    // when a WHERE picks a row, NO_ROWS when it does not — so a whole-row reference
+    // in the condition (`WHERE EXISTS (SELECT 1 FROM users u WHERE u::text LIKE …)`,
+    // or a `*`/`u.*` over a joined table) is the same oracle for a denied value, and
+    // is refused here before anything runs. Judged over every table the statement
+    // names, not only the target: the leak is usually a subquery over another one.
+    if (this.policy.hasDeniedIdentifiers && (hasProjectionStar(stmt.tokens) || projectsRow(stmt.tokens))) {
+      for (const t of tableRefs(stmt.tokens)) {
+        const shape = await this.adapter.introspect(t);
+        const hit = this.policy.deniedAmong(shape.columns.map((c) => c.name));
+        if (hit === undefined) continue;
+        throw new PlanRefused(
+          'DENIED_IDENTIFIER',
+          `\`${t}\` has a column \`${hit.name}\`, and it is ${hit.why} A \`*\` or a whole-row reference would ` +
+            'return it without ever naming it. Name the columns you want instead.',
+        );
+      }
+    }
+
     const table = tableRefs(stmt.tokens)[0];
     if (table === undefined) throw new PlanRefused('NOT_A_WRITE', 'No target table.');
     const where = whereClause(stmt.tokens);
@@ -875,8 +894,13 @@ export class Engine {
     let rowsWithAnyDiff = 0;
 
     for (const b of before) {
+      // The key identifies the row on the card, in the stored plan, and in the
+      // apply's messages — all read by the people the policy keeps the value from.
+      // When the primary key is itself a denied column, only its digest is kept,
+      // the same substitution a denied non-key column gets below; the apply digests
+      // the live key the same way, so it still matches the row it approved.
       const key: Row = {};
-      for (const c of pk) key[c] = b[c];
+      for (const c of pk) key[c] = this.policy.deniedAmong([c]) === undefined ? b[c] : withheld(b[c]);
 
       if (op === 'DELETE') {
         // D11 — every column, including the ones that are null right now. Dropping

@@ -67,13 +67,17 @@ const skip = SQLITE_AVAILABLE
 
 describe('a denied column, against a real database', { skip }, () => {
   const policy = new Policy({
-    allow: ['users', 'plain', 'wide_view', 'renaming_view'],
-    denyIdentifiers: { password_hash: 'a credential, and one you can read is one you have leaked.' },
+    allow: ['users', 'plain', 'wide_view', 'renaming_view', 'sessions'],
+    denyIdentifiers: {
+      password_hash: 'a credential, and one you can read is one you have leaked.',
+      token: 'a session credential.',
+    },
     impact: {
       users: 'test table',
       plain: 'test table',
       wide_view: 'test view',
       renaming_view: 'test view',
+      sessions: 'test table',
     },
   });
 
@@ -108,12 +112,15 @@ describe('a denied column, against a real database', { skip }, () => {
     await db.query('DROP VIEW IF EXISTS renaming_view');
     await db.query('DROP TABLE IF EXISTS users');
     await db.query('DROP TABLE IF EXISTS plain');
+    await db.query('DROP TABLE IF EXISTS sessions');
     await db.query(
       'CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL, password_hash TEXT NOT NULL)',
     );
     await db.query("INSERT INTO users VALUES (1,'a@example.com','HASH-1'),(2,'b@example.com','HASH-2')");
     await db.query('CREATE TABLE plain (id INTEGER PRIMARY KEY, email TEXT NOT NULL)');
     await db.query("INSERT INTO plain VALUES (1,'a@example.com')");
+    await db.query('CREATE TABLE sessions (token TEXT PRIMARY KEY, user_id INTEGER NOT NULL, label TEXT NOT NULL)');
+    await db.query("INSERT INTO sessions VALUES ('TOKEN-1', 1, 'phone'), ('TOKEN-2', 2, 'laptop')");
     await db.query('CREATE VIEW wide_view AS SELECT * FROM users');
     await db.query('CREATE VIEW renaming_view AS SELECT id, password_hash AS pw FROM users');
   });
@@ -222,6 +229,44 @@ describe('a denied column, against a real database', { skip }, () => {
     const res = await applier.apply(rec.id, 'alice');
     assert.equal(res.rowsAffected, 1);
     assert.equal((await db.query('SELECT id FROM users WHERE id = 2')).length, 0);
+  });
+
+  /**
+   * A row is named on the card by its primary key. When the key is the denied
+   * column, naming the row was quoting the value.
+   */
+  test('R6: a denied primary key is withheld from the card and the stored plan, for DELETE and UPDATE', async () => {
+    for (const sql of ['DELETE FROM sessions WHERE user_id = 1', "UPDATE sessions SET label = 'tablet' WHERE user_id = 1"]) {
+      const plan = await engine.plan(sql);
+      const rec = await applier.record(plan, 'assistant');
+      const card = planCard(rec);
+      assert.doesNotMatch(card, /TOKEN-1/, card);
+      assert.doesNotMatch(encodePlan(plan), /TOKEN-1/, `${sql} — nor does the plan that is stored`);
+      assert.match(card, /token/, `${sql} — the card still says which column identifies the row`);
+      assert.doesNotMatch(card, /withheld:sha256/, `${sql} — nor the digest, which for a short value is the value`);
+    }
+  });
+
+  test('R6: a plan keyed by a denied primary key applies to the rows it showed, and says so without the key', async () => {
+    const del = await applier.record(await engine.plan('DELETE FROM sessions WHERE user_id = 1'), 'assistant');
+    await applier.approve(del.id, 'alice');
+    assert.equal((await applier.apply(del.id, 'alice')).rowsAffected, 1);
+    assert.equal((await db.query("SELECT user_id FROM sessions WHERE token = 'TOKEN-1'")).length, 0);
+
+    const upd = await applier.record(await engine.plan("UPDATE sessions SET label = 'tablet' WHERE user_id = 2"), 'assistant');
+    await applier.approve(upd.id, 'alice');
+    assert.equal((await applier.apply(upd.id, 'alice')).rowsAffected, 1);
+    assert.equal((await db.query("SELECT label FROM sessions WHERE token = 'TOKEN-2'"))[0]?.['label'], 'tablet');
+
+    const moved = await applier.record(await engine.plan("UPDATE sessions SET label = 'desk' WHERE user_id = 2"), 'assistant');
+    await db.query("UPDATE sessions SET label = 'moved' WHERE token = 'TOKEN-2'");
+    await applier.approve(moved.id, 'alice');
+    const e = await applier.apply(moved.id, 'alice').then(
+      () => undefined,
+      (x: unknown) => x,
+    );
+    assert.ok(e instanceof ApplyRefused && e.code === 'ROW_CHANGED', String(e));
+    assert.doesNotMatch(e.message, /TOKEN-2|withheld:sha256/, e.message);
   });
 
   test('R6: COUNT(*) and arithmetic over the guarded table still run', async () => {

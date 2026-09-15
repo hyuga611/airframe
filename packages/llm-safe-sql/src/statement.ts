@@ -233,99 +233,80 @@ function rowNames(toks: readonly Token[]): ReadonlySet<string> {
   return names;
 }
 
-/**
- * Whether one select-list item uses a whole row anywhere in it. `SELECT u`,
- * `to_jsonb(u)`, `(u)`, `u::text` and `format('%s', u)` all hand back every column
- * of the row under a name of the author's choosing, so an item is judged by the
- * names it touches rather than by matching the shapes known so far — the shapes
- * were a list, and a list had room to step around.
- *
- * A name is not the row where it cannot be: qualified by something before it, the
- * name an `AS` gives, a function that happens to share it, or an alias written
- * without `AS` after a value that could not take an argument.
- */
-function isRowItem(item: readonly Token[], names: ReadonlySet<string>): boolean {
-  for (let i = 0; i < item.length; i++) {
-    const t = item[i];
-    if (t === undefined) continue;
-    if (t.kind === 'punct') {
-      // A subquery's select list is judged on its own when its SELECT is reached,
-      // and its FROM names tables without projecting them.
-      const next = item[i + 1];
-      if (t.value === '(' && next?.kind === 'ident' && SUBQUERY_LEAD.has(lower(next.value))) i = closing(item, i);
-      continue;
-    }
-    if (!isName(t)) continue;
-    const at = i;
-    const parts = [t.value];
-    while (isPunct(item[i + 1], '.') && isName(item[i + 2])) {
-      parts.push(item[i + 2]?.value ?? '');
-      i += 2;
-    }
-    if (!names.has(lower(parts.join('.')))) continue;
-    const prev = item[at - 1];
-    if (isPunct(prev, '.')) continue;
-    if (prev?.kind === 'ident' && lower(prev.value) === 'as') continue;
-    if (isPunct(item[i + 1], '(')) continue;
-    if (i === item.length - 1 && parts.length === 1 && endsValue(item, at - 1)) continue;
-    return true;
-  }
-  return false;
-}
-
 /** Whether the token at `k` can only end a value, so a bare name after it is an alias. */
-function endsValue(item: readonly Token[], k: number): boolean {
-  const t = item[k];
+function endsValue(toks: readonly Token[], k: number): boolean {
+  const t = toks[k];
   if (t === undefined) return false;
   if (t.kind === 'number' || t.kind === 'string' || t.kind === 'quotedIdent') return true;
-  return t.kind === 'ident' && isPunct(item[k - 1], '.');
+  return t.kind === 'ident' && isPunct(toks[k - 1], '.');
 }
 
 /**
- * Whether a select list hands back a whole row under one name — the same hole as
- * a `*`, spelled without one. `SELECT u FROM users u` and `SELECT to_jsonb(users)
- * FROM users` both return every column, including a denied one, and the column
- * that comes back is called `u` or `to_jsonb`, so R2a cannot see it either.
+ * Whether the statement uses a whole row anywhere — the same hole as a `*`, spelled
+ * without one.
  *
- * Judged the way {@link hasProjectionStar} is: on the tokens, per select list,
- * item by item. A column that happens to share its name with a table it is not
- * read from is not matched, because the names are taken from this statement's own
- * FROM clauses. A column named after its own table is refused: Postgres would have
- * resolved that spelling to the row as well.
+ * In a select list, `SELECT u FROM users u` and `SELECT to_jsonb(users) FROM users`
+ * hand back every column, including a denied one, under a name of the author's
+ * choosing, so R2a is blind to it. Outside the select list nothing comes back under
+ * the row's name, but every column of the row still decides which rows come back and
+ * in what order: `WHERE u::text LIKE '%x%'` and `ORDER BY u` turn a denied value
+ * into an oracle answered one question at a time. So the whole statement is scanned,
+ * not only its select lists, and a whole-row reference in a WHERE, JOIN, GROUP BY,
+ * HAVING, ORDER BY or subquery counts the same as one that is projected.
+ *
+ * Judged on the tokens the way {@link hasProjectionStar} is. A name from
+ * {@link rowNames} is a whole row where it is used as a value: not where it declares
+ * the table (a FROM/JOIN/UPDATE reference, its alias, the name a WITH introduces),
+ * not as the qualifier of a column, not the name an `AS` gives, not a function that
+ * shares it, and not an alias written without `AS` after a value. A column that only
+ * happens to share a table's name is not matched, because the names are this
+ * statement's own; a column named after its own table is refused, because Postgres
+ * would resolve that spelling to the row as well.
  */
 export function projectsRow(tokens: readonly Token[]): boolean {
   const toks = significant(tokens);
   const names = rowNames(toks);
   if (names.size === 0) return false;
+
+  // The places a row name only declares something rather than reading its value:
+  // each table reference, the alias it is given, and the names a WITH introduces.
+  // A bare use of the name anywhere else is what this looks for.
+  const declared = new Set<number>();
+  const aliasAt = (j: number): void => {
+    let a = j;
+    if (toks[a]?.kind === 'ident' && lower(toks[a]?.value ?? '') === 'as') a++;
+    const t = toks[a];
+    if (t !== undefined && (t.kind === 'quotedIdent' || (t.kind === 'ident' && !NOT_AN_ALIAS.has(lower(t.value))))) {
+      declared.add(a);
+    }
+  };
+  const { sites, groupEnds } = refSites(toks);
+  for (const site of sites) {
+    for (let k = site.at; k <= site.end; k++) declared.add(k);
+    aliasAt(site.end + 1);
+  }
+  for (const end of groupEnds) aliasAt(end + 1);
+  for (const c of cteScopes(toks)) {
+    const at = toks.indexOf(c.name);
+    if (at >= 0) declared.add(at);
+  }
+
   for (let i = 0; i < toks.length; i++) {
     const t = toks[i];
-    if (t?.kind !== 'ident' || lower(t.value) !== 'select') continue;
-    let j = i + 1;
-    const q = toks[j];
-    if (q?.kind === 'ident' && (lower(q.value) === 'distinct' || lower(q.value) === 'distinctrow' || lower(q.value) === 'all')) j++;
-    let depth = 0;
-    let item: Token[] = [];
-    const items: Token[][] = [];
-    for (; j < toks.length; j++) {
-      const u = toks[j];
-      if (u === undefined) continue;
-      if (u.kind === 'punct') {
-        if (u.value === '(') depth++;
-        else if (u.value === ')') {
-          if (depth === 0) break;
-          depth--;
-        } else if (u.value === ',' && depth === 0) {
-          items.push(item);
-          item = [];
-          continue;
-        }
-      } else if (depth === 0 && u.kind === 'ident' && lower(u.value) === 'from') {
-        break;
-      }
-      item.push(u);
+    if (!isName(t) || declared.has(i)) continue;
+    const at = i;
+    const parts = [t?.value ?? ''];
+    while (isPunct(toks[i + 1], '.') && isName(toks[i + 2])) {
+      parts.push(toks[i + 2]?.value ?? '');
+      i += 2;
     }
-    items.push(item);
-    if (items.some((it) => isRowItem(it, names))) return true;
+    if (!names.has(lower(parts.join('.')))) continue;
+    const prev = toks[at - 1];
+    if (isPunct(prev, '.')) continue;
+    if (prev?.kind === 'ident' && lower(prev.value) === 'as') continue;
+    if (isPunct(toks[i + 1], '(')) continue;
+    if (parts.length === 1 && endsValue(toks, at - 1)) continue;
+    return true;
   }
   return false;
 }

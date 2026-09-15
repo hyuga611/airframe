@@ -19,7 +19,7 @@ import { normalize } from './normalize.js';
 import type { Policy } from './policy.js';
 import { Refusal } from './refusal.js';
 import { file } from './frame.js';
-import { showValue, withheld } from './show.js';
+import { showKey, showValue, withheld } from './show.js';
 import { lower, tableRefs, whereClause } from './statement.js';
 import {
   nowIso,
@@ -477,8 +477,10 @@ export class Applier {
         `SELECT ${columnList(q, shape)} FROM ${qname(q, table)} WHERE ${where}${this.adapter.rowLockClause()}`,
       );
 
+      // A key over a denied column is a digest in the plan (see `Engine.build`),
+      // so the live rows are matched by the same digest, not by the raw value.
       const wanted = new Set(plan.rows.map((r) => keyOf(pk, r.key)));
-      const found = new Set(locked.map((r) => keyOf(pk, r)));
+      const found = new Set(locked.map((r) => keyOf(pk, this.keyImage(pk, r))));
       if (wanted.size !== found.size || [...wanted].some((k) => !found.has(k))) {
         throw new ApplyRefused(
           'ROWS_MOVED',
@@ -487,7 +489,7 @@ export class Applier {
         );
       }
 
-      const liveByKey = new Map(locked.map((r) => [keyOf(pk, r), r]));
+      const liveByKey = new Map(locked.map((r) => [keyOf(pk, this.keyImage(pk, r)), r]));
       for (const pr of plan.rows) {
         const live = liveByKey.get(keyOf(pk, pr.key));
         if (live === undefined) continue; // impossible after the check above
@@ -584,8 +586,11 @@ export class Applier {
         );
       }
 
-      // A6 — read back and check the result is the one on the card.
-      const { sql: pred, params } = keyPredicate(pk, plan.rows.map((r) => r.key), q, dialect);
+      // A6 — read back and check the result is the one on the card. The predicate
+      // is built from the live keys, not the plan's: a plan key over a denied column
+      // is a digest, which no row equals. `locked` is the rows this apply verified
+      // match the plan, so their raw keys select exactly the same rows.
+      const { sql: pred, params } = keyPredicate(pk, locked, q, dialect);
       const nowRows = await this.adapter.query<Row>(
         `SELECT ${columnList(q, shape)} FROM ${qname(q, table)} WHERE ${pred}`,
         params,
@@ -599,7 +604,7 @@ export class Applier {
           );
         }
       } else {
-        const after = new Map(nowRows.map((r) => [keyOf(pk, r), r]));
+        const after = new Map(nowRows.map((r) => [keyOf(pk, this.keyImage(pk, r)), r]));
         for (const pr of plan.rows) {
           const got = after.get(keyOf(pk, pr.key));
           if (got === undefined) {
@@ -677,6 +682,17 @@ export class Applier {
       severity: warnings.length ? 'warn' : 'note',
     });
     return { planId: id, table, op: plan.op, rowsAffected, appliedAt, actor, warnings };
+  }
+
+  /**
+   * A live row's key as the plan stores it: a denied key column is replaced by its
+   * digest, the same substitution `Engine.build` makes, so the two match on the
+   * digest and the value itself is never compared, held, or displayed.
+   */
+  private keyImage(pk: readonly string[], row: Row): Row {
+    const out: Row = {};
+    for (const c of pk) out[c] = this.policy.deniedAmong([c]) === undefined ? row[c] : withheld(row[c]);
+    return out;
   }
 
   /** Rows in the whole table, inside the current transaction. Used to see trigger work. */
@@ -871,7 +887,7 @@ function coveredOf(pr: PlanRow): readonly string[] {
 
 function describeKey(key: Row): string {
   return Object.entries(key)
-    .map(([k, v]) => `${k}=${showValue(v)}`)
+    .map(([k, v]) => `${k}=${showKey(v)}`)
     .join(', ');
 }
 

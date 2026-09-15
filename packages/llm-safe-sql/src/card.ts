@@ -1,6 +1,6 @@
 import type { Plan, PlanRow } from './engine.js';
 import type { StoredPlan } from './store.js';
-import { fingerprint, inline, looksTheSame, showValue } from './show.js';
+import { fingerprint, inline, looksTheSame, showKey, showValue } from './show.js';
 
 /**
  * The confirmation card.
@@ -22,7 +22,7 @@ const ARROW = ' -> ';
 
 function keyText(row: PlanRow): string {
   return Object.entries(row.key)
-    .map(([k, v]) => `${k} = ${showValue(v)}`)
+    .map(([k, v]) => `${k} = ${showKey(v)}`)
     .join(', ');
 }
 
